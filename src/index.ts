@@ -155,7 +155,7 @@ export type {
 // Middleware
 export { createRateLimiter } from "./middleware/rateLimit";
 export { errorHandler, notFoundHandler } from "./middleware/error";
-export { createSecurityHeaders } from "./middleware/securityHeaders";
+export { createSecurityHeaders, STRICT_API_CSP } from "./middleware/securityHeaders";
 export type {
   SecurityHeadersOptions,
   HSTSOptions,

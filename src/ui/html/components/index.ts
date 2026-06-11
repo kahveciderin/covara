@@ -21,12 +21,22 @@ export const card = (props: CardProps, body: string): string => html`
   </div>
 `;
 
-export const statCard = (label: string, value: string | number, variant: BadgeVariant = 'neutral'): string => html`
-  <div class="stat-card stat-${variant}">
-    <div class="stat-label">${escapeHtml(label)}</div>
+export const statCard = (
+  label: string,
+  value: string | number,
+  variant: BadgeVariant = 'neutral',
+  opts: { icon?: string; href?: string; sub?: string } = {}
+): string => {
+  const inner = html`
+    <div class="stat-label">${opts.icon ? html`<span class="nav-icon" style="opacity:.7">${opts.icon}</span>` : ''}${escapeHtml(label)}</div>
     <div class="stat-value">${escapeHtml(value)}</div>
-  </div>
-`;
+    ${opts.sub ? html`<div class="stat-sub">${escapeHtml(opts.sub)}</div>` : ''}
+  `;
+  if (opts.href) {
+    return html`<a class="stat-card stat-${variant}" href="${opts.href}" hx-get="${opts.href}" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" style="text-decoration:none;color:inherit;display:block">${inner}</a>`;
+  }
+  return html`<div class="stat-card stat-${variant}">${inner}</div>`;
+};
 
 export type BadgeVariant = 'neutral' | 'success' | 'warning' | 'error' | 'info';
 

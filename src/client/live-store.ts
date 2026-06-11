@@ -51,10 +51,20 @@ const markersOf = <T>(item: T): OrderMarkers => item as T & OrderMarkers;
 const createSortFn = <T>(orderBy?: string): SortFn<T> | null => {
   if (!orderBy) return null;
 
-  const parts = orderBy.split(",").map(part => {
-    const [field, dir] = part.trim().split(":");
-    return { field: field!, desc: dir === "desc" };
-  });
+  // Accept both "field:desc" and the "-field" (JSON:API) descending syntax,
+  // matching the server's parseOrderBy.
+  const parts = orderBy
+    .split(",")
+    .map(part => part.trim())
+    .filter(part => part.length > 0)
+    .map(part => {
+      const [rawField, dir] = part.split(":");
+      let field = rawField.trim();
+      let desc = dir?.toLowerCase() === "desc";
+      if (field.startsWith("-")) { field = field.slice(1); desc = true; }
+      else if (field.startsWith("+")) { field = field.slice(1); }
+      return { field, desc };
+    });
 
   return (a: T, b: T) => {
     for (const { field, desc } of parts) {

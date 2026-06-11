@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { Hono } from "hono";
-import { createSecurityHeaders } from "@/middleware/securityHeaders";
+import { createSecurityHeaders, STRICT_API_CSP } from "@/middleware/securityHeaders";
 
 const setNodeEnv = (value: string | undefined): void => {
   if (value === undefined) {
@@ -40,9 +40,8 @@ describe("createSecurityHeaders", () => {
       );
       expect(res.headers.get("X-DNS-Prefetch-Control")).toBe("off");
       expect(res.headers.get("Cross-Origin-Opener-Policy")).toBe("same-origin");
-      expect(res.headers.get("Content-Security-Policy")).toBe(
-        "default-src 'none'; frame-ancestors 'none'"
-      );
+      // CSP is opt-in (off by default) so it never blocks an app's own frontend.
+      expect(res.headers.get("Content-Security-Policy")).toBeNull();
     });
   });
 
@@ -99,6 +98,24 @@ describe("createSecurityHeaders", () => {
   });
 
   describe("Content-Security-Policy", () => {
+    it("is OFF by default so it never blocks an app's own frontend", async () => {
+      setNodeEnv("test");
+      const app = makeApp();
+      const res = await app.request("http://localhost/ok");
+      expect(res.headers.get("Content-Security-Policy")).toBeNull();
+    });
+
+    it("can be enabled with the strict API policy", async () => {
+      setNodeEnv("test");
+      const app = makeApp(
+        createSecurityHeaders({ contentSecurityPolicy: STRICT_API_CSP })
+      );
+      const res = await app.request("http://localhost/ok");
+      expect(res.headers.get("Content-Security-Policy")).toBe(
+        "default-src 'none'; frame-ancestors 'none'"
+      );
+    });
+
     it("can be overridden", async () => {
       setNodeEnv("test");
       const app = makeApp(
@@ -164,17 +181,17 @@ describe("createSecurityHeaders", () => {
   });
 
   describe("error and 404 responses", () => {
-    it("sets headers on 404 responses", async () => {
+    it("sets headers (incl. a configured CSP) on 404 responses", async () => {
       setNodeEnv("test");
-      const app = makeApp();
+      const app = makeApp(
+        createSecurityHeaders({ contentSecurityPolicy: "default-src 'none'" })
+      );
       const res = await app.request("http://localhost/missing");
 
       expect(res.status).toBe(404);
       expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
       expect(res.headers.get("X-Frame-Options")).toBe("DENY");
-      expect(res.headers.get("Content-Security-Policy")).toBe(
-        "default-src 'none'; frame-ancestors 'none'"
-      );
+      expect(res.headers.get("Content-Security-Policy")).toBe("default-src 'none'");
     });
 
     it("sets headers on error responses", async () => {

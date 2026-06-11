@@ -1,5 +1,6 @@
 import { html, escapeHtml, formatDuration, formatRelativeTime } from '../utils';
 import { card, statCard, badge, methodBadge, statusBadge, emptyState } from '../components';
+import { icon } from '../icons';
 
 export interface DashboardPageData {
   stats: {
@@ -27,11 +28,11 @@ export const dashboardPage = (data: DashboardPageData): string => html`
   </div>
 
   <div class="grid grid-5">
-    ${statCard('Resources', data.stats.resources, 'info')}
-    ${statCard('Requests', data.stats.requests, 'success')}
-    ${statCard('Errors', data.stats.errors, data.stats.errors > 0 ? 'error' : 'neutral')}
-    ${statCard('Subscriptions', data.stats.subscriptions, 'info')}
-    ${statCard('Changelog', data.stats.changelog, 'neutral')}
+    ${statCard('Resources', data.stats.resources, 'info', { icon: icon('resources'), href: '/__covara/ui/resources', sub: 'Browse data' })}
+    ${statCard('Requests', data.stats.requests, 'success', { icon: icon('requests'), href: '/__covara/ui/requests', sub: 'Recent traffic' })}
+    ${statCard('Errors', data.stats.errors, data.stats.errors > 0 ? 'error' : 'neutral', { icon: icon('errors'), href: '/__covara/ui/errors', sub: data.stats.errors > 0 ? 'Needs attention' : 'All clear' })}
+    ${statCard('Subscriptions', data.stats.subscriptions, 'info', { icon: icon('subscriptions'), href: '/__covara/ui/subscriptions', sub: 'Live connections' })}
+    ${statCard('Changelog', data.stats.changelog, 'neutral', { icon: icon('changelog'), href: '/__covara/ui/changelog', sub: 'Latest sequence' })}
   </div>
 
   <div style="margin-top: 16px;">

@@ -134,14 +134,48 @@ export interface OrderByField {
   direction: "asc" | "desc";
 }
 
+// Supports two direction syntaxes, which may be mixed across fields:
+//   "name:desc"  — explicit suffix
+//   "-name"      — leading "-" for descending (JSON:API style); "+name" or bare = ascending
+// Using both on the same field (e.g. "-name:desc") is a conflict and errors.
 export const parseOrderBy = (orderBy?: string): OrderByField[] => {
   if (!orderBy) return [];
 
-  return orderBy.split(",").map((part) => {
-    const [field, dir] = part.trim().split(":");
-    const direction = dir?.toLowerCase() === "desc" ? "desc" : "asc";
-    return { field, direction };
-  });
+  return orderBy
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map((part) => {
+      const [rawField, dirSuffix] = part.split(":");
+      let field = rawField.trim();
+
+      let prefixDir: "asc" | "desc" | undefined;
+      if (field.startsWith("-")) {
+        prefixDir = "desc";
+        field = field.slice(1).trim();
+      } else if (field.startsWith("+")) {
+        prefixDir = "asc";
+        field = field.slice(1).trim();
+      }
+
+      const suffix = dirSuffix?.trim().toLowerCase();
+      let suffixDir: "asc" | "desc" | undefined;
+      if (suffix === "asc" || suffix === "desc") {
+        suffixDir = suffix;
+      } else if (suffix !== undefined && suffix !== "") {
+        throw new ValidationError(
+          `Invalid sort direction "${dirSuffix}" for "${field}" (expected "asc" or "desc")`
+        );
+      }
+
+      if (prefixDir && suffixDir) {
+        throw new ValidationError(
+          `Conflicting sort direction for "${field}": use either "${prefixDir === "desc" ? "-" : "+"}${field}" or "${field}:${suffixDir}", not both`
+        );
+      }
+
+      return { field, direction: prefixDir ?? suffixDir ?? "asc" };
+    });
 };
 
 export const buildOrderByClause = <TConfig extends TableConfig>(

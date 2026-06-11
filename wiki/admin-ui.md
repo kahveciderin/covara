@@ -2,6 +2,15 @@
 
 Covara includes a comprehensive admin dashboard for development and debugging at `/__covara/ui`. It provides a one-stop shop for monitoring, testing, and debugging your API with environment-aware features.
 
+## Highlights
+
+- **Command palette** — press <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd> anywhere to jump to any page or open a resource in the Data Explorer.
+- **Data Explorer** — a live data grid over any registered resource: click column headers to sort, cursor pagination with total counts, a **visual filter builder** (field · operator · value → RSQL, no syntax to remember), a row **detail drawer** with syntax-highlighted JSON and copy, schema-driven **inline create/edit** (boolean switches, JSON editors, number/date inputs), delete with confirmation, and an **auto-refresh** toggle for live data. Respects read-only mode (e.g. production) — write controls are hidden when the explorer is read-only.
+- **Polished, themable UI** — refined design system with light/dark themes (persisted), responsive layout, toasts, and loading states; the dashboard stat cards are clickable launchpads.
+- **Auth-aware** — integrates with your app's auth via `authorize` / `requireRole`, with a pluggable audit sink and a JSON audit export; fail-closed in production when no auth is configured (see Setup below).
+
+The Data Explorer talks to the JSON API at `/__covara/api/explorer/*`; the browser runtime and the explorer app are served as static JS from `/__covara/ui/covara-runtime.js` and `/__covara/ui/data-explorer-app.js` (no build step, Workers-safe).
+
 ## Setup
 
 With `createCovara`, just enable it:

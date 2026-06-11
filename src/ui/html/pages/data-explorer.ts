@@ -1,5 +1,5 @@
 import { html, escapeHtml, formatJson } from '../utils';
-import { card, badge, button, input, select, alert, emptyState, toolbar, tableHead } from '../components';
+import { card, badge, button, emptyState, tableHead } from '../components';
 
 export interface SchemaInfo {
   name: string;
@@ -22,98 +22,14 @@ export interface DataExplorerPageData {
 export const dataExplorerPage = (data: DataExplorerPageData): string => html`
   <div class="page-header">
     <h1 class="page-title">Data Explorer</h1>
-    <p class="page-desc">Browse and edit resource data with admin bypass</p>
+    <p class="page-desc">Browse, filter, sort, and edit any resource.${data.readOnly ? ' Read-only mode.' : ' Admin bypass active \u2014 all actions are logged.'}</p>
   </div>
 
-  ${alert('\u26A0 Admin bypass active - All scopes bypassed, actions are logged', 'warning')}
-
-  <div style="margin-top: 16px;">
-    ${toolbar(html`
-      ${select({
-        name: 'resource',
-        placeholder: 'Select resource...',
-        options: data.resources.map(r => ({ value: r, label: r })),
-        class: 'resource-select',
-      })}
-      ${input({
-        name: 'filter',
-        placeholder: 'Filter: status=="active"',
-        mono: true,
-        class: 'filter-input',
-      })}
-      ${select({
-        name: 'limit',
-        value: '50',
-        options: [
-          { value: '20', label: '20' },
-          { value: '50', label: '50' },
-          { value: '100', label: '100' },
-        ],
-      })}
-      ${button('Search', {
-        variant: 'primary',
-        class: 'search-btn',
-      })}
-      <span id="search-indicator" class="htmx-indicator loading"></span>
-      ${!data.readOnly ? button('+ New Record', {
-        variant: 'secondary',
-        hxGet: '/__covara/ui/data/new',
-        hxTarget: '#modal-container',
-      }) : ''}
-    `)}
+  <div id="dx-root" class="dx">
+    <div style="padding:48px;text-align:center;color:var(--text-3)"><span class="spinner"></span></div>
   </div>
 
-  <div id="data-table" style="margin-top: 16px;">
-    ${card({}, emptyState('\u2637', 'Select a resource', 'Choose a resource from the dropdown to explore data'))}
-  </div>
-
-  <div id="modal-container"></div>
-
-  <script>
-    // Strip leading slashes from resource path
-    function normalizeResource(r) {
-      return r.replace(/^\\/+/, '');
-    }
-
-    // Handle resource selection
-    document.querySelector('.resource-select')?.addEventListener('change', function(e) {
-      const resource = normalizeResource(e.target.value);
-      if (!resource) return;
-
-      const filter = document.querySelector('.filter-input')?.value || '';
-      const limit = document.querySelector('[name="limit"]')?.value || '50';
-
-      htmx.ajax('GET', '/__covara/ui/data/' + encodeURIComponent(resource) + '/table?limit=' + limit + (filter ? '&filter=' + encodeURIComponent(filter) : ''), {
-        target: '#data-table',
-        swap: 'innerHTML'
-      });
-    });
-
-    // Handle search button
-    document.querySelector('.search-btn')?.addEventListener('click', function(e) {
-      e.preventDefault();
-      const resource = normalizeResource(document.querySelector('.resource-select')?.value || '');
-      if (!resource) {
-        showToast('Please select a resource first', 'error');
-        return;
-      }
-
-      const filter = document.querySelector('.filter-input')?.value || '';
-      const limit = document.querySelector('[name="limit"]')?.value || '50';
-
-      htmx.ajax('GET', '/__covara/ui/data/' + encodeURIComponent(resource) + '/table?limit=' + limit + (filter ? '&filter=' + encodeURIComponent(filter) : ''), {
-        target: '#data-table',
-        swap: 'innerHTML'
-      });
-    });
-
-    // Handle enter key in filter input
-    document.querySelector('.filter-input')?.addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') {
-        document.querySelector('.search-btn')?.click();
-      }
-    });
-  </script>
+  <script src="/__covara/ui/data-explorer-app.js"></script>
 `;
 
 export interface DataTableData {

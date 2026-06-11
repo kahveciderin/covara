@@ -42,7 +42,7 @@ if (page1.hasMore) {
 |-----------|------|-------------|
 | `limit` | number | Number of items per page (capped by `maxLimit`) |
 | `cursor` | string | Opaque cursor from previous response |
-| `orderBy` | string | Sort order (e.g., `name:asc,createdAt:desc`) |
+| `orderBy` | string | Sort order, e.g. `name:asc,createdAt:desc` or the `-field` shorthand `-createdAt` |
 | `totalCount` | boolean | Include total count in response |
 
 ## Response Format
@@ -69,7 +69,15 @@ await users.list({ orderBy: "createdAt:desc" });
 
 // Multiple fields
 await users.list({ orderBy: "role:asc,name:asc" });
+
+// The "-field" (JSON:API) convention is also supported for descending,
+// and may be mixed with the "field:dir" form across fields:
+await users.list({ orderBy: "-createdAt" });          // same as "createdAt:desc"
+await users.list({ orderBy: "-createdAt,name" });     // desc, then asc
 ```
+
+> Combining both syntaxes on the **same** field (e.g. `-name:desc`) is a conflict
+> and returns a `400` — pick one form per field.
 
 **Note:** Cursor-based pagination requires consistent ordering. The primary key is always included as the final sort criterion for stable pagination.
 

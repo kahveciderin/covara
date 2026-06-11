@@ -24,7 +24,7 @@ Defaults (each header is only set if not already present on the response):
 
 | Header | Default |
 |--------|---------|
-| `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'` |
+| `Content-Security-Policy` | **off** (opt-in — see below) |
 | `X-Content-Type-Options` | `nosniff` |
 | `X-Frame-Options` | `DENY` |
 | `Referrer-Policy` | `strict-origin-when-cross-origin` |
@@ -35,6 +35,28 @@ Defaults (each header is only set if not already present on the response):
 HSTS is only emitted on HTTPS requests or when running in production
 (`isProduction()`), so it never appears on plain-HTTP local development. Any header can be
 disabled by setting its option to `false`.
+
+### Content-Security-Policy is opt-in
+
+CSP is **off by default** because it is application-specific: a strict policy that's correct
+for a JSON-only API will block an app that serves its own frontend (its scripts, styles, and
+images). Enable it by passing a policy string:
+
+```typescript
+import { createSecurityHeaders, STRICT_API_CSP } from "covara";
+
+// Pure JSON API — lock everything down:
+createSecurityHeaders({ contentSecurityPolicy: STRICT_API_CSP });
+// → "default-src 'none'; frame-ancestors 'none'"
+
+// App that serves a frontend — allow same-origin assets (tune to your build):
+createSecurityHeaders({ contentSecurityPolicy: "default-src 'self'" });
+```
+
+`createCovara` mounts security headers automatically (configurable via the `securityHeaders`
+option), so anti-clickjacking (`X-Frame-Options: DENY`), MIME-sniffing protection, and the
+other headers are always on — only the CSP requires you to choose a policy. The built-in
+admin UI sets its own self-only CSP regardless.
 
 ## Structured Logging
 

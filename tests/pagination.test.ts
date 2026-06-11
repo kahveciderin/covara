@@ -84,6 +84,36 @@ describe("Pagination", () => {
       expect(parseOrderBy(undefined)).toEqual([]);
       expect(parseOrderBy("")).toEqual([]);
     });
+
+    it("should support the leading '-' descending convention", () => {
+      expect(parseOrderBy("-name")).toEqual([{ field: "name", direction: "desc" }]);
+      expect(parseOrderBy("+name")).toEqual([{ field: "name", direction: "asc" }]);
+    });
+
+    it("should mix '-field' and 'field:dir' syntaxes across fields", () => {
+      expect(parseOrderBy("-createdAt,name:asc,age")).toEqual([
+        { field: "createdAt", direction: "desc" },
+        { field: "name", direction: "asc" },
+        { field: "age", direction: "asc" },
+      ]);
+    });
+
+    it("should error when both syntaxes target the same field", () => {
+      expect(() => parseOrderBy("-name:desc")).toThrow(/Conflicting sort direction/);
+      expect(() => parseOrderBy("-name:asc")).toThrow(/Conflicting sort direction/);
+      expect(() => parseOrderBy("+age:desc")).toThrow(/Conflicting sort direction/);
+    });
+
+    it("should error on an invalid direction suffix", () => {
+      expect(() => parseOrderBy("name:sideways")).toThrow(/Invalid sort direction/);
+    });
+
+    it("should tolerate whitespace and empty segments", () => {
+      expect(parseOrderBy(" -name , , age:desc ")).toEqual([
+        { field: "name", direction: "desc" },
+        { field: "age", direction: "desc" },
+      ]);
+    });
   });
 
   describe("extractCursorValues", () => {

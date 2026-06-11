@@ -16,6 +16,9 @@ import { createDataExplorerRoutes, DataExplorerConfig } from "./data-explorer";
 import { createTaskMonitorRoutes, TaskMonitorConfig } from "./task-monitor";
 import { createKVInspectorRoutes, KVInspectorConfig } from "./kv-inspector";
 import { layout } from "./html/layout";
+import { runtimeScript } from "./html/client/runtime";
+import { dataExplorerScript } from "./html/client/data-explorer-app";
+import { htmxScript } from "./html/client/htmx-vendor";
 import * as pages from "./html/pages";
 import { html, escapeHtml } from "./html/utils";
 import { emptyState } from "./html/components";
@@ -102,6 +105,28 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   if (config.security?.auditSink) {
     setAdminAuditSink(config.security.auditSink);
   }
+
+  // The admin UI is a self-contained HTML app that loads its own (locally
+  // served) scripts/styles and uses inline handlers. It serves no external
+  // assets, so a self-only CSP is sufficient — and it must be set here so it
+  // overrides the framework's strict API CSP (default-src 'none'), which would
+  // otherwise block the admin UI's own scripts. `createSecurityHeaders` only
+  // sets CSP when absent, so this wins for admin responses.
+  const ADMIN_CSP = [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+  router.use("*", async (c, next) => {
+    await next();
+    c.header("Content-Security-Policy", ADMIN_CSP);
+  });
 
   // Gate the entire admin surface (UI pages, partials, and JSON APIs) behind
   // the admin auth check so it cannot be reached without passing authn/authz.
@@ -572,6 +597,18 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
     }
     return c.html(layout(getLayoutProps(activePage), content));
   };
+
+  // ============================================
+  // Client runtime assets (served as JS)
+  // ============================================
+  const sendJs = (c: Context, body: string) => {
+    c.header("Content-Type", "application/javascript; charset=utf-8");
+    c.header("Cache-Control", "no-cache");
+    return c.body(body);
+  };
+  router.get("/ui/htmx.js", (c) => sendJs(c, htmxScript));
+  router.get("/ui/covara-runtime.js", (c) => sendJs(c, runtimeScript));
+  router.get("/ui/data-explorer-app.js", (c) => sendJs(c, dataExplorerScript));
 
   // ============================================
   // HTMX UI Routes - Full Page Renders

@@ -10,6 +10,11 @@ export interface HSTSOptions {
 }
 
 export interface SecurityHeadersOptions {
+  // Content-Security-Policy. CSP is application-specific (a strict policy that
+  // is right for a pure JSON API will block an app that serves its own
+  // frontend), so it is OFF BY DEFAULT — set this to a policy string to enable
+  // it. For a pure API, `STRICT_API_CSP` is a good starting point. Set to
+  // `false` to explicitly disable (same as the default).
   contentSecurityPolicy?: string | false;
   contentTypeOptions?: boolean;
   frameOptions?: FrameOption | false;
@@ -19,7 +24,9 @@ export interface SecurityHeadersOptions {
   hsts?: HSTSOptions | false;
 }
 
-const DEFAULT_CSP = "default-src 'none'; frame-ancestors 'none'";
+// A locked-down CSP suitable for a JSON-only API (blocks all resource loading
+// and framing). Opt in via `securityHeaders: { contentSecurityPolicy: STRICT_API_CSP }`.
+export const STRICT_API_CSP = "default-src 'none'; frame-ancestors 'none'";
 const DEFAULT_REFERRER_POLICY = "strict-origin-when-cross-origin";
 const DEFAULT_DNS_PREFETCH_CONTROL = "off";
 const DEFAULT_COOP = "same-origin";
@@ -46,7 +53,7 @@ export const createSecurityHeaders = (
   options: SecurityHeadersOptions = {}
 ): MiddlewareHandler => {
   const {
-    contentSecurityPolicy = DEFAULT_CSP,
+    contentSecurityPolicy,
     contentTypeOptions = true,
     frameOptions = "DENY",
     referrerPolicy = DEFAULT_REFERRER_POLICY,
@@ -80,7 +87,8 @@ export const createSecurityHeaders = (
     if (crossOriginOpenerPolicy !== false) {
       setIfAbsent("Cross-Origin-Opener-Policy", crossOriginOpenerPolicy);
     }
-    if (contentSecurityPolicy !== false) {
+    // Only emit a CSP when one is explicitly configured — see the option doc.
+    if (contentSecurityPolicy) {
       setIfAbsent("Content-Security-Policy", contentSecurityPolicy);
     }
 

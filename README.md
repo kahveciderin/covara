@@ -72,7 +72,7 @@ function TodoList() {
 - **API Keys** - Standalone helpers to create, verify, rotate, and revoke hashed API keys
 - **Password Hashing & Policy** - Built-in scrypt `hashPassword`/`verifyPassword`/`needsRehash` (Workers-safe) plus an enforceable password policy
 - **Account Security** - Opt-in CSRF protection, login throttling, email verification, password reset
-- **Security Headers** - CSP, HSTS, `X-Frame-Options`, and more, auto-mounted by `createCovara`
+- **Security Headers** - HSTS, `X-Frame-Options`, MIME-sniffing protection, and more, auto-mounted by `createCovara`; opt-in CSP (so it never blocks your frontend)
 - **Authorization Scopes** - Row-level security with RSQL expressions, enforced across reads, writes, subscriptions, and search
 - **Field-level Read Masking** - `fields.readable` allowlist strips non-readable columns from every response and subscription event (cannot be bypassed via `?select=`)
 

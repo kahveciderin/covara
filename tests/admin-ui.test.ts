@@ -106,6 +106,79 @@ describe("Admin UI Tests", () => {
       expect(res.body).toContain("<!DOCTYPE html>");
     });
 
+    it("should mount the client-side data explorer app", async () => {
+      const res = await get(app, "/__covara/ui/data-explorer");
+      expect(res.body).toContain('id="dx-root"');
+      expect(res.body).toContain("/__covara/ui/data-explorer-app.js");
+    });
+
+    it("should inject the command palette + runtime into the layout", async () => {
+      const res = await get(app, "/__covara/ui");
+      expect(res.body).toContain("window.__COVARA__");
+      expect(res.body).toContain("/__covara/ui/covara-runtime.js");
+      expect(res.body).toContain("cmdk-trigger");
+    });
+
+    it("renders nav icons as inline SVG (not font-dependent glyphs)", async () => {
+      const res = await get(app, "/__covara/ui");
+      // Each nav item's icon is an inline <svg class="ico">; the old Unicode
+      // glyphs (e.g. ▦ ⛁ ⌛) must be gone.
+      expect(res.body).toContain('<svg class="ico"');
+      expect(res.body).toContain('class="nav-icon"');
+      for (const glyph of ["▦", "⛁", "⌛", "☷", "⚿", "⇄"]) {
+        expect(res.body).not.toContain(glyph);
+      }
+    });
+
+    it("should serve the runtime JS asset as JavaScript", async () => {
+      const res = await get(app, "/__covara/ui/covara-runtime.js");
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/javascript");
+      expect(res.body).toContain("openPalette");
+      expect(res.body).toContain("window.Covara");
+    });
+
+    it("should serve the data explorer app JS asset", async () => {
+      const res = await get(app, "/__covara/ui/data-explorer-app.js");
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/javascript");
+      expect(res.body).toContain("dx-root");
+      expect(res.body).toContain("/api/explorer");
+    });
+
+    it("makes no external requests (no CDN hosts in the page)", async () => {
+      const res = await get(app, "/__covara/ui");
+      expect(res.body).not.toContain("unpkg.com");
+      expect(res.body).not.toContain("rsms.me");
+      expect(res.body).not.toContain("https://");
+      expect(res.body).toContain("/__covara/ui/htmx.js");
+    });
+
+    it("serves htmx locally", async () => {
+      const res = await get(app, "/__covara/ui/htmx.js");
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/javascript");
+      expect(res.body).toContain("htmx");
+    });
+
+    it("sends a self-only CSP for the admin UI (overriding the strict API CSP)", async () => {
+      const res = await get(app, "/__covara/ui");
+      const csp = res.headers.get("content-security-policy") || "";
+      expect(csp).toContain("default-src 'self'");
+      expect(csp).not.toContain("default-src 'none'");
+      expect(csp).toContain("script-src 'self'");
+    });
+
+    it("data explorer app ships the advanced tooling features", async () => {
+      const res = await get(app, "/__covara/ui/data-explorer-app.js");
+      const js = res.body as string;
+      // selection + bulk delete, quick search, column menu, saved views,
+      // export, inline editing, density.
+      for (const marker of ["bulkDelete", "exportCSV", "exportJSON", "columnsMenu", "viewsMenu", "editCell", "dx-search", "compact"]) {
+        expect(js).toContain(marker);
+      }
+    });
+
     it("should serve requests page", async () => {
       const res = await get(app, "/__covara/ui/requests");
       expect(res.status).toBe(200);

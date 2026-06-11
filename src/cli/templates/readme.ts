@@ -11,7 +11,7 @@ const renderNodeReadme = (options: ScaffoldOptions): string => {
 
   return `# ${options.name}
 
-A real-time resource API built with [Covara](https://github.com/covara/covara) on Hono.
+A real-time resource API built with [Covara](https://github.com/kahveciderin/covara) on Hono.
 
 ## Setup
 
@@ -77,7 +77,7 @@ For production, consider [Cloudflare Hyperdrive](https://developers.cloudflare.c
 
   return `# ${options.name}
 
-A real-time resource API built with [Covara](https://github.com/covara/covara) on Hono, deployed to Cloudflare Workers.
+A real-time resource API built with [Covara](https://github.com/kahveciderin/covara) on Hono, deployed to Cloudflare Workers.
 
 ## Setup
 

@@ -1,6 +1,7 @@
 import { html, escapeHtml } from './utils';
 import { styles } from './styles';
 import { envBadge } from './components';
+import { icon } from './icons';
 
 export interface NavItem {
   id: string;
@@ -18,35 +19,35 @@ export const navigation: NavSection[] = [
   {
     title: 'Overview',
     items: [
-      { id: 'dashboard', icon: '\u25A6', label: 'Dashboard', href: '/__covara/ui' },
-      { id: 'resources', icon: '\u25A3', label: 'Resources', href: '/__covara/ui/resources' },
-      { id: 'requests', icon: '\u2192', label: 'Requests', href: '/__covara/ui/requests' },
-      { id: 'errors', icon: '\u26A0', label: 'Errors', href: '/__covara/ui/errors' },
+      { id: 'dashboard', icon: 'dashboard', label: 'Dashboard', href: '/__covara/ui' },
+      { id: 'resources', icon: 'resources', label: 'Resources', href: '/__covara/ui/resources' },
+      { id: 'requests', icon: 'requests', label: 'Requests', href: '/__covara/ui/requests' },
+      { id: 'errors', icon: 'errors', label: 'Errors', href: '/__covara/ui/errors' },
     ],
   },
   {
     title: 'Data',
     items: [
-      { id: 'data-explorer', icon: '\u2637', label: 'Data Explorer', href: '/__covara/ui/data-explorer' },
-      { id: 'admin-audit', icon: '\u2611', label: 'Admin Audit', href: '/__covara/ui/admin-audit' },
+      { id: 'data-explorer', icon: 'data', label: 'Data Explorer', href: '/__covara/ui/data-explorer' },
+      { id: 'admin-audit', icon: 'audit', label: 'Admin Audit', href: '/__covara/ui/admin-audit' },
     ],
   },
   {
     title: 'Tools',
     items: [
-      { id: 'filter-tester', icon: '\u29D6', label: 'Filter Tester', href: '/__covara/ui/filter-tester' },
-      { id: 'subscriptions', icon: '\u21C4', label: 'Subscriptions', href: '/__covara/ui/subscriptions' },
-      { id: 'changelog', icon: '\u2630', label: 'Changelog', href: '/__covara/ui/changelog' },
-      { id: 'api-explorer', icon: '\u2318', label: 'API Explorer', href: '/__covara/ui/api-explorer' },
+      { id: 'filter-tester', icon: 'filter', label: 'Filter Tester', href: '/__covara/ui/filter-tester' },
+      { id: 'subscriptions', icon: 'subscriptions', label: 'Subscriptions', href: '/__covara/ui/subscriptions' },
+      { id: 'changelog', icon: 'changelog', label: 'Changelog', href: '/__covara/ui/changelog' },
+      { id: 'api-explorer', icon: 'api', label: 'API Explorer', href: '/__covara/ui/api-explorer' },
     ],
   },
   {
     title: 'System',
     items: [
-      { id: 'users', icon: '\u263A', label: 'Users', href: '/__covara/ui/users' },
-      { id: 'sessions', icon: '\u26BF', label: 'Sessions', href: '/__covara/ui/sessions' },
-      { id: 'tasks', icon: '\u231B', label: 'Task Queue', href: '/__covara/ui/tasks' },
-      { id: 'kv-inspector', icon: '\u26C1', label: 'KV Inspector', href: '/__covara/ui/kv-inspector' },
+      { id: 'users', icon: 'users', label: 'Users', href: '/__covara/ui/users' },
+      { id: 'sessions', icon: 'sessions', label: 'Sessions', href: '/__covara/ui/sessions' },
+      { id: 'tasks', icon: 'tasks', label: 'Task Queue', href: '/__covara/ui/tasks' },
+      { id: 'kv-inspector', icon: 'kv', label: 'KV Inspector', href: '/__covara/ui/kv-inspector' },
     ],
   },
 ];
@@ -64,8 +65,20 @@ export const layout = (props: LayoutProps, content: string): string => html`
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(props.title)} - Covara Admin</title>
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="/__covara/ui/htmx.js"></script>
   <style>${styles}</style>
+  <script>
+    window.__COVARA__ = {
+      basePath: '/__covara',
+      nav: ${JSON.stringify(
+        navigation.map((s) => ({
+          title: s.title,
+          items: s.items.map((i) => ({ icon: icon(i.icon), label: i.label, href: i.href })),
+        }))
+      )}
+    };
+  </script>
+  <script src="/__covara/ui/covara-runtime.js" defer></script>
   <script>
     // Theme handling
     const theme = localStorage.getItem('covara-theme') || 'light';
@@ -147,7 +160,7 @@ export const layout = (props: LayoutProps, content: string): string => html`
                  hx-target="#content"
                  hx-push-url="true"
                  hx-swap="innerHTML">
-                <span class="nav-icon">${item.icon}</span>
+                <span class="nav-icon">${icon(item.icon)}</span>
                 <span>${escapeHtml(item.label)}</span>
               </a>
             `).join('')}
@@ -159,7 +172,12 @@ export const layout = (props: LayoutProps, content: string): string => html`
     <main class="main">
       <header class="header">
         <div class="header-left">
-          <span style="color: var(--text-2);">Admin Dashboard</span>
+          <button class="cmdk-trigger" onclick="window.Covara && Covara.openPalette()">
+            <span class="row">${icon('search')}</span>
+            <span>Search or jump to…</span>
+            <span class="spacer"></span>
+            <kbd>⌘K</kbd>
+          </button>
         </div>
         <div class="header-right">
           <button id="theme-toggle" class="btn btn-ghost btn-icon" onclick="toggleTheme()">

@@ -72,6 +72,9 @@ importers:
       fast-check:
         specifier: ^4.5.3
         version: 4.5.3
+      htmx.org:
+        specifier: 2.0.4
+        version: 2.0.4
       prettier:
         specifier: ^3.8.0
         version: 3.8.0
@@ -1565,6 +1568,9 @@ packages:
   hpagent@1.2.0:
     resolution: {integrity: sha512-A91dYTeIB6NoXG+PxTQpCCDDnfHsW9kc06Lvpu1TEe9gnd6ZFeiBoRO9JvzEv6xK7EX97/dUE8g/vBMTqTS3CA==}
     engines: {node: '>=14'}
+
+  htmx.org@2.0.4:
+    resolution: {integrity: sha512-HLxMCdfXDOJirs3vBZl/ZLoY+c7PfM4Ahr2Ad4YXh6d22T5ltbTXFFkpx9Tgb2vvmWFMbIc3LqN2ToNkZJvyYQ==}
 
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
@@ -3348,6 +3354,8 @@ snapshots:
   hono@4.12.25: {}
 
   hpagent@1.2.0: {}
+
+  htmx.org@2.0.4: {}
 
   ieee754@1.2.1: {}
 
