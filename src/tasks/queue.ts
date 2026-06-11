@@ -7,7 +7,7 @@ const PRIORITY_BUCKETS = [0, 25, 50, 75, 100];
 
 const getQueueKey = (priority: number): string => {
   const bucket = PRIORITY_BUCKETS.find((b) => priority <= b) ?? 100;
-  return `concave:tasks:queue:${bucket}`;
+  return `covara:tasks:queue:${bucket}`;
 };
 
 export interface TaskQueue {
@@ -39,7 +39,7 @@ export const createTaskQueue = (kv: KVAdapter): TaskQueue => {
       const now = Date.now();
 
       for (const bucket of PRIORITY_BUCKETS) {
-        const queueKey = `concave:tasks:queue:${bucket}`;
+        const queueKey = `covara:tasks:queue:${bucket}`;
 
         const taskIds = await kv.zrangebyscore(queueKey, "-inf", now, {
           limit: { offset: 0, count: 10 },
@@ -86,7 +86,7 @@ export const createTaskQueue = (kv: KVAdapter): TaskQueue => {
       }
       let total = 0;
       for (const bucket of PRIORITY_BUCKETS) {
-        total += await kv.zcard(`concave:tasks:queue:${bucket}`);
+        total += await kv.zcard(`covara:tasks:queue:${bucket}`);
       }
       return total;
     },
@@ -94,7 +94,7 @@ export const createTaskQueue = (kv: KVAdapter): TaskQueue => {
     async getScheduledTasks(limit: number = 100): Promise<string[]> {
       const allTasks: string[] = [];
       for (const bucket of PRIORITY_BUCKETS) {
-        const queueKey = `concave:tasks:queue:${bucket}`;
+        const queueKey = `covara:tasks:queue:${bucket}`;
         const tasks = await kv.zrange(queueKey, 0, limit - allTasks.length - 1);
         allTasks.push(...tasks);
         if (allTasks.length >= limit) break;

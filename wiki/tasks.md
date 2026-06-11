@@ -1,6 +1,6 @@
 # Background Tasks
 
-Concave provides a distributed task queue for background job processing with automatic retries, scheduling, recurring tasks, and dead letter queues.
+Covara provides a distributed task queue for background job processing with automatic retries, scheduling, recurring tasks, and dead letter queues.
 
 ## Quick Start
 
@@ -11,8 +11,8 @@ import {
   getTaskScheduler,
   getTaskRegistry,
   startTaskWorkers
-} from "@kahveciderin/concave/tasks";
-import { createKV } from "@kahveciderin/concave/kv";
+} from "covara/tasks";
+import { createKV } from "covara/kv";
 
 // Initialize KV store (Redis for production, memory for dev)
 const kv = await createKV({ type: "redis", redis: { url: "redis://localhost" } });
@@ -54,7 +54,7 @@ const taskId = await getTaskScheduler().enqueue(sendEmailTask, {
 ### Basic Task
 
 ```typescript
-import { defineTask } from "@kahveciderin/concave/tasks";
+import { defineTask } from "covara/tasks";
 import { z } from "zod";
 
 const processOrderTask = defineTask({
@@ -284,7 +284,7 @@ const depth = await scheduler.getQueueDepth();
 ### Starting Workers
 
 ```typescript
-import { startTaskWorkers, createTaskWorker } from "@kahveciderin/concave/tasks";
+import { startTaskWorkers, createTaskWorker } from "covara/tasks";
 
 // Start multiple workers
 const workers = await startTaskWorkers(kv, registry, 3, {
@@ -347,8 +347,8 @@ import {
   createCloudflareQueueProducer,
   createQueueConsumer,
   getTaskRegistry,
-} from "@kahveciderin/concave/tasks";
-import { createDurableObjectKV } from "@kahveciderin/concave/kv";
+} from "covara/tasks";
+import { createDurableObjectKV } from "covara/kv";
 
 export default {
   async fetch(req, env) {
@@ -448,7 +448,7 @@ retry: {
 Tasks that exceed max attempts go to the dead letter queue:
 
 ```typescript
-import { createDeadLetterQueue } from "@kahveciderin/concave/tasks";
+import { createDeadLetterQueue } from "covara/tasks";
 
 const dlq = createDeadLetterQueue(kv, requeue);
 
@@ -515,8 +515,8 @@ const dlq = createDeadLetterQueue(kv, requeue, {
 Trigger tasks automatically when resources change:
 
 ```typescript
-import { useResource } from "@kahveciderin/concave";
-import { createTaskTriggerHooks, composeHooks } from "@kahveciderin/concave/tasks";
+import { useResource } from "covara";
+import { createTaskTriggerHooks, composeHooks } from "covara/tasks";
 
 // Define the task
 const sendWelcomeEmailTask = defineTask({
@@ -587,7 +587,7 @@ interface ResourceTaskTrigger {
 Tasks use distributed locking to prevent duplicate execution:
 
 ```typescript
-import { createTaskLock } from "@kahveciderin/concave/tasks";
+import { createTaskLock } from "covara/tasks";
 
 const lock = createTaskLock(kv);
 
@@ -660,7 +660,7 @@ await scheduler.schedule(myTask, input, {
 ## Recurring Task Management
 
 ```typescript
-import { createRecurringManager, startRecurringScheduler } from "@kahveciderin/concave/tasks";
+import { createRecurringManager, startRecurringScheduler } from "covara/tasks";
 
 const recurring = createRecurringManager(kv);
 
@@ -710,9 +710,9 @@ stop();
 ## Full Example
 
 ```typescript
-import { useResource, createConcave } from "@kahveciderin/concave";
-import { startServer } from "@kahveciderin/concave/node";
-import { createKV } from "@kahveciderin/concave/kv";
+import { useResource, createCovara } from "covara";
+import { startServer } from "covara/node";
+import { createKV } from "covara/kv";
 import {
   defineTask,
   initializeTasks,
@@ -721,10 +721,10 @@ import {
   startTaskWorkers,
   startRecurringScheduler,
   createTaskTriggerHooks,
-} from "@kahveciderin/concave/tasks";
+} from "covara/tasks";
 import { z } from "zod";
 
-const app = createConcave();
+const app = createCovara();
 
 // Initialize KV and tasks
 const kv = await createKV({ type: "redis", redis: { url: process.env.REDIS_URL } });

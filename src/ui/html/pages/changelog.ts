@@ -42,13 +42,13 @@ export const changelogPage = (data: ChangelogPageData): string => html`
     ${input({ name: 'fromSeq', placeholder: 'From seq...', type: 'number' })}
     ${button('Filter', {
       variant: 'primary',
-      hxGet: '/__concave/ui/changelog/list',
+      hxGet: '/__covara/ui/changelog/list',
       hxTarget: '#changelog-list',
       hxInclude: '[name="resource"],[name="fromSeq"]',
     })}
     ${button('Clear', {
       variant: 'secondary',
-      hxGet: '/__concave/ui/changelog/list',
+      hxGet: '/__covara/ui/changelog/list',
       hxTarget: '#changelog-list',
     })}
     <div style="flex: 1;"></div>
@@ -69,7 +69,7 @@ export const changelogList = (entries: ChangelogEntry[]): string => card({
     <div style="max-height: 600px; overflow-y: auto;">
       ${entries.map(entry => html`
         <div class="list-item" style="cursor: pointer;"
-             hx-get="/__concave/ui/changelog/${entry.seq}"
+             hx-get="/__covara/ui/changelog/${entry.seq}"
              hx-target="#changelog-detail"
              hx-swap="innerHTML">
           <div style="display: flex; align-items: center; gap: 8px; flex: 1;">
@@ -115,7 +115,7 @@ export const changelogDetail = (data: ChangelogDetailData): string => html`
       ${button('\u2715', {
         size: 'sm',
         variant: 'ghost',
-        hxGet: '/__concave/ui/empty',
+        hxGet: '/__covara/ui/empty',
         hxTarget: '#changelog-detail',
         hxSwap: 'innerHTML',
       })}

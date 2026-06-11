@@ -26,14 +26,14 @@ export const usersPage = (data: UsersPageData): string => html`
     ${input({ name: 'search', placeholder: 'Search by email or name...' })}
     ${button('Search', {
       variant: 'primary',
-      hxGet: '/__concave/ui/users/list',
+      hxGet: '/__covara/ui/users/list',
       hxTarget: '#users-list',
       hxInclude: '[name="search"]',
     })}
     <div style="flex: 1;"></div>
     ${button('+ Create User', {
       variant: 'secondary',
-      hxGet: '/__concave/ui/users/new',
+      hxGet: '/__covara/ui/users/new',
       hxTarget: '#modal-container',
     })}
     ${badge(data.totalCount + ' total', 'neutral')}
@@ -94,7 +94,7 @@ export const usersList = (users: UserInfo[]): string => card({
                 ${button('View', {
                   size: 'sm',
                   variant: 'secondary',
-                  hxGet: '/__concave/ui/users/' + user.id,
+                  hxGet: '/__covara/ui/users/' + user.id,
                   hxTarget: '#user-detail',
                   hxSwap: 'innerHTML',
                 })}
@@ -123,10 +123,10 @@ export const userForm = (): string => html`
         <span class="modal-title">Create User</span>
         ${button('\u00D7', { size: 'sm', variant: 'ghost', class: 'modal-close' })}
       </div>
-      <form hx-post="/__concave/api/users"
+      <form hx-post="/__covara/api/users"
             hx-target="#users-list"
             hx-swap="innerHTML"
-            hx-on::after-request="if(event.detail.successful) { document.querySelector('.modal-backdrop')?.remove(); showToast('User created'); htmx.ajax('GET', '/__concave/ui/users/list', {target: '#users-list'}); }">
+            hx-on::after-request="if(event.detail.successful) { document.querySelector('.modal-backdrop')?.remove(); showToast('User created'); htmx.ajax('GET', '/__covara/ui/users/list', {target: '#users-list'}); }">
         <div class="modal-body">
           <div class="form-group">
             <label class="form-label">Email *</label>
@@ -163,7 +163,7 @@ export const userDetail = (data: UserDetailData): string => html`
       ${button('\u2715', {
         size: 'sm',
         variant: 'ghost',
-        hxGet: '/__concave/ui/empty',
+        hxGet: '/__covara/ui/empty',
         hxTarget: '#user-detail',
         hxSwap: 'innerHTML',
       })}

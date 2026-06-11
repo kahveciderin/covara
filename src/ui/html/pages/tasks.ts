@@ -155,7 +155,7 @@ const dlqCard = (entries: DLQEntry[]): string => card({
       ${entries.length > 0 ? button('Retry All', {
         variant: 'secondary',
         size: 'sm',
-        hxPost: '/__concave/api/tasks/dlq/retry-all',
+        hxPost: '/__covara/api/tasks/dlq/retry-all',
         hxConfirm: 'Retry all ' + entries.length + ' failed tasks?',
         hxTarget: '#dlq-list',
       }) : ''}
@@ -194,14 +194,14 @@ const dlqCard = (entries: DLQEntry[]): string => card({
                     ${button('Retry', {
                       size: 'sm',
                       variant: 'primary',
-                      hxPost: '/__concave/api/tasks/dlq/' + entry.id + '/retry',
+                      hxPost: '/__covara/api/tasks/dlq/' + entry.id + '/retry',
                       hxTarget: 'closest tr',
                       hxSwap: 'outerHTML',
                     })}
                     ${button('Details', {
                       size: 'sm',
                       variant: 'secondary',
-                      hxGet: '/__concave/ui/tasks/dlq/' + entry.id,
+                      hxGet: '/__covara/ui/tasks/dlq/' + entry.id,
                       hxTarget: '#dlq-detail',
                       hxSwap: 'innerHTML',
                     })}
@@ -209,7 +209,7 @@ const dlqCard = (entries: DLQEntry[]): string => card({
                       size: 'sm',
                       variant: 'ghost',
                       class: 'btn-danger',
-                      hxDelete: '/__concave/api/tasks/dlq/' + entry.id,
+                      hxDelete: '/__covara/api/tasks/dlq/' + entry.id,
                       hxConfirm: 'Remove from DLQ? This cannot be undone.',
                       hxTarget: 'closest tr',
                       hxSwap: 'outerHTML',
@@ -239,7 +239,7 @@ export const dlqDetail = (data: DLQDetailData): string => html`
       ${button('\u2715', {
         size: 'sm',
         variant: 'ghost',
-        hxGet: '/__concave/ui/empty',
+        hxGet: '/__covara/ui/empty',
         hxTarget: '#dlq-detail',
         hxSwap: 'innerHTML',
       })}

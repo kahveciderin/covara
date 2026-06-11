@@ -397,11 +397,11 @@ describe("Recurring Tasks", () => {
       });
 
       it("should clean up orphaned schedules", async () => {
-        await kv.zadd("concave:tasks:recurring", Date.now() - 1000, "orphan-id");
+        await kv.zadd("covara:tasks:recurring", Date.now() - 1000, "orphan-id");
 
         await manager.tick(async () => "task-id");
 
-        const score = await kv.zscore("concave:tasks:recurring", "orphan-id");
+        const score = await kv.zscore("covara:tasks:recurring", "orphan-id");
         expect(score).toBeNull();
       });
     });

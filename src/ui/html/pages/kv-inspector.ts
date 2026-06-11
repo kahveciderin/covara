@@ -29,13 +29,13 @@ export const kvInspectorPage = (data: KVInspectorPageData): string => {
     ${toolbar(html`
       ${input({
         name: 'pattern',
-        placeholder: 'Key pattern: concave:*',
+        placeholder: 'Key pattern: covara:*',
         mono: true,
         class: 'pattern-input',
       })}
       ${button('Search', {
         variant: 'primary',
-        hxGet: '/__concave/ui/kv/keys',
+        hxGet: '/__covara/ui/kv/keys',
         hxTarget: '#kv-content',
         hxInclude: '[name="pattern"]',
       })}
@@ -51,7 +51,7 @@ export const kvInspectorPage = (data: KVInspectorPageData): string => {
     <script>
       document.querySelector('.pattern-input')?.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') {
-          htmx.ajax('GET', '/__concave/ui/kv/keys?pattern=' + encodeURIComponent(e.target.value), {
+          htmx.ajax('GET', '/__covara/ui/kv/keys?pattern=' + encodeURIComponent(e.target.value), {
             target: '#kv-content',
             swap: 'innerHTML'
           });
@@ -77,7 +77,7 @@ export const kvKeysList = (data: KVKeysData): string => html`
         <div style="max-height: 500px; overflow-y: auto;">
           ${data.keys.map(key => html`
             <div class="list-item" style="cursor: pointer;"
-                 hx-get="/__concave/ui/kv/value/${encodeURIComponent(key)}"
+                 hx-get="/__covara/ui/kv/value/${encodeURIComponent(key)}"
                  hx-target="#kv-value"
                  hx-swap="innerHTML">
               <span class="code-inline" style="word-break: break-all;">${escapeHtml(key)}</span>
@@ -87,7 +87,7 @@ export const kvKeysList = (data: KVKeysData): string => html`
                     size: 'sm',
                     variant: 'ghost',
                     class: 'btn-danger',
-                    hxDelete: '/__concave/api/kv/key/' + encodeURIComponent(key),
+                    hxDelete: '/__covara/api/kv/key/' + encodeURIComponent(key),
                     hxConfirm: 'Delete key: ' + key + '?',
                     hxTarget: 'closest .list-item',
                     hxSwap: 'outerHTML',
@@ -122,7 +122,7 @@ export const kvValueView = (data: KVValueData): string => card({
       ${button('\u2715', {
         size: 'sm',
         variant: 'ghost',
-        hxGet: '/__concave/ui/empty',
+        hxGet: '/__covara/ui/empty',
         hxTarget: '#kv-value',
         hxSwap: 'innerHTML',
       })}
@@ -135,7 +135,7 @@ export const kvValueView = (data: KVValueData): string => card({
 
   ${!data.readOnly && data.type === 'string' ? html`
     <div style="margin-top: 16px;">
-      <form hx-put="/__concave/api/kv/key/${encodeURIComponent(data.key)}"
+      <form hx-put="/__covara/api/kv/key/${encodeURIComponent(data.key)}"
             hx-target="#kv-value"
             hx-swap="innerHTML"
             hx-on::after-request="if(event.detail.successful) showToast('Value updated');">

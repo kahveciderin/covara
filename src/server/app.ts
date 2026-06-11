@@ -7,35 +7,35 @@ import { useResource } from "@/resource/hook";
 import type { ResourceConfig } from "@/resource/types";
 import { createHealthEndpoints, type HealthConfig } from "@/health";
 import { createAdminUI, type AdminUIConfig } from "@/ui";
-import { createConcaveRouter, type ConcaveRouterConfig } from "@/openapi/schema";
+import { createCovaraRouter, type CovaraRouterConfig } from "@/openapi/schema";
 import { createSecurityHeaders, type SecurityHeadersOptions } from "@/middleware/securityHeaders";
 import { onShutdown } from "@/server/lifecycle";
 import { closeAllHandlers } from "@/resource/subscription";
 
 let sseDrainHookRegistered = false;
 
-export interface ConcaveAuthSetup {
+export interface CovaraAuthSetup {
   router: Hono;
   middleware: MiddlewareHandler;
   path?: string;
 }
 
-export interface ConcaveOptions {
+export interface CovaraOptions {
   basePath?: string;
   cors?: boolean | Parameters<typeof cors>[0];
-  auth?: ConcaveAuthSetup;
+  auth?: CovaraAuthSetup;
   middleware?: MiddlewareHandler[];
   observability?: boolean | ObservabilityConfig;
   health?: boolean | HealthConfig;
   adminUI?: boolean | AdminUIConfig;
-  openapi?: boolean | ConcaveRouterConfig;
+  openapi?: boolean | CovaraRouterConfig;
   securityHeaders?: boolean | SecurityHeadersOptions;
 }
 
-export class ConcaveApp extends Hono {
+export class CovaraApp extends Hono {
   private readonly resourceBasePath: string;
 
-  constructor(options: ConcaveOptions = {}) {
+  constructor(options: CovaraOptions = {}) {
     super();
     this.resourceBasePath = normalizeBasePath(options.basePath ?? "/api");
 
@@ -94,15 +94,15 @@ export class ConcaveApp extends Hono {
 
     if (options.adminUI) {
       this.route(
-        "/__concave",
+        "/__covara",
         createAdminUI(options.adminUI === true ? {} : options.adminUI)
       );
     }
 
     if (options.openapi !== false) {
       this.route(
-        "/__concave",
-        createConcaveRouter(
+        "/__covara",
+        createCovaraRouter(
           options.openapi === true || options.openapi === undefined
             ? {}
             : options.openapi
@@ -150,5 +150,5 @@ const normalizeBasePath = (path: string): string => {
   return withSlash.endsWith("/") ? withSlash.slice(0, -1) : withSlash;
 };
 
-export const createConcave = (options: ConcaveOptions = {}): ConcaveApp =>
-  new ConcaveApp(options);
+export const createCovara = (options: CovaraOptions = {}): CovaraApp =>
+  new CovaraApp(options);

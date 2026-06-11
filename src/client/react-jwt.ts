@@ -18,12 +18,12 @@ export const getJWTClient = (): JWTClient => {
 };
 
 export const initJWTClient = (config: JWTClientConfig): JWTClient => {
-  if (typeof globalThis !== "undefined" && (globalThis as Record<string, unknown>).__concaveJWTClient) {
-    return (globalThis as Record<string, unknown>).__concaveJWTClient as JWTClient;
+  if (typeof globalThis !== "undefined" && (globalThis as Record<string, unknown>).__covaraJWTClient) {
+    return (globalThis as Record<string, unknown>).__covaraJWTClient as JWTClient;
   }
   globalJWTClient = createJWTClient(config);
   if (typeof globalThis !== "undefined") {
-    (globalThis as Record<string, unknown>).__concaveJWTClient = globalJWTClient;
+    (globalThis as Record<string, unknown>).__covaraJWTClient = globalJWTClient;
   }
   return globalJWTClient;
 };

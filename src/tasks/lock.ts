@@ -1,6 +1,6 @@
 import { KVAdapter } from "@/kv/types";
 
-const LOCK_PREFIX = "concave:tasks:lock:";
+const LOCK_PREFIX = "covara:tasks:lock:";
 const DEFAULT_LOCK_TTL = 30;
 
 export interface TaskLock {

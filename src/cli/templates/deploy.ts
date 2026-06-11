@@ -26,12 +26,12 @@ FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
-RUN groupadd --system --gid 1001 concave && \\
-    useradd --system --uid 1001 --gid concave concave
-COPY --chown=concave:concave package.json ./
-COPY --from=deps --chown=concave:concave /app/node_modules ./node_modules
-COPY --from=build --chown=concave:concave /app/dist ./dist
-USER concave
+RUN groupadd --system --gid 1001 covara && \\
+    useradd --system --uid 1001 --gid covara covara
+COPY --chown=covara:covara package.json ./
+COPY --from=deps --chown=covara:covara /app/node_modules ./node_modules
+COPY --from=build --chown=covara:covara /app/dist ./dist
+USER covara
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \\
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
@@ -65,7 +65,7 @@ export const renderDockerCompose = (options: ScaffoldOptions): string => {
     appEnv.push(`      DB_FILE_NAME: "file:/data/dev.db"`);
   } else {
     appEnv.push(
-      `      DATABASE_URL: "postgres://concave:concave@postgres:5432/${dbName}"`
+      `      DATABASE_URL: "postgres://covara:covara@postgres:5432/${dbName}"`
     );
   }
 
@@ -92,15 +92,15 @@ export const renderDockerCompose = (options: ScaffoldOptions): string => {
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: concave
-      POSTGRES_PASSWORD: concave
+      POSTGRES_USER: covara
+      POSTGRES_PASSWORD: covara
       POSTGRES_DB: ${dbName}
     ports:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U concave -d ${dbName}"]
+      test: ["CMD-SHELL", "pg_isready -U covara -d ${dbName}"]
       interval: 5s
       timeout: 5s
       retries: 5

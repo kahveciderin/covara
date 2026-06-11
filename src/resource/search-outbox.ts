@@ -27,9 +27,9 @@ export interface SearchOutboxConfig {
   backoffBaseMs?: number;
 }
 
-const OUTBOX_HASH = "concave:search:outbox";
-const OUTBOX_PENDING = "concave:search:outbox:pending";
-const OUTBOX_DEAD = "concave:search:outbox:dead";
+const OUTBOX_HASH = "covara:search:outbox";
+const OUTBOX_PENDING = "covara:search:outbox:pending";
+const OUTBOX_DEAD = "covara:search:outbox:dead";
 const DEFAULT_MAX_ATTEMPTS = 10;
 const DEFAULT_BACKOFF_BASE_MS = 1000;
 

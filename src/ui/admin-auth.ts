@@ -185,7 +185,7 @@ export const createAdminAuthMiddleware = (
       if (!config.allowedIPs.includes(clientIP)) {
         return c.json(
           {
-            type: "/__concave/problems/forbidden",
+            type: "/__covara/problems/forbidden",
             title: "IP not allowed",
             status: 403,
             detail: "Your IP address is not in the allowed list",
@@ -204,7 +204,7 @@ export const createAdminAuthMiddleware = (
         if (entry.count >= config.rateLimit.maxRequests) {
           return c.json(
             {
-              type: "/__concave/problems/rate-limit-exceeded",
+              type: "/__covara/problems/rate-limit-exceeded",
               title: "Rate limit exceeded",
               status: 429,
               detail: "Too many admin API requests",
@@ -224,7 +224,7 @@ export const createAdminAuthMiddleware = (
     if (config.auth?.disabled) {
       if (mode !== "development") {
         console.warn(
-          "[Concave Admin] Auth is disabled in non-development mode. This is a security risk."
+          "[Covara Admin] Auth is disabled in non-development mode. This is a security risk."
         );
       }
       c.set("adminUser", {
@@ -294,7 +294,7 @@ export const createAdminAuthMiddleware = (
 
       return c.json(
         {
-          type: "/__concave/problems/unauthorized",
+          type: "/__covara/problems/unauthorized",
           title: "Unauthorized",
           status: 401,
           detail: "Admin authentication required",
@@ -309,7 +309,7 @@ export const createAdminAuthMiddleware = (
         const requiredLabel = toStringArray(requiredRole).join(", ");
         return c.json(
           {
-            type: "/__concave/problems/forbidden",
+            type: "/__covara/problems/forbidden",
             title: "Forbidden",
             status: 403,
             detail: `Required role: ${requiredLabel}`,
@@ -323,7 +323,7 @@ export const createAdminAuthMiddleware = (
       if (!adminUser.permissions.includes(config.authorization.requiredPermission)) {
         return c.json(
           {
-            type: "/__concave/problems/forbidden",
+            type: "/__covara/problems/forbidden",
             title: "Forbidden",
             status: 403,
             detail: `Required permission: ${config.authorization.requiredPermission}`,
@@ -338,7 +338,7 @@ export const createAdminAuthMiddleware = (
       if (!authorized) {
         return c.json(
           {
-            type: "/__concave/problems/forbidden",
+            type: "/__covara/problems/forbidden",
             title: "Forbidden",
             status: 403,
             detail: "Authorization check failed",
@@ -353,7 +353,7 @@ export const createAdminAuthMiddleware = (
       if (!authorized) {
         return c.json(
           {
-            type: "/__concave/problems/forbidden",
+            type: "/__covara/problems/forbidden",
             title: "Forbidden",
             status: 403,
             detail: "Authorization check failed",

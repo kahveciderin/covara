@@ -1,4 +1,4 @@
-import { createEnv, envVariable } from "@kahveciderin/concave/env";
+import { createEnv, envVariable } from "covara/env";
 import { z } from "zod";
 
 try {

@@ -2,8 +2,8 @@ import { ChangelogEntry } from "./types";
 import { getGlobalKV, hasGlobalKV, KVAdapter } from "../kv";
 
 // KV keys
-const CHANGELOG_SEQ_KEY = "concave:changelog:seq";
-const CHANGELOG_ENTRIES_KEY = "concave:changelog:entries";
+const CHANGELOG_SEQ_KEY = "covara:changelog:seq";
+const CHANGELOG_ENTRIES_KEY = "covara:changelog:entries";
 
 export interface ChangelogConfig {
   maxEntries?: number;

@@ -27,7 +27,7 @@ describe("Idempotency Replay Tests", () => {
   let kvStore: ReturnType<typeof createMemoryKV>;
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-idempotency-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-idempotency-"));
   });
 
   afterAll(() => {

@@ -9,7 +9,7 @@ import {
   createVersionChecker,
   schemaVersionMiddleware,
   formatSchemaVersionEvent,
-  CONCAVE_VERSION,
+  COVARA_VERSION,
   CURSOR_VERSION_HEADER,
   SCHEMA_VERSION_HEADER,
   VersioningConfig,
@@ -27,10 +27,10 @@ describe("Versioning Middleware", () => {
     return app;
   };
 
-  describe("CONCAVE_VERSION", () => {
+  describe("COVARA_VERSION", () => {
     it("should be a valid semver string", () => {
-      expect(CONCAVE_VERSION).toMatch(/^\d+\.\d+\.\d+/);
-      expect(CONCAVE_VERSION).toBe("1.0.0");
+      expect(COVARA_VERSION).toMatch(/^\d+\.\d+\.\d+/);
+      expect(COVARA_VERSION).toBe("1.0.0");
     });
   });
 
@@ -41,7 +41,7 @@ describe("Versioning Middleware", () => {
       const res = await app.request("/users");
 
       expect(res.status).toBe(200);
-      expect(res.headers.get("X-Concave-Version")).toBe(CONCAVE_VERSION);
+      expect(res.headers.get("X-Covara-Version")).toBe(COVARA_VERSION);
     });
 
     it("should add deprecation warning header for affected paths", async () => {
@@ -58,7 +58,7 @@ describe("Versioning Middleware", () => {
 
       const res = await app.request("/users");
 
-      expect(res.headers.get("X-Concave-Warn")).toBe("Use /v2/users instead");
+      expect(res.headers.get("X-Covara-Warn")).toBe("Use /v2/users instead");
       expect(res.headers.get("Deprecation")).toBe("2025-06-01");
       expect(res.headers.get("Sunset")).toEqual(expect.any(String));
     });
@@ -95,8 +95,8 @@ describe("Versioning Middleware", () => {
       const res = await app.request("/users");
 
       // Should only have version header, not deprecation
-      expect(res.headers.get("X-Concave-Version")).toBe(CONCAVE_VERSION);
-      expect(res.headers.get("X-Concave-Warn")).toBeNull();
+      expect(res.headers.get("X-Covara-Version")).toBe(COVARA_VERSION);
+      expect(res.headers.get("X-Covara-Warn")).toBeNull();
       expect(res.headers.get("Deprecation")).toBeNull();
       expect(res.headers.get("Sunset")).toBeNull();
     });
@@ -148,7 +148,7 @@ describe("Versioning Middleware", () => {
 
       const result = wrapWithVersion(data);
 
-      expect(result.version).toBe(CONCAVE_VERSION);
+      expect(result.version).toBe(COVARA_VERSION);
       expect(result.data).toEqual(data);
       expect(result.timestamp).toBeDefined();
     });
@@ -186,7 +186,7 @@ describe("Versioning Middleware", () => {
       const app = buildApp(createVersionChecker("1.0.0"), handler);
 
       const res = await app.request("/users", {
-        headers: { "x-concave-client-version": "2.0.0" },
+        headers: { "x-covara-client-version": "2.0.0" },
       });
 
       expect(res.status).toBe(200);
@@ -198,13 +198,13 @@ describe("Versioning Middleware", () => {
       const app = buildApp(createVersionChecker("2.0.0"), handler);
 
       const res = await app.request("/users", {
-        headers: { "x-concave-client-version": "1.0.0" },
+        headers: { "x-covara-client-version": "1.0.0" },
       });
 
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual(
         expect.objectContaining({
-          type: "/__concave/problems/unsupported-version",
+          type: "/__covara/problems/unsupported-version",
           status: 400,
         })
       );
@@ -254,8 +254,8 @@ describe("Versioning Middleware", () => {
 
   describe("Header constants", () => {
     it("should have correct header names", () => {
-      expect(CURSOR_VERSION_HEADER).toBe("X-Concave-Cursor-Version");
-      expect(SCHEMA_VERSION_HEADER).toBe("X-Concave-Schema-Version");
+      expect(CURSOR_VERSION_HEADER).toBe("X-Covara-Cursor-Version");
+      expect(SCHEMA_VERSION_HEADER).toBe("X-Covara-Schema-Version");
     });
   });
 });

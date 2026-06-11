@@ -57,7 +57,7 @@ export const dataExplorerPage = (data: DataExplorerPageData): string => html`
       <span id="search-indicator" class="htmx-indicator loading"></span>
       ${!data.readOnly ? button('+ New Record', {
         variant: 'secondary',
-        hxGet: '/__concave/ui/data/new',
+        hxGet: '/__covara/ui/data/new',
         hxTarget: '#modal-container',
       }) : ''}
     `)}
@@ -83,7 +83,7 @@ export const dataExplorerPage = (data: DataExplorerPageData): string => html`
       const filter = document.querySelector('.filter-input')?.value || '';
       const limit = document.querySelector('[name="limit"]')?.value || '50';
 
-      htmx.ajax('GET', '/__concave/ui/data/' + encodeURIComponent(resource) + '/table?limit=' + limit + (filter ? '&filter=' + encodeURIComponent(filter) : ''), {
+      htmx.ajax('GET', '/__covara/ui/data/' + encodeURIComponent(resource) + '/table?limit=' + limit + (filter ? '&filter=' + encodeURIComponent(filter) : ''), {
         target: '#data-table',
         swap: 'innerHTML'
       });
@@ -101,7 +101,7 @@ export const dataExplorerPage = (data: DataExplorerPageData): string => html`
       const filter = document.querySelector('.filter-input')?.value || '';
       const limit = document.querySelector('[name="limit"]')?.value || '50';
 
-      htmx.ajax('GET', '/__concave/ui/data/' + encodeURIComponent(resource) + '/table?limit=' + limit + (filter ? '&filter=' + encodeURIComponent(filter) : ''), {
+      htmx.ajax('GET', '/__covara/ui/data/' + encodeURIComponent(resource) + '/table?limit=' + limit + (filter ? '&filter=' + encodeURIComponent(filter) : ''), {
         target: '#data-table',
         swap: 'innerHTML'
       });
@@ -156,11 +156,11 @@ export const dataTable = (data: DataTableData): string => {
             })).concat(data.readOnly ? [] : [{ key: '_actions', label: 'Actions', sortable: false }]),
             sortKey,
             sortDir,
-            sortUrl: '/__concave/ui/data/' + resource + '/table?limit=' + data.limit + (data.filter ? '&filter=' + encodeURIComponent(data.filter) : ''),
+            sortUrl: '/__covara/ui/data/' + resource + '/table?limit=' + data.limit + (data.filter ? '&filter=' + encodeURIComponent(data.filter) : ''),
           })}
           <tbody>
             ${data.items.map((item) => html`
-              <tr hx-get="/__concave/ui/data/${resource}/row/${encodeURIComponent(String(item[data.schema.primaryKey]))}"
+              <tr hx-get="/__covara/ui/data/${resource}/row/${encodeURIComponent(String(item[data.schema.primaryKey]))}"
                   hx-target="#detail-panel"
                   hx-swap="innerHTML"
                   style="cursor: pointer;">
@@ -174,14 +174,14 @@ export const dataTable = (data: DataTableData): string => {
                     <div style="display: flex; gap: 4px;">
                       ${button('Edit', {
                         size: 'sm',
-                        hxGet: '/__concave/ui/data/' + resource + '/edit/' + encodeURIComponent(String(item[data.schema.primaryKey])),
+                        hxGet: '/__covara/ui/data/' + resource + '/edit/' + encodeURIComponent(String(item[data.schema.primaryKey])),
                         hxTarget: '#modal-container',
                       })}
                       ${button('Delete', {
                         size: 'sm',
                         variant: 'ghost',
                         class: 'btn-danger',
-                        hxDelete: '/__concave/api/explorer/data/' + resource + '/' + encodeURIComponent(String(item[data.schema.primaryKey])),
+                        hxDelete: '/__covara/api/explorer/data/' + resource + '/' + encodeURIComponent(String(item[data.schema.primaryKey])),
                         hxConfirm: 'Delete this record?',
                         hxTarget: 'closest tr',
                         hxSwap: 'outerHTML',
@@ -197,7 +197,7 @@ export const dataTable = (data: DataTableData): string => {
       ${data.hasMore ? html`
         <div style="padding: 12px; text-align: center; border-top: 1px solid var(--border);">
           ${button('Load More', {
-            hxGet: '/__concave/ui/data/' + resource + '/table?limit=' + data.limit + '&cursor=' + encodeURIComponent(data.nextCursor || '') + (data.filter ? '&filter=' + encodeURIComponent(data.filter) : '') + (data.orderBy ? '&orderBy=' + encodeURIComponent(data.orderBy) : ''),
+            hxGet: '/__covara/ui/data/' + resource + '/table?limit=' + data.limit + '&cursor=' + encodeURIComponent(data.nextCursor || '') + (data.filter ? '&filter=' + encodeURIComponent(data.filter) : '') + (data.orderBy ? '&orderBy=' + encodeURIComponent(data.orderBy) : ''),
             hxTarget: 'closest table tbody',
             hxSwap: 'beforeend',
           })}
@@ -224,7 +224,7 @@ export const recordDetail = (data: RecordDetailData): string => card({
   headerRight: button('\u2715', {
     size: 'sm',
     variant: 'ghost',
-    hxGet: '/__concave/ui/empty',
+    hxGet: '/__covara/ui/empty',
     hxTarget: '#detail-panel',
     hxSwap: 'innerHTML',
   }),
@@ -248,7 +248,7 @@ export const recordForm = (data: RecordFormData): string => {
         <span class="modal-title">${data.isEdit ? 'Edit Record' : 'Create Record'}</span>
         ${button('\u00D7', { size: 'sm', variant: 'ghost', class: 'modal-close' })}
       </div>
-      <form hx-${data.isEdit ? 'patch' : 'post'}="/__concave/api/explorer/data/${resource}${data.isEdit && data.item ? '/' + encodeURIComponent(String(data.item[data.schema.primaryKey])) : ''}"
+      <form hx-${data.isEdit ? 'patch' : 'post'}="/__covara/api/explorer/data/${resource}${data.isEdit && data.item ? '/' + encodeURIComponent(String(data.item[data.schema.primaryKey])) : ''}"
             hx-target="#data-table"
             hx-swap="innerHTML"
             hx-on::after-request="if(event.detail.successful) { document.querySelector('.modal-backdrop')?.remove(); showToast('Record ${data.isEdit ? 'updated' : 'created'}'); }">
@@ -294,7 +294,7 @@ export const resourceSelector = (data: ResourceSelectorData): string => html`
   <div style="display: flex; flex-direction: column; gap: 8px;">
     ${data.resources.map(r => html`
       <div class="list-item" style="cursor: pointer;"
-           hx-get="/__concave/ui/data/${encodeURIComponent(r.replace(/^\/+/, ''))}/table"
+           hx-get="/__covara/ui/data/${encodeURIComponent(r.replace(/^\/+/, ''))}/table"
            hx-target="#data-table"
            hx-swap="innerHTML">
         <span class="code-inline">${escapeHtml(r)}</span>

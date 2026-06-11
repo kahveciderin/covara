@@ -7,7 +7,7 @@
  * 1. DurableKVEngine - executes KV operations against Durable Object storage.
  *    Collections are stored one storage entry per member because Durable
  *    Object storage caps individual values at 128KB.
- * 2. ConcaveKVDurableObject - the Durable Object class. Users re-export it
+ * 2. CovaraKVDurableObject - the Durable Object class. Users re-export it
  *    from their worker entry and bind it in wrangler.toml. Handles batched
  *    commands over POST /batch and pub/sub over hibernating WebSockets.
  * 3. DurableObjectKVStore - the KVAdapter implementation that talks to the
@@ -722,7 +722,7 @@ const jsonResponse = (body: unknown, status: number): Response =>
     headers: { "content-type": "application/json" },
   });
 
-export class ConcaveKVDurableObject {
+export class CovaraKVDurableObject {
   private state: DurableObjectStateLike;
   private engine: DurableKVEngine;
 
@@ -879,7 +879,7 @@ export class DurableObjectKVStore implements KVAdapter {
     commands: BatchCommand[],
     stopOnError = false
   ): Promise<unknown[]> {
-    const response = await this.stub.fetch("https://concave-kv/batch", {
+    const response = await this.stub.fetch("https://covara-kv/batch", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ commands, stopOnError }),
@@ -1156,7 +1156,7 @@ export class DurableObjectKVStore implements KVAdapter {
     }
 
     const response = await this.stub.fetch(
-      `https://concave-kv/subscribe?${params.toString()}`,
+      `https://covara-kv/subscribe?${params.toString()}`,
       { headers: { Upgrade: "websocket" } }
     );
     const socket = (response as unknown as { webSocket?: WebSocketLike }).webSocket;
@@ -1330,7 +1330,7 @@ export const createDurableObjectKV = (
   namespace: DurableObjectNamespaceLike,
   options?: DurableObjectKVOptions
 ): KVAdapter => {
-  const stub = namespace.get(namespace.idFromName(options?.name ?? "concave-kv"));
+  const stub = namespace.get(namespace.idFromName(options?.name ?? "covara-kv"));
   return new DurableObjectKVStore(stub, {
     prefix: options?.prefix,
     reconnectDelay: options?.reconnectDelay,

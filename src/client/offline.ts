@@ -58,7 +58,7 @@ export class InMemoryOfflineStorage implements OfflineStorage {
 export class LocalStorageOfflineStorage implements OfflineStorage {
   private storageKey: string;
 
-  constructor(storageKey = "concave_offline_mutations") {
+  constructor(storageKey = "covara_offline_mutations") {
     this.storageKey = storageKey;
     if (typeof localStorage === "undefined") {
       console.warn(
@@ -338,7 +338,7 @@ export class OfflineManager {
     // Opt-in: only coordinate across tabs when explicitly enabled. Avoids
     // single-tab/test environments paying for (or being gated by) leader election.
     if (!setting) return;
-    const channelName = typeof setting === "string" ? setting : "concave-tab-sync";
+    const channelName = typeof setting === "string" ? setting : "covara-tab-sync";
     this.tabSync = createTabSync(channelName);
     this.tabSync.subscribe((message) => {
       if (message.kind === "id-remapped") {

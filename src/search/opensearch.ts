@@ -55,7 +55,7 @@ export const createOpenSearchAdapter = async (
     }
   }
 
-  const prefix = config.indexPrefix ?? "concave_";
+  const prefix = config.indexPrefix ?? "covara_";
   const prefixedName = (name: string) => `${prefix}${name}`;
 
   return {

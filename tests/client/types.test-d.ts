@@ -16,7 +16,7 @@ import type {
   EventMeta,
   PaginatedResponse,
   ResourceClient,
-  ConcaveClient,
+  CovaraClient,
   SubscriptionCallbacks,
   Subscription,
   LiveQueryLike,
@@ -183,10 +183,10 @@ describe("useAuth typing", () => {
   });
 });
 
-describe("ConcaveClient typing", () => {
+describe("CovaraClient typing", () => {
   it("exposes typed transport, offline, auth and jwt", () => {
     const client = createClient({ baseUrl: "http://localhost" });
-    expectTypeOf(client).toEqualTypeOf<ConcaveClient>();
+    expectTypeOf(client).toEqualTypeOf<CovaraClient>();
     expectTypeOf(client.transport).toEqualTypeOf<Transport>();
     expectTypeOf(client.offline).toEqualTypeOf<OfflineManager | undefined>();
     expectTypeOf(client.auth).toEqualTypeOf<AuthManager>();

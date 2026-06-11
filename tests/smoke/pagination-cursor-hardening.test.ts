@@ -24,7 +24,7 @@ describe("Pagination Cursor Hardening Tests", () => {
   let tempDir: string;
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-pagination-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-pagination-"));
   });
 
   afterAll(() => {

@@ -49,7 +49,7 @@ const endpointsList = (endpoints: EndpointInfo[]): string => card({
     ${endpoints.length > 0 ? html`
       ${endpoints.map((endpoint, i) => html`
         <div class="list-item" style="cursor: pointer; padding: 10px 12px;"
-             hx-get="/__concave/ui/api-explorer/endpoint/${i}"
+             hx-get="/__covara/ui/api-explorer/endpoint/${i}"
              hx-target="#endpoint-detail"
              hx-swap="innerHTML">
           <div style="display: flex; align-items: center; gap: 8px; width: 100%;">
@@ -81,7 +81,7 @@ export const endpointDetail = (data: EndpointDetailData): string => card({
     <p style="color: var(--text-2); margin-bottom: 16px;">${escapeHtml(data.endpoint.description)}</p>
   ` : ''}
 
-  <form id="api-test-form" hx-post="/__concave/ui/api-explorer/execute"
+  <form id="api-test-form" hx-post="/__covara/ui/api-explorer/execute"
         hx-target="#api-response" hx-swap="innerHTML">
     <input type="hidden" name="method" value="${data.endpoint.method}">
     <input type="hidden" name="path" value="${data.endpoint.path}">

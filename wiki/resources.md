@@ -1,11 +1,11 @@
 # Resources
 
-Resources are the core of Concave. Each resource maps to a database table and automatically generates REST endpoints.
+Resources are the core of Covara. Each resource maps to a database table and automatically generates REST endpoints.
 
 ## Basic Usage
 
 ```typescript
-import { useResource } from "@kahveciderin/concave";
+import { useResource } from "covara";
 import { postsTable } from "./db/schema";
 import { db } from "./db/db";
 
@@ -15,10 +15,10 @@ app.route("/posts", useResource(postsTable, {
 }));
 ```
 
-`useResource` returns a `Hono` router — mount it on any Hono app with `app.route(path, router)`, or use the `createConcave` factory's chainable helper:
+`useResource` returns a `Hono` router — mount it on any Hono app with `app.route(path, router)`, or use the `createCovara` factory's chainable helper:
 
 ```typescript
-const app = createConcave()
+const app = createCovara()
   .resource(postsTable, { id: postsTable.id, db })          // mounts at /api/posts
   .resource("/articles", postsTable, { id: postsTable.id, db });  // custom path
 ```

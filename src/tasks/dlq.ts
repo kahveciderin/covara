@@ -2,9 +2,9 @@ import { KVAdapter } from "@/kv/types";
 import { Task, DeadLetterEntry, DlqMetrics } from "./types";
 import { createTaskStorage } from "./storage";
 
-const DEAD_LETTER_KEY = "concave:tasks:dead";
-const DLQ_DATA_PREFIX = "concave:tasks:dead:data:";
-const DLQ_AUDIT_KEY = "concave:tasks:dead:audit";
+const DEAD_LETTER_KEY = "covara:tasks:dead";
+const DLQ_DATA_PREFIX = "covara:tasks:dead:data:";
+const DLQ_AUDIT_KEY = "covara:tasks:dead:audit";
 
 const DEFAULT_RETRY_ALL_LIMIT = 100;
 

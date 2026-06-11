@@ -1,6 +1,6 @@
 import { KVAdapter } from "@/kv/types";
 
-const COMPLETED_PREFIX = "concave:tasks:idempotency:completed:";
+const COMPLETED_PREFIX = "covara:tasks:idempotency:completed:";
 
 export const DEFAULT_IDEMPOTENCY_RETENTION_MS = 24 * 60 * 60 * 1000;
 

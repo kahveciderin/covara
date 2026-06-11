@@ -1,41 +1,41 @@
 # Deployment
 
-Concave is built on Hono, so the same app runs standalone on Node.js and on Cloudflare Workers. The fastest way to get a deployable project is the CLI:
+Covara is built on Hono, so the same app runs standalone on Node.js and on Cloudflare Workers. The fastest way to get a deployable project is the CLI:
 
 ```bash
-npx concave create my-app --template node --db sqlite
-npx concave create my-app --template cloudflare --db postgres
+npx covara create my-app --template node --db sqlite
+npx covara create my-app --template cloudflare --db postgres
 ```
 
 Generated projects are deploy-ready. Alongside your source and schema, the scaffolder
 writes:
 
 - `Dockerfile` and `docker-compose.yml` (app + Redis, plus a Postgres service when `--db postgres`) for Node deployments, with a `.dockerignore`.
-- A complete `wrangler.toml` for the Cloudflare template — `nodejs_compat`, a `[[d1_databases]]` binding, a commented `[[kv_namespaces]]` block, and the `ConcaveKVDurableObject` Durable Object binding + migration.
+- A complete `wrangler.toml` for the Cloudflare template — `nodejs_compat`, a `[[d1_databases]]` binding, a commented `[[kv_namespaces]]` block, and the `CovaraKVDurableObject` Durable Object binding + migration.
 - A GitHub Actions CI workflow (`.github/workflows/ci.yml`) that installs, lints, tests, and builds.
 - `.env.example` documenting the environment variables the app expects.
 
 Inside an existing project you can scaffold incrementally:
 
 ```bash
-npx concave generate resource invoices   # writes a Drizzle table + a registration snippet
-npx concave generate migration           # runs drizzle-kit generate (pass -- to forward args)
+npx covara generate resource invoices   # writes a Drizzle table + a registration snippet
+npx covara generate migration           # runs drizzle-kit generate (pass -- to forward args)
 ```
 
 ## Standalone Node.js
 
-Use `startServer` from `@kahveciderin/concave/node` (wraps `@hono/node-server`):
+Use `startServer` from `covara/node` (wraps `@hono/node-server`):
 
 ```typescript
 import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
-import { createConcave } from "@kahveciderin/concave";
-import { startServer } from "@kahveciderin/concave/node";
+import { createCovara } from "covara";
+import { startServer } from "covara/node";
 import { todos } from "./schema.js";
 
 const db = drizzle(createClient({ url: process.env.DB_FILE_NAME ?? "file:./dev.db" }));
 
-const app = createConcave({ cors: true }).resource(todos, {
+const app = createCovara({ cors: true }).resource(todos, {
   db,
   id: todos.id,
   auth: { public: true },
@@ -73,23 +73,23 @@ performs the same drain sequence when you call it. `/healthz` (liveness) keeps r
 
 ## Cloudflare Workers
 
-A `ConcaveApp` is a Hono app — export it as the Worker fetch handler:
+A `CovaraApp` is a Hono app — export it as the Worker fetch handler:
 
 ```typescript
 // src/worker.ts
 import { drizzle } from "drizzle-orm/d1";
-import { createConcave, type ConcaveApp } from "@kahveciderin/concave";
+import { createCovara, type CovaraApp } from "covara";
 import { todos } from "./schema";
 
 interface Env {
   DB: D1Database;
 }
 
-let app: ConcaveApp | undefined;
+let app: CovaraApp | undefined;
 
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
-    app ??= createConcave({ cors: true }).resource(todos, {
+    app ??= createCovara({ cors: true }).resource(todos, {
       db: drizzle(env.DB),
       id: todos.id,
       auth: { public: true },
@@ -103,7 +103,7 @@ If your app needs nothing from `env`, `export default app` works too — Hono ap
 
 ### wrangler.toml
 
-The `nodejs_compat` flag is required (Concave uses `node:crypto`):
+The `nodejs_compat` flag is required (Covara uses `node:crypto`):
 
 ```toml
 name = "my-app"
@@ -142,7 +142,7 @@ interface Env {
 
 const buildApp = (env: Env) => {
   const client = postgres(env.DATABASE_URL, { max: 5, fetch_types: false });
-  return createConcave({ cors: true }).resource(todos, { db: drizzle(client), id: todos.id });
+  return createCovara({ cors: true }).resource(todos, { db: drizzle(client), id: todos.id });
 };
 ```
 
@@ -159,32 +159,32 @@ wrangler secret put DATABASE_URL
 
 ### Shared State: Durable Object KV
 
-The in-memory KV store is per-isolate. On Workers, Cloudflare may run many isolates of your app at once — without a shared KV, a mutation handled by one isolate never reaches SSE subscribers connected to another, and rate limits/sessions aren't shared. Concave ships a KV adapter backed by a **Durable Object** for exactly this:
+The in-memory KV store is per-isolate. On Workers, Cloudflare may run many isolates of your app at once — without a shared KV, a mutation handled by one isolate never reaches SSE subscribers connected to another, and rate limits/sessions aren't shared. Covara ships a KV adapter backed by a **Durable Object** for exactly this:
 
 ```typescript
 // src/worker.ts
 import {
-  createConcave,
+  createCovara,
   createDurableObjectKV,
   setGlobalKV,
   initializeEventSubscription,
-  type ConcaveApp,
+  type CovaraApp,
   type DurableObjectNamespaceLike,
-} from "@kahveciderin/concave";
+} from "covara";
 
-export { ConcaveKVDurableObject } from "@kahveciderin/concave";
+export { CovaraKVDurableObject } from "covara";
 
 interface Env {
   DB: D1Database;
-  CONCAVE_KV: DurableObjectNamespaceLike;
+  COVARA_KV: DurableObjectNamespaceLike;
 }
 
-let app: ConcaveApp | undefined;
+let app: CovaraApp | undefined;
 
-const buildApp = (env: Env): ConcaveApp => {
-  setGlobalKV(createDurableObjectKV(env.CONCAVE_KV));
+const buildApp = (env: Env): CovaraApp => {
+  setGlobalKV(createDurableObjectKV(env.COVARA_KV));
   void initializeEventSubscription();
-  return createConcave().resource(/* ... */);
+  return createCovara().resource(/* ... */);
 };
 
 export default {
@@ -198,11 +198,11 @@ export default {
 ```toml
 # wrangler.toml
 [durable_objects]
-bindings = [{ name = "CONCAVE_KV", class_name = "ConcaveKVDurableObject" }]
+bindings = [{ name = "COVARA_KV", class_name = "CovaraKVDurableObject" }]
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["ConcaveKVDurableObject"]
+new_sqlite_classes = ["CovaraKVDurableObject"]
 ```
 
 How it works:
@@ -210,9 +210,9 @@ How it works:
 - All KV operations (strings, hashes, sets, lists, sorted sets, TTLs, transactions) execute inside a single Durable Object, which is single-threaded — operations are strongly consistent and a `multi()` batch is atomic with respect to other requests.
 - Collections are stored one entry per member in Durable Object storage, so they are not subject to the 128 KB single-value limit.
 - Pub/sub uses **hibernatable WebSockets**: each isolate holds one WebSocket to the Durable Object for its subscriptions, and idle connections don't accrue Durable Object duration charges. Connections reconnect automatically with backoff.
-- `createKV({ type: "durable-object", durableObject: { namespace: env.CONCAVE_KV } })` also works if you prefer the config-style factory; `createDurableObjectKV(namespace, { name?, prefix? })` is the direct form (the `name` selects which DO instance backs the store, default `"concave-kv"`).
+- `createKV({ type: "durable-object", durableObject: { namespace: env.COVARA_KV } })` also works if you prefer the config-style factory; `createDurableObjectKV(namespace, { name?, prefix? })` is the direct form (the `name` selects which DO instance backs the store, default `"covara-kv"`).
 
-Projects scaffolded with `npx concave create --template cloudflare` have all of this wired up out of the box.
+Projects scaffolded with `npx covara create --template cloudflare` have all of this wired up out of the box.
 
 #### Cross-process subscription fan-out
 
@@ -224,7 +224,7 @@ call shown above is therefore only needed when you set the global KV directly wi
 `setGlobalKV(...)` instead of going through `initializeKV`.
 
 ```typescript
-import { initializeKV } from "@kahveciderin/concave/kv";
+import { initializeKV } from "covara/kv";
 
 // Distributed store + automatic cross-process subscription fan-out, one call:
 await initializeKV({ type: "redis", redis: { url: process.env.REDIS_URL! } });
@@ -241,7 +241,7 @@ KV is per-process and must not be used when state spans instances.
 
 ### Runtime Notes
 
-- Concave never reads `process.env` directly — it uses runtime-safe helpers (`readEnv`, `isProduction`, `isDebugEnabled` from `@kahveciderin/concave`), so it works where `process` doesn't exist.
+- Covara never reads `process.env` directly — it uses runtime-safe helpers (`readEnv`, `isProduction`, `isDebugEnabled` from `covara`), so it works where `process` doesn't exist.
 - Local filesystem storage (`initializeStorage({ type: "local" })`) is Node-only; use S3-compatible storage (e.g. R2) on Workers.
 - The in-memory KV store is per-isolate on Workers; use the Durable Object KV (above) or Redis when state must be shared across instances.
 
@@ -281,7 +281,7 @@ const db = drizzle(new PGlite());
 
 ## Health Checks
 
-`createConcave` mounts `/healthz` (liveness) and `/readyz` (readiness) by default — wire these into your orchestrator (Kubernetes probes, load balancer checks). See [Admin UI](./admin-ui.md#health-endpoints) for configuration.
+`createCovara` mounts `/healthz` (liveness) and `/readyz` (readiness) by default — wire these into your orchestrator (Kubernetes probes, load balancer checks). See [Admin UI](./admin-ui.md#health-endpoints) for configuration.
 
 ## Related
 

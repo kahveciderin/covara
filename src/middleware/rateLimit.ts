@@ -3,8 +3,8 @@ import { RateLimitError } from "@/resource/error";
 import { getClientIP } from "@/server/request";
 import { getGlobalKV, hasGlobalKV } from "../kv";
 
-const RATE_LIMIT_PREFIX = "concave:ratelimit:";
-const SLIDING_WINDOW_PREFIX = "concave:ratelimit:sliding:";
+const RATE_LIMIT_PREFIX = "covara:ratelimit:";
+const SLIDING_WINDOW_PREFIX = "covara:ratelimit:sliding:";
 
 export interface RateLimitConfig {
   windowMs: number;

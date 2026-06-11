@@ -1,6 +1,6 @@
 # Error Handling
 
-Concave provides consistent error handling across both server and client with typed errors and detailed error responses.
+Covara provides consistent error handling across both server and client with typed errors and detailed error responses.
 
 ## Server-Side Errors
 
@@ -10,7 +10,7 @@ All errors follow [RFC 7807 Problem Details](https://tools.ietf.org/html/rfc7807
 
 ```json
 {
-  "type": "/__concave/problems/not-found",
+  "type": "/__covara/problems/not-found",
   "title": "Not found",
   "status": 404,
   "detail": "users with id '123' not found",
@@ -52,28 +52,28 @@ import {
   ConflictError,
   PreconditionFailedError,
   ResourceError,
-} from "@kahveciderin/concave";
+} from "covara";
 
 // Throw in hooks or procedures
 throw new NotFoundError("users", "123");
-// -> 404: { type: "/__concave/problems/not-found", title: "Not found", status: 404, detail: "users with id '123' not found", ... }
+// -> 404: { type: "/__covara/problems/not-found", title: "Not found", status: 404, detail: "users with id '123' not found", ... }
 
 throw new ValidationError("Email is required", { field: "email" });
-// -> 400: { type: "/__concave/problems/validation-error", title: "Validation error", status: 400, detail: "Email is required", ... }
+// -> 400: { type: "/__covara/problems/validation-error", title: "Validation error", status: 400, detail: "Email is required", ... }
 
 throw new ForbiddenError("Cannot delete admin users");
-// -> 403: { type: "/__concave/problems/forbidden", title: "Forbidden", status: 403, detail: "Cannot delete admin users" }
+// -> 403: { type: "/__covara/problems/forbidden", title: "Forbidden", status: 403, detail: "Cannot delete admin users" }
 ```
 
 ### Error Handlers
 
-All Concave error classes extend Hono's `HTTPException` and self-render as RFC 7807 `application/problem+json` responses — throwing them from any handler, hook, or procedure produces the correct response.
+All Covara error classes extend Hono's `HTTPException` and self-render as RFC 7807 `application/problem+json` responses — throwing them from any handler, hook, or procedure produces the correct response.
 
-When using `createConcave`, error handling is wired up automatically. With a plain Hono app, register the handlers yourself:
+When using `createCovara`, error handling is wired up automatically. With a plain Hono app, register the handlers yourself:
 
 ```typescript
 import { Hono } from "hono";
-import { errorHandler, notFoundHandler } from "@kahveciderin/concave";
+import { errorHandler, notFoundHandler } from "covara";
 
 const app = new Hono();
 app.onError(errorHandler);
@@ -101,7 +101,7 @@ Validation errors from Zod include field-level details in the `errors` array:
 
 ```json
 {
-  "type": "/__concave/problems/validation-error",
+  "type": "/__covara/problems/validation-error",
   "title": "Validation error",
   "status": 400,
   "detail": "Request validation failed",
@@ -120,7 +120,7 @@ Validation errors from Zod include field-level details in the `errors` array:
 The client throws `TransportError` for all HTTP errors:
 
 ```typescript
-import { TransportError } from "@kahveciderin/concave/client";
+import { TransportError } from "covara/client";
 
 try {
   await users.get("nonexistent");
@@ -128,7 +128,7 @@ try {
   if (error instanceof TransportError) {
     console.log(error.status);   // 404
     console.log(error.code);     // "NOT_FOUND"
-    console.log(error.type);     // "/__concave/problems/not-found"
+    console.log(error.type);     // "/__covara/problems/not-found"
     console.log(error.title);    // "Not found"
     console.log(error.detail);   // "users with id 'nonexistent' not found"
   }
@@ -200,7 +200,7 @@ async function deleteUser(id: string) {
 ### Global Error Handler
 
 ```typescript
-import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { getOrCreateClient } from "covara/client";
 
 const client = getOrCreateClient({
   baseUrl: "/api",
@@ -228,7 +228,7 @@ client.setAuthErrorHandler(() => {
 With the `useAuth` hook, auth errors are handled automatically:
 
 ```typescript
-import { useAuth, useLiveList } from "@kahveciderin/concave/client/react";
+import { useAuth, useLiveList } from "covara/client/react";
 
 function App() {
   const { user, isAuthenticated, logout } = useAuth<User>();

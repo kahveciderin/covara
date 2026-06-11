@@ -40,7 +40,7 @@ export const dashboardPage = (data: DashboardPageData): string => html`
         <div style="max-height: 400px; overflow-y: auto;">
           ${data.recentRequests.map(req => html`
             <div class="list-item" style="cursor: pointer;"
-                 hx-get="/__concave/ui/requests/${req.id}"
+                 hx-get="/__covara/ui/requests/${req.id}"
                  hx-target="#request-detail"
                  hx-swap="innerHTML">
               <div style="display: flex; align-items: center; gap: 8px; flex: 1;">

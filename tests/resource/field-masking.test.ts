@@ -24,7 +24,7 @@ describe("Field-level read masking", () => {
   let app: ReturnType<typeof createTestApp>;
 
   beforeEach(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-mask-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-mask-"));
     libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, `t-${Date.now()}.db`)}` });
     db = drizzle(libsqlClient);
     await libsqlClient.execute(`

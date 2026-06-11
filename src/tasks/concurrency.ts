@@ -1,6 +1,6 @@
 import { KVAdapter } from "@/kv/types";
 
-const RUNNING_COUNT_PREFIX = "concave:tasks:concurrency:";
+const RUNNING_COUNT_PREFIX = "covara:tasks:concurrency:";
 
 export interface ConcurrencyLimiter {
   tryReserve(taskName: string, maxConcurrency: number): Promise<boolean>;

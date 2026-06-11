@@ -24,7 +24,7 @@ export class MemoryTokenStorage implements TokenStorage {
  * or use MemoryTokenStorage for testing.
  */
 export class LocalStorageTokenStorage implements TokenStorage {
-  constructor(private prefix = "concave_jwt_") {
+  constructor(private prefix = "covara_jwt_") {
     if (typeof localStorage === "undefined") {
       console.warn(
         "LocalStorageTokenStorage: localStorage is not available. " +

@@ -1,14 +1,14 @@
 # Client Library
 
-The Concave client library provides a type-safe, real-time client for interacting with your Concave API. It includes React hooks, offline support, optimistic updates, and live subscriptions.
+The Covara client library provides a type-safe, real-time client for interacting with your Covara API. It includes React hooks, offline support, optimistic updates, and live subscriptions.
 
 ## Installation
 
 The client is included with the main package:
 
 ```typescript
-import { createClient, getOrCreateClient } from "@kahveciderin/concave/client";
-import { useLiveList, useAuth } from "@kahveciderin/concave/client/react";
+import { createClient, getOrCreateClient } from "covara/client";
+import { useLiveList, useAuth } from "covara/client/react";
 ```
 
 ## Quick Start
@@ -16,8 +16,8 @@ import { useLiveList, useAuth } from "@kahveciderin/concave/client/react";
 ### Basic Setup
 
 ```typescript
-import { getOrCreateClient } from "@kahveciderin/concave/client";
-import { useLiveList, useAuth } from "@kahveciderin/concave/client/react";
+import { getOrCreateClient } from "covara/client";
+import { useLiveList, useAuth } from "covara/client/react";
 
 // Initialize client (HMR-safe)
 const client = getOrCreateClient({
@@ -52,7 +52,7 @@ function TodoApp() {
 Creates a new client instance:
 
 ```typescript
-import { createClient } from "@kahveciderin/concave/client";
+import { createClient } from "covara/client";
 
 const client = createClient({
   baseUrl: "http://localhost:3000",
@@ -71,7 +71,7 @@ const client = createClient({
 For HMR-safe initialization in development, use `getOrCreateClient`. It returns the existing client if one was already created:
 
 ```typescript
-import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { getOrCreateClient } from "covara/client";
 
 // Safe to call multiple times - returns same instance
 const client = getOrCreateClient({
@@ -127,7 +127,7 @@ const client = createClient({
 });
 ```
 
-**Storage backends** (`@kahveciderin/concave/client`):
+**Storage backends** (`covara/client`):
 - `InMemoryOfflineStorage` — non-durable, for tests / no-DOM environments
 - `LocalStorageOfflineStorage` — browser, small queues
 - `IndexedDBOfflineStorage` — browser, larger queues (feature-detected)
@@ -158,7 +158,7 @@ API responses carry dates as ISO 8601 **strings** by default, so wire types stay
 You have two ways to get `Date` objects:
 
 ```typescript
-import { toDate, toDateOrNull } from "@kahveciderin/concave/client";
+import { toDate, toDateOrNull } from "covara/client";
 
 // 1. Convert at the point of use
 const created = toDate(todo.createdAt);          // Date
@@ -271,7 +271,7 @@ const { items, isLoading } = useLiveList<Todo>("/api/todos", { orderBy: "created
 Returns a stable `invalidate(target)` function (same semantics as `client.invalidate`).
 
 ```typescript
-import { useInvalidate } from "@kahveciderin/concave/client/react";
+import { useInvalidate } from "covara/client/react";
 
 const invalidate = useInvalidate();
 await saveSomething();
@@ -284,7 +284,7 @@ Cursor-paginated live list. Pages accumulate into `items` and the list stays
 realtime-aware (new items still arrive via the subscription).
 
 ```typescript
-import { useInfiniteList } from "@kahveciderin/concave/client/react";
+import { useInfiniteList } from "covara/client/react";
 
 const { items, fetchNextPage, hasNextPage, isFetchingNextPage } =
   useInfiniteList<Todo>("/api/todos", { limit: 20, orderBy: "createdAt:desc" });
@@ -301,7 +301,7 @@ Standalone mutation hook usable outside a list. Integrates with optimistic updat
 resource path for create/update/replace/delete dispatch, or a custom async function.
 
 ```typescript
-import { useMutation } from "@kahveciderin/concave/client/react";
+import { useMutation } from "covara/client/react";
 
 const { mutate, mutateAsync, status, error, reset } = useMutation<Todo>("/api/todos", {
   invalidates: ["/api/todos"],
@@ -468,7 +468,7 @@ const activeUsers = await users
 Instead of hand-writing RSQL strings, build them with the `q` helper — values are escaped automatically:
 
 ```typescript
-import { q } from "@kahveciderin/concave/client";
+import { q } from "covara/client";
 
 const filter = q.and(
   q.gte("age", 18),
@@ -490,7 +490,7 @@ as `f`). Field names are validated against `keyof T` and values against the fiel
 with `raw()` as an escape hatch:
 
 ```typescript
-import { f } from "@kahveciderin/concave/client";
+import { f } from "covara/client";
 
 const filter = f<Todo>().and(
   f<Todo>().eq("completed", false),  // ✓ "completed" must be a boolean field of Todo
@@ -585,7 +585,7 @@ const regularUsers = baseQuery.filter('role=="user"');
 Use projections with `useLiveList` for type-safe real-time lists:
 
 ```typescript
-import { useLiveList } from "@kahveciderin/concave/client/react";
+import { useLiveList } from "covara/client/react";
 
 function UserList() {
   // Type parameter specifies selected fields
@@ -653,7 +653,7 @@ These can be used for type-safe field references in your application.
 The primary hook for real-time lists with optimistic updates:
 
 ```typescript
-import { useLiveList } from "@kahveciderin/concave/client/react";
+import { useLiveList } from "covara/client/react";
 
 function TodoList() {
   const {
@@ -816,7 +816,7 @@ function TodoItem({ todo }) {
 Hook for authentication state management:
 
 ```typescript
-import { useAuth } from "@kahveciderin/concave/client/react";
+import { useAuth } from "covara/client/react";
 
 interface User {
   id: string;
@@ -910,7 +910,7 @@ subscription.unsubscribe();
 For non-React usage or custom integrations, use the LiveQuery store directly:
 
 ```typescript
-import { createLiveQuery, statusLabel } from "@kahveciderin/concave/client";
+import { createLiveQuery, statusLabel } from "covara/client";
 
 const todos = client.resource<Todo>("/api/todos");
 
@@ -957,7 +957,7 @@ liveQuery.destroy();
 Generate TypeScript types from your API schema:
 
 ```typescript
-import { generateTypes } from "@kahveciderin/concave/client";
+import { generateTypes } from "covara/client";
 import { writeFileSync } from "fs";
 
 async function main() {
@@ -980,7 +980,7 @@ main();
 
 ```typescript
 // scripts/typegen.ts
-import { createTypegenCLI } from "@kahveciderin/concave/client";
+import { createTypegenCLI } from "covara/client";
 
 await createTypegenCLI(process.argv.slice(2));
 ```
@@ -1018,7 +1018,7 @@ export const ResourcePaths = {
 } as const;
 
 // Typed client factory
-export function createTypedClient(baseClient): TypedConcaveClient;
+export function createTypedClient(baseClient): TypedCovaraClient;
 ```
 
 ### Typed Client Factory
@@ -1026,7 +1026,7 @@ export function createTypedClient(baseClient): TypedConcaveClient;
 The generated `createTypedClient` function creates a fully typed client with resource accessors:
 
 ```typescript
-import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { getOrCreateClient } from "covara/client";
 import { createTypedClient } from "./generated/api-types";
 
 // Create base client
@@ -1065,7 +1065,7 @@ const stats = await client.resources.users
 The typed resources work seamlessly with `useLiveList`:
 
 ```typescript
-import { useLiveList } from "@kahveciderin/concave/client/react";
+import { useLiveList } from "covara/client/react";
 import { createTypedClient } from "./generated/api-types";
 
 const client = createTypedClient(getOrCreateClient({ baseUrl: location.origin }));
@@ -1094,7 +1094,7 @@ function TodoList() {
 ## Error Handling
 
 ```typescript
-import { TransportError } from "@kahveciderin/concave/client";
+import { TransportError } from "covara/client";
 
 try {
   await todos.get("nonexistent");
@@ -1121,7 +1121,7 @@ Here's a complete example of a todo app with authentication, real-time updates, 
 
 ```typescript
 // client.ts
-import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { getOrCreateClient } from "covara/client";
 
 export const client = getOrCreateClient({
   baseUrl: location.origin,
@@ -1131,7 +1131,7 @@ export const client = getOrCreateClient({
 
 // App.tsx
 import { useEffect, useState } from "react";
-import { useAuth, useLiveList } from "@kahveciderin/concave/client/react";
+import { useAuth, useLiveList } from "covara/client/react";
 import { client } from "./client";
 
 interface User {

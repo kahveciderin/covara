@@ -1,6 +1,6 @@
 # Relations & Joins
 
-Concave supports defining relationships between resources and loading related data efficiently with batch loading to prevent N+1 queries.
+Covara supports defining relationships between resources and loading related data efficiently with batch loading to prevent N+1 queries.
 
 ## Relation Types
 
@@ -14,7 +14,7 @@ Concave supports defining relationships between resources and loading related da
 ## Defining Relations
 
 ```typescript
-import { useResource } from "@kahveciderin/concave";
+import { useResource } from "covara";
 
 app.route("/api/posts", useResource(postsTable, {
   db,
@@ -206,7 +206,7 @@ const subscription = posts.subscribe(
 
 ## Batch Loading
 
-Concave automatically batches relation loading to prevent N+1 queries:
+Covara automatically batches relation loading to prevent N+1 queries:
 
 ```typescript
 // Instead of:
@@ -215,7 +215,7 @@ Concave automatically batches relation loading to prevent N+1 queries:
 // SELECT * FROM users WHERE id = $2
 // ...
 
-// Concave executes:
+// Covara executes:
 // SELECT * FROM posts WHERE ...
 // SELECT * FROM users WHERE id IN ($1, $2, $3, ...)  (one query for all)
 ```
@@ -357,7 +357,7 @@ relation in the create body has no effect on the junction table — manage those
 ## TypeScript Types
 
 ```typescript
-import { RelationType, RelationConfig, IncludeSpec, IncludeConfig } from "@kahveciderin/concave";
+import { RelationType, RelationConfig, IncludeSpec, IncludeConfig } from "covara";
 
 // RelationType
 type RelationType = "belongsTo" | "hasOne" | "hasMany" | "manyToMany";

@@ -8,7 +8,7 @@ import type { ScaffoldOptions } from "@/cli/options";
 const tempDirs: string[] = [];
 
 const makeTempDir = (): string => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "concave-cli-test-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "covara-cli-test-"));
   tempDirs.push(dir);
   return dir;
 };
@@ -70,7 +70,7 @@ describe("scaffoldProject", () => {
       expect(pkg.type).toBe("module");
       expect(Object.keys(pkg.dependencies)).toEqual(
         expect.arrayContaining([
-          "@kahveciderin/concave",
+          "covara",
           "@libsql/client",
           "drizzle-orm",
           "hono",
@@ -98,8 +98,8 @@ describe("scaffoldProject", () => {
       const index = read(targetDir, "src/index.ts");
       expect(index).toContain('from "@libsql/client"');
       expect(index).toContain('from "drizzle-orm/libsql"');
-      expect(index).toContain("createConcave");
-      expect(index).toContain('startServer } from "@kahveciderin/concave/node"');
+      expect(index).toContain("createCovara");
+      expect(index).toContain('startServer } from "covara/node"');
       expect(index).toContain("auth: { public: true }");
       expect(index).toContain("process.env.PORT");
       expect(index).toContain("process.env.DB_FILE_NAME");
@@ -221,7 +221,7 @@ describe("scaffoldProject", () => {
         const { targetDir } = scaffold(variant);
         const pkg = readJson(targetDir, "package.json");
         expect(pkg.name).toBe(variant.name);
-        expect(pkg.dependencies["@kahveciderin/concave"]).toBeDefined();
+        expect(pkg.dependencies["covara"]).toBeDefined();
         expect(pkg.dependencies.hono).toBeDefined();
         expect(pkg.dependencies["drizzle-orm"]).toBeDefined();
         expect(pkg.dependencies.zod).toBeDefined();

@@ -1,16 +1,16 @@
 # Email
 
-Concave ships a small, provider-agnostic email layer: a unified `EmailAdapter`
+Covara ships a small, provider-agnostic email layer: a unified `EmailAdapter`
 interface, adapters for **Resend** and the **Cloudflare Email Service**, and a
 fluent **template builder** that renders responsive, client-safe HTML plus a
 plaintext fallback.
 
-Import from `@kahveciderin/concave` or the `@kahveciderin/concave/email` subpath.
+Import from `covara` or the `covara/email` subpath.
 
 ## Configure an adapter
 
 ```typescript
-import { createResendAdapter, setGlobalEmail } from "@kahveciderin/concave/email";
+import { createResendAdapter, setGlobalEmail } from "covara/email";
 
 setGlobalEmail(createResendAdapter({ apiKey: process.env.RESEND_API_KEY! }));
 ```
@@ -19,7 +19,7 @@ On Cloudflare Workers, use the Email Service binding (no API key, no network
 egress):
 
 ```typescript
-import { createCloudflareEmailAdapter, setGlobalEmail } from "@kahveciderin/concave/email";
+import { createCloudflareEmailAdapter, setGlobalEmail } from "covara/email";
 
 // `env.EMAIL` is your configured Email Service binding (wrangler.toml).
 setGlobalEmail(createCloudflareEmailAdapter({ binding: env.EMAIL, from: "noreply@acme.com" }));
@@ -28,7 +28,7 @@ setGlobalEmail(createCloudflareEmailAdapter({ binding: env.EMAIL, from: "noreply
 ## Sending
 
 ```typescript
-import { sendEmail, sendEmailBatch } from "@kahveciderin/concave/email";
+import { sendEmail, sendEmailBatch } from "covara/email";
 
 await sendEmail({
   from: "Acme <noreply@acme.com>",
@@ -53,7 +53,7 @@ await sendEmailBatch([msg1, msg2]); // uses the adapter's batch API when availab
 `{ html, text }`. All user-supplied content is HTML-escaped automatically.
 
 ```typescript
-import { createEmail, sendEmail } from "@kahveciderin/concave/email";
+import { createEmail, sendEmail } from "covara/email";
 
 const { html, text } = createEmail({ brandColor: "#4f46e5", logoUrl: "https://cdn.acme.com/logo.png" })
   .preview("Confirm your email address")

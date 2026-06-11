@@ -35,7 +35,7 @@ describe("Multi-Instance Distributed Tests", () => {
   let sharedKV: ReturnType<typeof createMemoryKV>;
 
   beforeAll(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-distributed-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-distributed-"));
     sharedKV = createMemoryKV("shared");
     await sharedKV.connect();
     setGlobalKV(sharedKV);

@@ -23,7 +23,7 @@ describe("ETag Race Condition Tests", () => {
   let tempDir: string;
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-etag-race-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-etag-race-"));
   });
 
   afterAll(() => {

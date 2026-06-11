@@ -13,8 +13,8 @@ describe("structured logger", () => {
 
   afterEach(() => {
     setLogger(originalLogger);
-    delete process.env.CONCAVE_LOG_LEVEL;
-    delete process.env.CONCAVE_DEBUG;
+    delete process.env.COVARA_LOG_LEVEL;
+    delete process.env.COVARA_DEBUG;
     vi.restoreAllMocks();
   });
 
@@ -148,26 +148,26 @@ describe("structured logger", () => {
 
   describe("resolveDefaultLevel", () => {
     beforeEach(() => {
-      delete process.env.CONCAVE_LOG_LEVEL;
-      delete process.env.CONCAVE_DEBUG;
+      delete process.env.COVARA_LOG_LEVEL;
+      delete process.env.COVARA_DEBUG;
     });
 
     it("defaults to info", () => {
       expect(resolveDefaultLevel()).toBe("info");
     });
 
-    it("honors CONCAVE_LOG_LEVEL", () => {
-      process.env.CONCAVE_LOG_LEVEL = "warn";
+    it("honors COVARA_LOG_LEVEL", () => {
+      process.env.COVARA_LOG_LEVEL = "warn";
       expect(resolveDefaultLevel()).toBe("warn");
     });
 
-    it("falls back to debug when CONCAVE_DEBUG=1", () => {
-      process.env.CONCAVE_DEBUG = "1";
+    it("falls back to debug when COVARA_DEBUG=1", () => {
+      process.env.COVARA_DEBUG = "1";
       expect(resolveDefaultLevel()).toBe("debug");
     });
 
     it("ignores invalid level values", () => {
-      process.env.CONCAVE_LOG_LEVEL = "verbose";
+      process.env.COVARA_LOG_LEVEL = "verbose";
       expect(resolveDefaultLevel()).toBe("info");
     });
   });

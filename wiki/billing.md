@@ -9,8 +9,8 @@ webhook handling with automatic credit granting, a mountable HTTP **router**, an
 a typed **client** with React hooks.
 
 All adapters are `fetch`-based with no SDK dependencies and run on Node and
-Cloudflare Workers. Import from `@kahveciderin/concave` or
-`@kahveciderin/concave/billing`.
+Cloudflare Workers. Import from `covara` or
+`covara/billing`.
 
 ## Choosing an adapter
 
@@ -20,7 +20,7 @@ import {
   createLemonSqueezyAdapter,
   createPaddleAdapter,
   createPolarAdapter,
-} from "@kahveciderin/concave/billing";
+} from "covara/billing";
 
 const adapter = createStripeAdapter({ apiKey: process.env.STRIPE_SECRET_KEY! });
 // createLemonSqueezyAdapter({ apiKey, storeId })
@@ -40,7 +40,7 @@ What `items[].priceId` means per provider:
 ## The `createBilling` facade
 
 ```typescript
-import { createBilling } from "@kahveciderin/concave/billing";
+import { createBilling } from "covara/billing";
 
 const billing = createBilling({
   adapter,
@@ -127,7 +127,7 @@ resolution with `resolveAccount: (event) => string`.
 Mount a ready-made HTTP surface for the client:
 
 ```typescript
-import { createBillingRouter } from "@kahveciderin/concave/billing";
+import { createBillingRouter } from "covara/billing";
 
 app.route(
   "/api/billing",
@@ -150,8 +150,8 @@ Endpoints (non-webhook routes require an authenticated user):
 ## Client & React
 
 ```typescript
-import { getOrCreateClient } from "@kahveciderin/concave/client";
-import { useCredits, useSubscription, useCheckout } from "@kahveciderin/concave/client/react";
+import { getOrCreateClient } from "covara/client";
+import { useCredits, useSubscription, useCheckout } from "covara/client/react";
 
 const client = getOrCreateClient({ baseUrl: location.origin, billing: { basePath: "/api/billing" } });
 

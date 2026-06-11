@@ -1,30 +1,30 @@
 # OpenAPI Generation
 
-Concave can automatically generate OpenAPI 3.0 specifications from your resource definitions.
+Covara can automatically generate OpenAPI 3.0 specifications from your resource definitions.
 
 ## Basic Usage
 
-With `createConcave`, the OpenAPI router is mounted at `/__concave` by default — resources are auto-discovered from the schema registry as you register them:
+With `createCovara`, the OpenAPI router is mounted at `/__covara` by default — resources are auto-discovered from the schema registry as you register them:
 
 ```typescript
-const app = createConcave()
+const app = createCovara()
   .resource(postsTable, { id: postsTable.id, db })
   .resource(usersTable, { id: usersTable.id, db });
 
-// GET /__concave/openapi.json   - OpenAPI 3.0 spec
-// GET /__concave/openapi.yaml   - YAML variant
-// GET /__concave/schema         - Concave schema (used by typegen)
+// GET /__covara/openapi.json   - OpenAPI 3.0 spec
+// GET /__covara/openapi.yaml   - YAML variant
+// GET /__covara/schema         - Covara schema (used by typegen)
 ```
 
-For manual setup, `createConcaveRouter` returns a Hono router:
+For manual setup, `createCovaraRouter` returns a Hono router:
 
 ```typescript
-import { createConcaveRouter } from "@kahveciderin/concave/openapi";
+import { createCovaraRouter } from "covara/openapi";
 
-app.route("/__concave", createConcaveRouter({
+app.route("/__covara", createCovaraRouter({
   title: "My API",
   version: "1.0.0",
-  description: "A Concave-powered API",
+  description: "A Covara-powered API",
   servers: [{ url: "https://api.example.com" }],
 }));
 ```
@@ -32,7 +32,7 @@ app.route("/__concave", createConcaveRouter({
 To generate a spec object programmatically:
 
 ```typescript
-import { generateOpenAPISpec, type RegisteredResource } from "@kahveciderin/concave/openapi";
+import { generateOpenAPISpec, type RegisteredResource } from "covara/openapi";
 
 const resources: RegisteredResource[] = [
   { name: "posts", path: "/api/posts", schema: postsTable },
@@ -192,7 +192,7 @@ Serve Swagger UI alongside your API by pointing it at the generated spec:
 ```typescript
 import { swaggerUI } from "@hono/swagger-ui";
 
-app.get("/docs", swaggerUI({ url: "/__concave/openapi.json" }));
+app.get("/docs", swaggerUI({ url: "/__covara/openapi.json" }));
 ```
 
 ## Related

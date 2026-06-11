@@ -193,7 +193,7 @@ describe("PostgreSQL tsvector Search Adapter", () => {
       if (!ftsSupported) return expect(skipReason).toBeTruthy();
       await seed();
       await adapter.search("items", {
-        query: "'; DROP TABLE concave_fts_items; --",
+        query: "'; DROP TABLE covara_fts_items; --",
       });
       const result = await adapter.search("items", { query: "important" });
       expect(result.total).toBe(2);

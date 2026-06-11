@@ -30,12 +30,12 @@ export const sessionsPage = (data: SessionsPageData): string => html`
     <div style="display: flex; gap: 8px;">
       ${button('+ Mint Session', {
         variant: 'secondary',
-        hxGet: '/__concave/ui/sessions/new',
+        hxGet: '/__covara/ui/sessions/new',
         hxTarget: '#modal-container',
       })}
       ${button('Refresh', {
         variant: 'secondary',
-        hxGet: '/__concave/ui/sessions/list',
+        hxGet: '/__covara/ui/sessions/list',
         hxTarget: '#sessions-list',
       })}
     </div>
@@ -101,7 +101,7 @@ export const sessionsList = (sessions: SessionInfo[]): string => card({
                   size: 'sm',
                   variant: 'secondary',
                   class: 'btn-danger',
-                  hxDelete: '/__concave/api/sessions/' + session.id,
+                  hxDelete: '/__covara/api/sessions/' + session.id,
                   hxConfirm: 'Revoke this session? The user will be logged out.',
                   hxTarget: 'closest tr',
                   hxSwap: 'outerHTML',
@@ -134,10 +134,10 @@ export const sessionForm = (data: SessionFormData): string => html`
         <span class="modal-title">Mint Session</span>
         ${button('\u00D7', { size: 'sm', variant: 'ghost', class: 'modal-close' })}
       </div>
-      <form hx-post="/__concave/api/sessions"
+      <form hx-post="/__covara/api/sessions"
             hx-target="#sessions-list"
             hx-swap="innerHTML"
-            hx-on::after-request="if(event.detail.successful) { document.querySelector('.modal-backdrop')?.remove(); showToast('Session created'); htmx.ajax('GET', '/__concave/ui/sessions/list', {target: '#sessions-list'}); }">
+            hx-on::after-request="if(event.detail.successful) { document.querySelector('.modal-backdrop')?.remove(); showToast('Session created'); htmx.ajax('GET', '/__covara/ui/sessions/list', {target: '#sessions-list'}); }">
         <div class="modal-body">
           <div class="form-group">
             <label class="form-label">User *</label>

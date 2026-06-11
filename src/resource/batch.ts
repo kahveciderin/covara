@@ -23,7 +23,7 @@ export interface ConfirmTokenPayload {
   expiresAt: number;
 }
 
-const SECRET_KEY = process.env.CONCAVE_BATCH_SECRET || randomBytes(32).toString("hex");
+const SECRET_KEY = process.env.COVARA_BATCH_SECRET || randomBytes(32).toString("hex");
 const TOKEN_EXPIRY_MS = 5 * 60 * 1000;
 
 const sign = (data: string): string => {

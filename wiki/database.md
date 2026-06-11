@@ -1,6 +1,6 @@
 # Database: internal tables, migrations, seeding & pooling
 
-Concave's auth subsystem persists state in four framework-owned tables. Historically apps had to hand-roll these; the `@kahveciderin/concave/db` subpath now provides canonical schemas, an idempotent migrator, a generic seeder, and pool-sizing guidance.
+Covara's auth subsystem persists state in four framework-owned tables. Historically apps had to hand-roll these; the `covara/db` subpath now provides canonical schemas, an idempotent migrator, a generic seeder, and pool-sizing guidance.
 
 ## Internal tables
 
@@ -46,7 +46,7 @@ Timestamps are stored as Unix-epoch integers on SQLite (`{ mode: "timestamp" }`)
 Spread the dialect-appropriate tables into your Drizzle schema so drizzle-kit and queries see them:
 
 ```typescript
-import { internalSchema } from "@kahveciderin/concave/db";
+import { internalSchema } from "covara/db";
 
 export const schema = {
   ...internalSchema("sqlite"), // or "postgresql"
@@ -61,7 +61,7 @@ Individual tables are also exported (`authSessions`, `authAccounts`, `authApiKey
 `migrateInternal(db, { dialect? })` runs `CREATE TABLE IF NOT EXISTS` (plus `CREATE INDEX IF NOT EXISTS`) for every internal table. It is idempotent and safe to call on every boot. The dialect is inferred from the Drizzle db when omitted.
 
 ```typescript
-import { autoMigrate } from "@kahveciderin/concave/db";
+import { autoMigrate } from "covara/db";
 
 await autoMigrate(db); // run once at startup
 ```
@@ -73,7 +73,7 @@ DDL is executed through the passed Drizzle db (`db.run` on libsql/D1, `db.execut
 `seed(db, { tables })` (or the `createSeed()` builder) performs insert-or-ignore (`ON CONFLICT DO NOTHING`) so dev/staging data can be applied deterministically and repeatedly:
 
 ```typescript
-import { createSeed } from "@kahveciderin/concave/db";
+import { createSeed } from "covara/db";
 
 await createSeed()
   .table(usersTable, [{ id: "1", email: "demo@example.com" }])
@@ -96,7 +96,7 @@ Use `recommendedPoolConfig(driver)` for sane defaults; tune to your origin's con
 | `hyperdrive` | 5 | Hyperdrive pools at the edge; keep the Worker-side `max` small. |
 
 ```typescript
-import { recommendedPoolConfig } from "@kahveciderin/concave/db";
+import { recommendedPoolConfig } from "covara/db";
 import postgres from "postgres";
 
 const { max, idleTimeoutMs, connectTimeoutMs } = recommendedPoolConfig("postgres-js");

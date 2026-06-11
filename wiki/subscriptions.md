@@ -1,14 +1,14 @@
 # Subscriptions
 
-Concave provides real-time subscriptions via Server-Sent Events (SSE).
+Covara provides real-time subscriptions via Server-Sent Events (SSE).
 
 ## Quick Start with React
 
 The easiest way to use subscriptions is with the `useLiveList` hook:
 
 ```typescript
-import { getOrCreateClient } from "@kahveciderin/concave/client";
-import { useLiveList } from "@kahveciderin/concave/client/react";
+import { getOrCreateClient } from "covara/client";
+import { useLiveList } from "covara/client/react";
 
 const client = getOrCreateClient({
   baseUrl: location.origin,
@@ -50,7 +50,7 @@ curl -N "http://localhost:3000/users/subscribe"
 For non-React usage or more control:
 
 ```typescript
-import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { getOrCreateClient } from "covara/client";
 
 const client = getOrCreateClient({ baseUrl: "http://localhost:3000" });
 const users = client.resource<User>("/users");
@@ -135,7 +135,7 @@ Sent when the client needs to refetch all data:
 
 ## Hybrid Subscriptions (Efficient Large Datasets)
 
-For large datasets, the default behavior of sending all existing items on connect can be inefficient. Concave supports a **hybrid approach** where you:
+For large datasets, the default behavior of sending all existing items on connect can be inefficient. Covara supports a **hybrid approach** where you:
 
 1. Fetch initial data via paginated GET
 2. Subscribe with `skipExisting=true` to receive only changes
@@ -196,7 +196,7 @@ This ensures:
 
 ## Changelog-Based Subscriptions
 
-Concave uses a changelog-based approach for reliable subscriptions:
+Covara uses a changelog-based approach for reliable subscriptions:
 
 1. Every mutation is recorded with a sequence number
 2. Clients track their last received sequence
@@ -208,7 +208,7 @@ Concave uses a changelog-based approach for reliable subscriptions:
 Mutations made via `useResource` endpoints are automatically recorded to the changelog. For custom Hono routes, wrap your database with `trackMutations` to ensure mutations are tracked:
 
 ```typescript
-import { trackMutations } from "@kahveciderin/concave";
+import { trackMutations } from "covara";
 
 const db = trackMutations(baseDb, {
   todos: { table: todosTable, id: todosTable.id },

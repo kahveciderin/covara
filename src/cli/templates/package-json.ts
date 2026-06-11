@@ -1,7 +1,7 @@
 import type { ScaffoldOptions } from "../options.js";
 
 const VERSIONS = {
-  concave: "^0.5.7",
+  covara: "^0.5.7",
   hono: "^4.12.25",
   drizzleOrm: "^0.45.1",
   zod: "^4.3.5",
@@ -18,7 +18,7 @@ const VERSIONS = {
 
 export const renderPackageJson = (options: ScaffoldOptions): string => {
   const dependencies: Record<string, string> = {
-    "@kahveciderin/concave": VERSIONS.concave,
+    "covara": VERSIONS.covara,
     "drizzle-orm": VERSIONS.drizzleOrm,
     hono: VERSIONS.hono,
     zod: VERSIONS.zod,

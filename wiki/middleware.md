@@ -1,17 +1,17 @@
 # Middleware
 
-Concave provides several Hono middleware components for observability, versioning, idempotency, and rate limiting. All of them are standard `MiddlewareHandler`s — apply them with `app.use("*", ...)` or pass them to `createConcave({ middleware: [...] })`.
+Covara provides several Hono middleware components for observability, versioning, idempotency, and rate limiting. All of them are standard `MiddlewareHandler`s — apply them with `app.use("*", ...)` or pass them to `createCovara({ middleware: [...] })`.
 
-Published package subpaths: `@kahveciderin/concave/middleware/observability`, `/middleware/rateLimit`, `/middleware/error`, and `/middleware/logging`. The versioning and idempotency middleware live at `@/middleware/versioning` and `@/middleware/idempotency` in the framework source and are not yet exposed as package subpaths.
+Published package subpaths: `covara/middleware/observability`, `/middleware/rateLimit`, `/middleware/error`, and `/middleware/logging`. The versioning and idempotency middleware live at `@/middleware/versioning` and `@/middleware/idempotency` in the framework source and are not yet exposed as package subpaths.
 
 ## Security Headers
 
-`createConcave` auto-mounts security headers on every response unless you set
+`createCovara` auto-mounts security headers on every response unless you set
 `securityHeaders: false`. Pass a `SecurityHeadersOptions` object to customize, or use the
 middleware standalone:
 
 ```typescript
-import { createSecurityHeaders } from "@kahveciderin/concave";
+import { createSecurityHeaders } from "covara";
 
 app.use("*", createSecurityHeaders({
   contentSecurityPolicy: "default-src 'self'", // string or false
@@ -38,11 +38,11 @@ disabled by setting its option to `false`.
 
 ## Structured Logging
 
-Concave logs as leveled JSON through a pluggable sink. The global logger is used by the
+Covara logs as leveled JSON through a pluggable sink. The global logger is used by the
 framework and is available to your code:
 
 ```typescript
-import { getLogger, setLogger, createLogger } from "@kahveciderin/concave";
+import { getLogger, setLogger, createLogger } from "covara";
 
 getLogger().info("server started", { port: 3000 });
 
@@ -59,7 +59,7 @@ reqLog.warn("slow query", { ms: 812 });
 ```
 
 Levels are `debug | info | warn | error`. The default level comes from
-`CONCAVE_LOG_LEVEL` (falling back to `debug` when debug mode is enabled, otherwise `info`).
+`COVARA_LOG_LEVEL` (falling back to `debug` when debug mode is enabled, otherwise `info`).
 The default sink writes one JSON object per line to the matching `console` method. Each
 record carries `level`, `time` (ISO 8601), `msg`, and any structured fields.
 
@@ -72,7 +72,7 @@ hook with span timing for each request.
 Track request metrics and performance:
 
 ```typescript
-import { observabilityMiddleware, createMetricsCollector } from "@kahveciderin/concave/middleware/observability";
+import { observabilityMiddleware, createMetricsCollector } from "covara/middleware/observability";
 
 const metrics = createMetricsCollector({ maxMetrics: 1000 });
 
@@ -93,7 +93,7 @@ const byPath = metrics.getByPath("/api/users");
 const stats = metrics.getStats();
 ```
 
-With `createConcave`, pass `observability: true` (defaults) or an `ObservabilityConfig` object.
+With `createCovara`, pass `observability: true` (defaults) or an `ObservabilityConfig` object.
 
 ### Metrics Collector API
 
@@ -113,11 +113,11 @@ With `createConcave`, pass `observability: true` (defaults) or an `Observability
 API version management with client compatibility:
 
 ```typescript
-import { versioningMiddleware, wrapWithVersion, checkMinimumVersion, CONCAVE_VERSION } from "@/middleware/versioning";
+import { versioningMiddleware, wrapWithVersion, checkMinimumVersion, COVARA_VERSION } from "@/middleware/versioning";
 
 // Add version headers to responses
 app.use("*", versioningMiddleware({
-  headerName: "X-Concave-Version",
+  headerName: "X-Covara-Version",
 }));
 
 // Wrap response data with version info
@@ -135,7 +135,7 @@ Prevent duplicate requests with idempotency keys:
 
 ```typescript
 import { idempotencyMiddleware } from "@/middleware/idempotency";
-import { createMemoryKV } from "@kahveciderin/concave/kv";
+import { createMemoryKV } from "covara/kv";
 
 app.use("*", idempotencyMiddleware({
   storage: createMemoryKV(),       // any KVAdapter (Redis in production)
@@ -158,7 +158,7 @@ looked up:
 
 - `"proceed"` (default) — logs a warning and lets the request through **without** replay protection.
   Favors availability; the operation may run more than once if the store is down.
-- `"fail"` — returns an RFC 7807 `503` (`/__concave/problems/idempotency-store-unavailable`) so the
+- `"fail"` — returns an RFC 7807 `503` (`/__covara/problems/idempotency-store-unavailable`) so the
   client retries. Favors correctness, ensuring a non-idempotent operation is never run unprotected.
 
 A failure while *caching* the response (the write after the request completes) is always logged and
@@ -208,8 +208,8 @@ See the [ETag contract](../contracts/etag.md) for the precise guarantees.
 Per-resource rate limiting:
 
 ```typescript
-import { createRateLimiter } from "@kahveciderin/concave/middleware/rateLimit";
-import { getClientIP } from "@kahveciderin/concave";
+import { createRateLimiter } from "covara/middleware/rateLimit";
+import { getClientIP } from "covara";
 
 app.use("*", createRateLimiter({
   windowMs: 60000,    // 1 minute window

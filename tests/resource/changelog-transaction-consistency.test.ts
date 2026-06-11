@@ -36,7 +36,7 @@ describe("changelog / transaction consistency", () => {
   let tempDir: string;
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-txn-consistency-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-txn-consistency-"));
   });
 
   afterAll(() => {

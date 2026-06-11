@@ -25,8 +25,8 @@ import {
   TableRegistration,
 } from "@/resource/track-mutations";
 
-const WORKERS_KEY = "concave:tasks:workers";
-const NOTIFY_CHANNEL = "concave:tasks:notify";
+const WORKERS_KEY = "covara:tasks:workers";
+const NOTIFY_CHANNEL = "covara:tasks:notify";
 
 export const DEFAULT_RESULT_TTL_MS = 24 * 60 * 60 * 1000;
 

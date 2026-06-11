@@ -23,7 +23,7 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
   let tempDir: string;
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-security-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-security-"));
   });
 
   afterAll(() => {

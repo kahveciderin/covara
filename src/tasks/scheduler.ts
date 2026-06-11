@@ -10,7 +10,7 @@ import { createTaskStorage } from "./storage";
 import { createTaskQueue } from "./queue";
 import { createRecurringManager } from "./recurring";
 
-const NOTIFY_CHANNEL = "concave:tasks:notify";
+const NOTIFY_CHANNEL = "covara:tasks:notify";
 
 export interface TaskScheduler {
   enqueue<TInput>(

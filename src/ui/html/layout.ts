@@ -18,35 +18,35 @@ export const navigation: NavSection[] = [
   {
     title: 'Overview',
     items: [
-      { id: 'dashboard', icon: '\u25A6', label: 'Dashboard', href: '/__concave/ui' },
-      { id: 'resources', icon: '\u25A3', label: 'Resources', href: '/__concave/ui/resources' },
-      { id: 'requests', icon: '\u2192', label: 'Requests', href: '/__concave/ui/requests' },
-      { id: 'errors', icon: '\u26A0', label: 'Errors', href: '/__concave/ui/errors' },
+      { id: 'dashboard', icon: '\u25A6', label: 'Dashboard', href: '/__covara/ui' },
+      { id: 'resources', icon: '\u25A3', label: 'Resources', href: '/__covara/ui/resources' },
+      { id: 'requests', icon: '\u2192', label: 'Requests', href: '/__covara/ui/requests' },
+      { id: 'errors', icon: '\u26A0', label: 'Errors', href: '/__covara/ui/errors' },
     ],
   },
   {
     title: 'Data',
     items: [
-      { id: 'data-explorer', icon: '\u2637', label: 'Data Explorer', href: '/__concave/ui/data-explorer' },
-      { id: 'admin-audit', icon: '\u2611', label: 'Admin Audit', href: '/__concave/ui/admin-audit' },
+      { id: 'data-explorer', icon: '\u2637', label: 'Data Explorer', href: '/__covara/ui/data-explorer' },
+      { id: 'admin-audit', icon: '\u2611', label: 'Admin Audit', href: '/__covara/ui/admin-audit' },
     ],
   },
   {
     title: 'Tools',
     items: [
-      { id: 'filter-tester', icon: '\u29D6', label: 'Filter Tester', href: '/__concave/ui/filter-tester' },
-      { id: 'subscriptions', icon: '\u21C4', label: 'Subscriptions', href: '/__concave/ui/subscriptions' },
-      { id: 'changelog', icon: '\u2630', label: 'Changelog', href: '/__concave/ui/changelog' },
-      { id: 'api-explorer', icon: '\u2318', label: 'API Explorer', href: '/__concave/ui/api-explorer' },
+      { id: 'filter-tester', icon: '\u29D6', label: 'Filter Tester', href: '/__covara/ui/filter-tester' },
+      { id: 'subscriptions', icon: '\u21C4', label: 'Subscriptions', href: '/__covara/ui/subscriptions' },
+      { id: 'changelog', icon: '\u2630', label: 'Changelog', href: '/__covara/ui/changelog' },
+      { id: 'api-explorer', icon: '\u2318', label: 'API Explorer', href: '/__covara/ui/api-explorer' },
     ],
   },
   {
     title: 'System',
     items: [
-      { id: 'users', icon: '\u263A', label: 'Users', href: '/__concave/ui/users' },
-      { id: 'sessions', icon: '\u26BF', label: 'Sessions', href: '/__concave/ui/sessions' },
-      { id: 'tasks', icon: '\u231B', label: 'Task Queue', href: '/__concave/ui/tasks' },
-      { id: 'kv-inspector', icon: '\u26C1', label: 'KV Inspector', href: '/__concave/ui/kv-inspector' },
+      { id: 'users', icon: '\u263A', label: 'Users', href: '/__covara/ui/users' },
+      { id: 'sessions', icon: '\u26BF', label: 'Sessions', href: '/__covara/ui/sessions' },
+      { id: 'tasks', icon: '\u231B', label: 'Task Queue', href: '/__covara/ui/tasks' },
+      { id: 'kv-inspector', icon: '\u26C1', label: 'KV Inspector', href: '/__covara/ui/kv-inspector' },
     ],
   },
 ];
@@ -63,19 +63,19 @@ export const layout = (props: LayoutProps, content: string): string => html`
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(props.title)} - Concave Admin</title>
+  <title>${escapeHtml(props.title)} - Covara Admin</title>
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <style>${styles}</style>
   <script>
     // Theme handling
-    const theme = localStorage.getItem('concave-theme') || 'light';
+    const theme = localStorage.getItem('covara-theme') || 'light';
     document.documentElement.setAttribute('data-theme', theme);
 
     function toggleTheme() {
       const current = document.documentElement.getAttribute('data-theme');
       const next = current === 'light' ? 'dark' : 'light';
       document.documentElement.setAttribute('data-theme', next);
-      localStorage.setItem('concave-theme', next);
+      localStorage.setItem('covara-theme', next);
       document.getElementById('theme-toggle').textContent = next === 'light' ? '\u263D' : '\u2600';
     }
 
@@ -122,7 +122,7 @@ export const layout = (props: LayoutProps, content: string): string => html`
         item.classList.remove('active');
         const href = item.getAttribute('href');
         // Exact match for dashboard, prefix match for others
-        if (href === path || (href !== '/__concave/ui' && path.startsWith(href))) {
+        if (href === path || (href !== '/__covara/ui' && path.startsWith(href))) {
           item.classList.add('active');
         }
       });
@@ -133,7 +133,7 @@ export const layout = (props: LayoutProps, content: string): string => html`
   <div class="app">
     <aside class="sidebar">
       <div class="sidebar-header">
-        <span class="sidebar-logo">Concave</span>
+        <span class="sidebar-logo">Covara</span>
         ${envBadge(props.mode)}
       </div>
       <nav class="sidebar-nav">
@@ -163,7 +163,7 @@ export const layout = (props: LayoutProps, content: string): string => html`
         </div>
         <div class="header-right">
           <button id="theme-toggle" class="btn btn-ghost btn-icon" onclick="toggleTheme()">
-            <script>document.write(localStorage.getItem('concave-theme') === 'dark' ? '\u2600' : '\u263D')</script>
+            <script>document.write(localStorage.getItem('covara-theme') === 'dark' ? '\u2600' : '\u263D')</script>
           </button>
         </div>
       </header>

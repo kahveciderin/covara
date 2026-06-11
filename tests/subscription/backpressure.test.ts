@@ -23,7 +23,7 @@ describe("Subscription Backpressure Tests", () => {
   let collectors: SSECollector[];
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-backpressure-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-backpressure-"));
   });
 
   afterAll(() => {

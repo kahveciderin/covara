@@ -39,7 +39,7 @@ export const subscriptionsPage = (data: SubscriptionsPageData): string => html`
   <div style="margin-top: 16px; display: flex; justify-content: flex-end;">
     ${button('Refresh', {
       variant: 'secondary',
-      hxGet: '/__concave/ui/subscriptions/list',
+      hxGet: '/__covara/ui/subscriptions/list',
       hxTarget: '#subscriptions-list',
     })}
   </div>
@@ -100,7 +100,7 @@ export const subscriptionsList = (subscriptions: SubscriptionInfo[]): string => 
                   size: 'sm',
                   variant: 'secondary',
                   class: 'btn-danger',
-                  hxDelete: '/__concave/api/subscriptions/' + sub.id,
+                  hxDelete: '/__covara/api/subscriptions/' + sub.id,
                   hxConfirm: 'Disconnect this subscription?',
                   hxTarget: 'closest tr',
                   hxSwap: 'outerHTML',
@@ -133,7 +133,7 @@ export const subscriptionEvents = (data: SubscriptionEventsData): string => card
       ${button('\u2715', {
         size: 'sm',
         variant: 'ghost',
-        hxGet: '/__concave/ui/empty',
+        hxGet: '/__covara/ui/empty',
         hxTarget: '#subscription-events',
         hxSwap: 'innerHTML',
       })}

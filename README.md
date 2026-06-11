@@ -1,12 +1,12 @@
-# Concave
+# Covara
 
-**Your Drizzle schema is already a backend.** Concave turns it into a complete, production-ready API — REST endpoints, real-time subscriptions, auth, file uploads, billing, email, and background jobs — with a type-safe, offline-first TypeScript client on the other end. Built on [Hono](https://hono.dev), it runs standalone on Node or at the edge on Cloudflare Workers.
+**Your Drizzle schema is already a backend.** Covara turns it into a complete, production-ready API — REST endpoints, real-time subscriptions, auth, file uploads, billing, email, and background jobs — with a type-safe, offline-first TypeScript client on the other end. Built on [Hono](https://hono.dev), it runs standalone on Node or at the edge on Cloudflare Workers.
 
 ## The Goal
 
 Every product backend is the same 80%: CRUD endpoints, filtering, pagination, auth, sessions, password reset, file uploads, webhooks for payments, transactional email, a job queue, and a client that talks to all of it. You rewrite this plumbing for every project, and the pieces never quite fit together — your realtime layer doesn't know about your auth scopes, your client types drift from your API, your offline cache fights your subscriptions.
 
-Concave's goal is to make that 80% *one coherent system* derived from a single source of truth: your Drizzle schema.
+Covara's goal is to make that 80% *one coherent system* derived from a single source of truth: your Drizzle schema.
 
 - **Define a table** → get a full REST API with filtering, pagination, aggregations, batch ops, and OpenAPI docs.
 - **Add an auth scope** → it's enforced everywhere: queries, mutations, subscriptions, search.
@@ -17,7 +17,7 @@ The remaining 20% — your business logic — goes in lifecycle hooks, RPC proce
 
 ```typescript
 // server: a table becomes an API
-const app = createConcave({ cors: true })
+const app = createCovara({ cors: true })
   .resource("/todos", todosTable, {
     id: todosTable.id,
     db,
@@ -55,7 +55,7 @@ function TodoList() {
 - **Mutation Tracking** - Wrap your Drizzle db so custom routes feed subscriptions and cache invalidation automatically
 
 ### Runs Everywhere
-- **Standalone Node** - `startServer(app)` via `@kahveciderin/concave/node`
+- **Standalone Node** - `startServer(app)` via `covara/node`
 - **Cloudflare Workers** - `export default app`, D1/Postgres, `nodejs_compat`
 - **Durable Object KV** - Cross-isolate subscriptions, rate limits, and sessions on Workers without Redis
 - **SQLite & PostgreSQL** - libsql, better-sqlite3, D1, postgres-js, Neon, PGlite via Drizzle
@@ -72,7 +72,7 @@ function TodoList() {
 - **API Keys** - Standalone helpers to create, verify, rotate, and revoke hashed API keys
 - **Password Hashing & Policy** - Built-in scrypt `hashPassword`/`verifyPassword`/`needsRehash` (Workers-safe) plus an enforceable password policy
 - **Account Security** - Opt-in CSRF protection, login throttling, email verification, password reset
-- **Security Headers** - CSP, HSTS, `X-Frame-Options`, and more, auto-mounted by `createConcave`
+- **Security Headers** - CSP, HSTS, `X-Frame-Options`, and more, auto-mounted by `createCovara`
 - **Authorization Scopes** - Row-level security with RSQL expressions, enforced across reads, writes, subscriptions, and search
 - **Field-level Read Masking** - `fields.readable` allowlist strips non-readable columns from every response and subscription event (cannot be bypassed via `?select=`)
 
@@ -93,12 +93,12 @@ function TodoList() {
 - **Dead Letter Queue** - Failed task management with replay lineage and an `onDlqEnqueue` alerting hook
 
 ### Email
-- **Unified Adapters** - `@kahveciderin/concave/email` with **Resend** and **Cloudflare Email Service** adapters behind one `EmailAdapter` interface
+- **Unified Adapters** - `covara/email` with **Resend** and **Cloudflare Email Service** adapters behind one `EmailAdapter` interface
 - **Template Builder** - Fluent `createEmail().heading().button().code().build()` rendering responsive, escaped HTML + a plaintext fallback, with theming
 - **Batch Sending** - `sendEmailBatch` for bulk delivery
 
 ### Billing
-- **One Interface, Four Providers** - `@kahveciderin/concave/billing` over **Stripe**, **Lemon Squeezy**, **Paddle**, and **Polar.sh** (fetch-based, no SDK deps, Workers-safe)
+- **One Interface, Four Providers** - `covara/billing` over **Stripe**, **Lemon Squeezy**, **Paddle**, and **Polar.sh** (fetch-based, no SDK deps, Workers-safe)
 - **Plans, One-Time & Usage** - Define subscription/one-time/usage plans by key; checkout, subscription management, `reportUsage`, hosted portal
 - **Credits Ledger** - KV-backed atomic `grant`/`consume`/`balance`/`history`
 - **Webhooks** - Per-provider signature verification, idempotent delivery dedupe, and automatic credit granting on `payment.succeeded`
@@ -119,14 +119,14 @@ function TodoList() {
 - **Client Access** - Typed `fetchPublicEnv` / `createEnvClient` and a `usePublicEnv` React hook
 
 ### Developer Experience
-- **Project Scaffolding** - `npx concave create my-app` (Node/Workers templates, SQLite/Postgres), plus `concave generate resource|migration`
+- **Project Scaffolding** - `npx covara create my-app` (Node/Workers templates, SQLite/Postgres), plus `covara generate resource|migration`
 - **Deploy-Ready Output** - Generated Dockerfile, docker-compose, complete wrangler.toml, GitHub Actions CI, `.env.example`
-- **Framework Migrations** - `@kahveciderin/concave/db` ships canonical internal-table schemas, an idempotent `autoMigrate`/`migrateInternal`, a generic seeder, and pool-sizing helpers
-- **App Factory** - `createConcave()` wires errors, auth, security headers, health, OpenAPI, admin UI
+- **Framework Migrations** - `covara/db` ships canonical internal-table schemas, an idempotent `autoMigrate`/`migrateInternal`, a generic seeder, and pool-sizing helpers
+- **App Factory** - `createCovara()` wires errors, auth, security headers, health, OpenAPI, admin UI
 - **Graceful Shutdown** - SIGTERM/SIGINT draining with `/readyz` 503 and clean SSE close
-- **Admin UI** - Built-in dashboard at `/__concave/ui`
+- **Admin UI** - Built-in dashboard at `/__covara/ui`
 - **OpenAPI Generation** - Auto-generated specs from resources (filters, procedures, subscriptions, ETags)
-- **Structured Logging** - Pluggable JSON logger with `CONCAVE_LOG_LEVEL` and `traceparent` propagation
+- **Structured Logging** - Pluggable JSON logger with `COVARA_LOG_LEVEL` and `traceparent` propagation
 - **Middleware** - Observability, versioning, idempotency, rate limiting
 - **RFC 7807 Errors** - Problem+JSON everywhere, even without custom error handling
 
@@ -135,15 +135,15 @@ function TodoList() {
 ### Scaffold a project
 
 ```bash
-npx concave create my-app                          # Node + SQLite
-npx concave create my-app --db postgres            # Node + PostgreSQL
-npx concave create my-app --template cloudflare    # Cloudflare Workers + D1
+npx covara create my-app                          # Node + SQLite
+npx covara create my-app --db postgres            # Node + PostgreSQL
+npx covara create my-app --template cloudflare    # Cloudflare Workers + D1
 ```
 
 ### Or add to an existing app
 
 ```bash
-npm install @kahveciderin/concave hono drizzle-orm zod @libsql/client
+npm install covara hono drizzle-orm zod @libsql/client
 ```
 
 Define your schema:
@@ -164,33 +164,33 @@ Create your API:
 ```typescript
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient } from "@libsql/client";
-import { createConcave } from "@kahveciderin/concave";
-import { startServer } from "@kahveciderin/concave/node";
+import { createCovara } from "covara";
+import { startServer } from "covara/node";
 import { usersTable } from "./schema";
 
 const client = createClient({ url: "file:./data.db" });
 const db = drizzle(client);
 
-const app = createConcave({ cors: true })
+const app = createCovara({ cors: true })
   .resource("/users", usersTable, { id: usersTable.id, db });
 
 await startServer(app, { port: 3000 });
 ```
 
-Health endpoints (`/healthz`, `/readyz`), OpenAPI (`/__concave/openapi.json`), the admin UI (`/__concave/ui`), and RFC 7807 error handling are wired automatically. The path is optional — `.resource(usersTable, config)` mounts at the table name.
+Health endpoints (`/healthz`, `/readyz`), OpenAPI (`/__covara/openapi.json`), the admin UI (`/__covara/ui`), and RFC 7807 error handling are wired automatically. The path is optional — `.resource(usersTable, config)` mounts at the table name.
 
 ### Cloudflare Workers
 
 ```typescript
 import { drizzle } from "drizzle-orm/d1";
-import { createConcave, ConcaveApp } from "@kahveciderin/concave";
+import { createCovara, CovaraApp } from "covara";
 import { usersTable } from "./schema";
 
-let app: ConcaveApp | undefined;
+let app: CovaraApp | undefined;
 
 export default {
   fetch(request: Request, env: { DB: D1Database }, ctx: ExecutionContext) {
-    app ??= createConcave().resource("/users", usersTable, {
+    app ??= createCovara().resource("/users", usersTable, {
       id: usersTable.id,
       db: drizzle(env.DB),
     });
@@ -210,7 +210,7 @@ database_name = "my-app"
 
 Workers bill CPU time, not wall-clock time — long-lived idle SSE subscriptions cost almost nothing, since heartbeats and event pushes use negligible CPU.
 
-For production Workers deployments, bind the bundled `ConcaveKVDurableObject` as Concave's KV store so subscriptions, rate limits, and sessions are shared across isolates — see [wiki/deployment.md](./wiki/deployment.md). Projects scaffolded with `concave create --template cloudflare` have it wired up already.
+For production Workers deployments, bind the bundled `CovaraKVDurableObject` as Covara's KV store so subscriptions, rate limits, and sessions are shared across isolates — see [wiki/deployment.md](./wiki/deployment.md). Projects scaffolded with `covara create --template cloudflare` have it wired up already.
 
 ### Using a plain Hono app
 
@@ -218,7 +218,7 @@ For production Workers deployments, bind the bundled `ConcaveKVDurableObject` as
 
 ```typescript
 import { Hono } from "hono";
-import { useResource, errorHandler, notFoundHandler } from "@kahveciderin/concave";
+import { useResource, errorHandler, notFoundHandler } from "covara";
 
 const app = new Hono();
 app.onError(errorHandler);
@@ -318,8 +318,8 @@ See [wiki/resources.md](./wiki/resources.md) for the full option reference (soft
 ## Client Library
 
 ```typescript
-import { getOrCreateClient } from "@kahveciderin/concave/client";
-import { useLiveList, useAuth } from "@kahveciderin/concave/client/react";
+import { getOrCreateClient } from "covara/client";
+import { useLiveList, useAuth } from "covara/client/react";
 
 const client = getOrCreateClient({
   baseUrl: "https://api.myapp.com",
@@ -359,8 +359,8 @@ The client supports OIDC (PKCE), JWT, bearer tokens, API keys, and cookie sessio
 **JWT** (works in React Native — bring your own token storage):
 
 ```typescript
-import { initJWTClient } from "@kahveciderin/concave/client/react";
-import { useJWTAuth } from "@kahveciderin/concave/client/react";
+import { initJWTClient } from "covara/client/react";
+import { useJWTAuth } from "covara/client/react";
 
 initJWTClient({
   baseUrl: "https://api.myapp.com",
@@ -428,7 +428,7 @@ The client has no hard DOM dependencies: pass an AsyncStorage-backed `TokenStora
 Configure a storage backend once, then mount file resources like any other:
 
 ```typescript
-import { initializeStorage, useFileResource } from "@kahveciderin/concave";
+import { initializeStorage, useFileResource } from "covara";
 
 initializeStorage({
   type: "local", // or "s3" | "r2" | "memory"
@@ -452,7 +452,7 @@ app.route("/api/files", useFileResource(filesTable, {
 Upload from React with progress tracking:
 
 ```typescript
-import { useFileUpload, useFiles } from "@kahveciderin/concave/client/react";
+import { useFileUpload, useFiles } from "covara/client/react";
 
 function Uploader() {
   const { upload, isUploading, progress } = useFileUpload({
@@ -477,7 +477,7 @@ See [wiki/storage.md](./wiki/storage.md).
 ### Standard auth routes
 
 ```typescript
-import { useAuth } from "@kahveciderin/concave/auth";
+import { useAuth } from "covara/auth";
 
 const { router, middleware } = useAuth({
   adapter: authAdapter, // JWT, Auth.js, Passport.js, or OIDC adapter
@@ -496,7 +496,7 @@ Opt-in extras: TOTP MFA with backup codes, magic links, email verification, pass
 A complete OpenID Connect server, in your app:
 
 ```typescript
-import { createOIDCProvider } from "@kahveciderin/concave";
+import { createOIDCProvider } from "covara";
 
 const { router, middleware } = createOIDCProvider({
   issuer: "https://auth.myapp.com",
@@ -535,8 +535,8 @@ The provider exposes discovery, JWKS, `/authorize`, `/token`, `/userinfo`, `/log
 Distributed task queue with retries and scheduling:
 
 ```typescript
-import { defineTask, initializeTasks, getTaskScheduler, getTaskRegistry, startTaskWorkers } from "@kahveciderin/concave/tasks";
-import { createKV } from "@kahveciderin/concave/kv";
+import { defineTask, initializeTasks, getTaskScheduler, getTaskRegistry, startTaskWorkers } from "covara/tasks";
+import { createKV } from "covara/kv";
 
 const kv = await createKV({ type: "redis", redis: { url: "redis://localhost" } });
 initializeTasks(kv);
@@ -572,7 +572,7 @@ On Workers, swap the poller for the Cloudflare Queues adapter. See [wiki/tasks.m
 ## Email
 
 ```typescript
-import { setGlobalEmail, createResendAdapter, createEmail, sendEmail } from "@kahveciderin/concave/email";
+import { setGlobalEmail, createResendAdapter, createEmail, sendEmail } from "covara/email";
 
 setGlobalEmail(createResendAdapter({ apiKey: process.env.RESEND_API_KEY }));
 
@@ -594,7 +594,7 @@ The builder renders responsive, escaped HTML plus a plaintext fallback. A Cloudf
 One interface over Stripe, Lemon Squeezy, Paddle, and Polar.sh — fetch-based, no provider SDKs, Workers-safe:
 
 ```typescript
-import { createBilling, createBillingRouter, createStripeAdapter } from "@kahveciderin/concave/billing";
+import { createBilling, createBillingRouter, createStripeAdapter } from "covara/billing";
 
 const billing = createBilling({
   adapter: createStripeAdapter({ apiKey: env.STRIPE_SECRET_KEY }),
@@ -611,7 +611,7 @@ app.route("/api/billing", createBillingRouter(billing, {
 ```
 
 ```typescript
-import { useCredits, useSubscription, useCheckout } from "@kahveciderin/concave/client/react";
+import { useCredits, useSubscription, useCheckout } from "covara/client/react";
 
 function Account() {
   const { balance } = useCredits();
@@ -637,7 +637,7 @@ Custom routes participate in the realtime system by wrapping your db once:
 
 ```typescript
 import { drizzle } from "drizzle-orm/libsql";
-import { trackMutations, readJsonBody, requireUser } from "@kahveciderin/concave";
+import { trackMutations, readJsonBody, requireUser } from "covara";
 import * as schema from "./schema";
 
 const baseDb = drizzle(/* config */);
@@ -672,7 +672,7 @@ const db = trackMutations(baseDb, tables, {
 For writers **outside** the tracked db — cron jobs, other services, manual edits — `recordExternalMutation` appends a changelog entry, invalidates the cache, and tells live subscribers to refetch. It's the portable alternative to database-specific CDC:
 
 ```typescript
-import { recordExternalMutation } from "@kahveciderin/concave";
+import { recordExternalMutation } from "covara";
 
 await recordExternalMutation("todos", "update", { objectId: "todo-1" });
 ```
@@ -680,7 +680,7 @@ await recordExternalMutation("todos", "update", { objectId: "todo-1" });
 ## Typed Environment Variables
 
 ```typescript
-import { createEnv, envVariable, usePublicEnv } from "@kahveciderin/concave";
+import { createEnv, envVariable, usePublicEnv } from "covara";
 import { z } from "zod";
 
 const env = createEnv({
@@ -745,7 +745,7 @@ All errors follow [RFC 7807 Problem Details](https://tools.ietf.org/html/rfc7807
 
 ```json
 {
-  "type": "/__concave/problems/not-found",
+  "type": "/__covara/problems/not-found",
   "title": "Not found",
   "status": 404,
   "detail": "users with id '123' not found",
@@ -794,7 +794,7 @@ Comprehensive documentation is available in the [wiki](./wiki):
 ### Getting Started
 - [Getting Started Guide](./wiki/getting-started.md) - Installation and quick start
 - [Deployment](./wiki/deployment.md) - Node, Cloudflare Workers, database matrix
-- [Migrating from Express](./wiki/migrating-from-express.md) - Upgrading from Concave ≤ 0.5
+- [Migrating from Express](./wiki/migrating-from-express.md) - Upgrading from Covara ≤ 0.5
 
 ### Core Concepts
 - [Resources](./wiki/resources.md) - Resource configuration and endpoints

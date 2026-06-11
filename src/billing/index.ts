@@ -84,7 +84,7 @@ const defaultResolveAccount = (event: BillingEvent): string | undefined => {
   return event.customerId;
 };
 
-const DEDUP_PREFIX = "concave:billing:evt:";
+const DEDUP_PREFIX = "covara:billing:evt:";
 const DEDUP_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const createBilling = (config: BillingConfig): Billing => {

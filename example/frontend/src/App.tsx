@@ -1,5 +1,5 @@
-import { getOrCreateClient } from 'concave/client';
-import { useAuth, useLiveList, usePublicEnv, useSearch, useFileUpload } from 'concave/client/react';
+import { getOrCreateClient } from 'covara/client';
+import { useAuth, useLiveList, usePublicEnv, useSearch, useFileUpload } from 'covara/client/react';
 import { AuthForm } from './components/AuthForm';
 import { createTypedClient } from './generated/api-types';
 import type { PublicEnv } from './generated/api-types';

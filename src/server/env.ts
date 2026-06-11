@@ -7,6 +7,6 @@ export const readEnv = (key: string): string | undefined => {
   return proc?.env?.[key];
 };
 
-export const isDebugEnabled = (): boolean => readEnv("CONCAVE_DEBUG") === "1";
+export const isDebugEnabled = (): boolean => readEnv("COVARA_DEBUG") === "1";
 
 export const isProduction = (): boolean => readEnv("NODE_ENV") === "production";

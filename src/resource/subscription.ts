@@ -54,10 +54,10 @@ const localRelevantObjects = new Map<string, Set<string>>();
 const localSeqCounters = new Map<string, number>();
 
 // KV keys
-const SUBSCRIPTIONS_HASH = "concave:subscriptions";
-const SUBSCRIPTION_OBJECTS_PREFIX = "concave:sub:objects:";
-const SUBSCRIPTION_SEQ_PREFIX = "concave:sub:seq:";
-const EVENTS_CHANNEL = "concave:events";
+const SUBSCRIPTIONS_HASH = "covara:subscriptions";
+const SUBSCRIPTION_OBJECTS_PREFIX = "covara:sub:objects:";
+const SUBSCRIPTION_SEQ_PREFIX = "covara:sub:seq:";
+const EVENTS_CHANNEL = "covara:events";
 
 interface SerializedSubscription {
   id: string;

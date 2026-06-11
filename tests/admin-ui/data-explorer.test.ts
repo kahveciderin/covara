@@ -64,10 +64,10 @@ describe("Admin UI Data Explorer", () => {
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
       // Mount admin UI
-      app.route("/__concave", createAdminUI({}));
+      app.route("/__covara", createAdminUI({}));
 
       // Try to access data table using path (without leading slash, as URL normalization does)
-      const response = await get(app, "/__concave/ui/data/api%2Ftest_items/table");
+      const response = await get(app, "/__covara/ui/data/api%2Ftest_items/table");
       expect(response.headers.get("content-type")).toMatch(/html/);
 
       // Should NOT contain "Resource not found" error
@@ -78,9 +78,9 @@ describe("Admin UI Data Explorer", () => {
     it("should find schema when queried with table name directly", async () => {
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
-      app.route("/__concave", createAdminUI({}));
+      app.route("/__covara", createAdminUI({}));
 
-      const response = await get(app, "/__concave/ui/data/test_items/table");
+      const response = await get(app, "/__covara/ui/data/test_items/table");
       expect(response.headers.get("content-type")).toMatch(/html/);
 
       expect(response.body).not.toContain("Resource not found");
@@ -89,9 +89,9 @@ describe("Admin UI Data Explorer", () => {
     it("should return data table with items when schema is found", async () => {
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
-      app.route("/__concave", createAdminUI({}));
+      app.route("/__covara", createAdminUI({}));
 
-      const response = await get(app, "/__concave/ui/data/api%2Ftest_items/table");
+      const response = await get(app, "/__covara/ui/data/api%2Ftest_items/table");
       expect(response.headers.get("content-type")).toMatch(/html/);
 
       // Should contain table with data
@@ -104,11 +104,11 @@ describe("Admin UI Data Explorer", () => {
       // Path like /api/v1/test_items should also work - extract last segment
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
-      app.route("/__concave", createAdminUI({}));
+      app.route("/__covara", createAdminUI({}));
 
       const response = await get(
         app,
-        "/__concave/ui/data/api%2Fv1%2Ftest_items/table"
+        "/__covara/ui/data/api%2Fv1%2Ftest_items/table"
       );
       expect(response.headers.get("content-type")).toMatch(/html/);
 
@@ -120,9 +120,9 @@ describe("Admin UI Data Explorer", () => {
       // If someone explicitly registers with path, it should still work
       registerResourceSchema("/api/items", testTable, db, testTable.id, {});
 
-      app.route("/__concave", createAdminUI({}));
+      app.route("/__covara", createAdminUI({}));
 
-      const response = await get(app, "/__concave/ui/data/api%2Fitems/table");
+      const response = await get(app, "/__covara/ui/data/api%2Fitems/table");
       expect(response.headers.get("content-type")).toMatch(/html/);
 
       expect(response.body).not.toContain("Resource not found");
@@ -134,9 +134,9 @@ describe("Admin UI Data Explorer", () => {
     it("should render data explorer page with resources", async () => {
       registerResourceSchema("items", testTable, db, testTable.id, {});
 
-      app.route("/__concave", createAdminUI({}));
+      app.route("/__covara", createAdminUI({}));
 
-      const response = await get(app, "/__concave/ui/data-explorer");
+      const response = await get(app, "/__covara/ui/data-explorer");
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toMatch(/html/);
 
@@ -148,9 +148,9 @@ describe("Admin UI Data Explorer", () => {
       registerResourceSchema("users", testTable, db, testTable.id, {});
       registerResourceSchema("posts", testTable, db, testTable.id, {});
 
-      app.route("/__concave", createAdminUI({}));
+      app.route("/__covara", createAdminUI({}));
 
-      const response = await get(app, "/__concave/ui/data/resources");
+      const response = await get(app, "/__covara/ui/data/resources");
       expect(response.headers.get("content-type")).toMatch(/html/);
 
       expect(response.body).toContain("users");
@@ -162,9 +162,9 @@ describe("Admin UI Data Explorer", () => {
     it("should fetch single row detail", async () => {
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
-      app.route("/__concave", createAdminUI({}));
+      app.route("/__covara", createAdminUI({}));
 
-      const response = await get(app, "/__concave/ui/data/test_items/row/1");
+      const response = await get(app, "/__covara/ui/data/test_items/row/1");
       expect(response.headers.get("content-type")).toMatch(/html/);
 
       expect(response.body).toContain("Item 1");
@@ -174,9 +174,9 @@ describe("Admin UI Data Explorer", () => {
     it("should return not found for missing row", async () => {
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
-      app.route("/__concave", createAdminUI({}));
+      app.route("/__covara", createAdminUI({}));
 
-      const response = await get(app, "/__concave/ui/data/test_items/row/999");
+      const response = await get(app, "/__covara/ui/data/test_items/row/999");
       expect(response.headers.get("content-type")).toMatch(/html/);
 
       expect(response.body).toContain("Record not found");

@@ -27,7 +27,7 @@
 - **Public entry point**: `recordExternalMutation(resource, type, { objectId? })` is exported for writers outside the tracked db (cron jobs, other services, manual edits, CDC)
 - **Effects**: appends a changelog entry, invalidates the query cache, and sends subscribers an `invalidate` event
 - **Coarse by default**: `objectId` defaults to `"*"`; no `object`/`previousObject` is carried, so the event is always `invalidate`
-- **Portable alternative to CDC**: this is the supported mechanism for keeping Concave subscriptions/caches consistent when mutations bypass the tracked db
+- **Portable alternative to CDC**: this is the supported mechanism for keeping Covara subscriptions/caches consistent when mutations bypass the tracked db
 
 ### Subscription Integration
 - **Automatic push**: Mutations automatically push events to active subscriptions (when `pushToSubscriptions` is true)

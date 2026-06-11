@@ -44,13 +44,13 @@ export const requestsPage = (data: RequestsPageData): string => html`
     ${input({ name: 'path', placeholder: 'Filter by path...' })}
     ${button('Filter', {
       variant: 'primary',
-      hxGet: '/__concave/ui/requests/list',
+      hxGet: '/__covara/ui/requests/list',
       hxTarget: '#request-list',
       hxInclude: '[name="method"],[name="status"],[name="path"]',
     })}
     ${button('Clear', {
       variant: 'secondary',
-      hxGet: '/__concave/ui/requests/list',
+      hxGet: '/__covara/ui/requests/list',
       hxTarget: '#request-list',
     })}
   `)}
@@ -69,7 +69,7 @@ export const requestList = (requests: RequestInfo[]): string => card({
     <div style="max-height: 600px; overflow-y: auto;">
       ${requests.map(req => html`
         <div class="list-item" style="cursor: pointer;"
-             hx-get="/__concave/ui/requests/${req.id}"
+             hx-get="/__covara/ui/requests/${req.id}"
              hx-target="#request-detail"
              hx-swap="innerHTML">
           <div style="display: flex; align-items: center; gap: 8px; flex: 1;">
@@ -110,7 +110,7 @@ export const requestDetail = (data: RequestDetailData): string => html`
       ${button('\u2715', {
         size: 'sm',
         variant: 'ghost',
-        hxGet: '/__concave/ui/empty',
+        hxGet: '/__covara/ui/empty',
         hxTarget: '#request-detail',
         hxSwap: 'innerHTML',
       })}

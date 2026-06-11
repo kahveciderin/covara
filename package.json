@@ -1,13 +1,13 @@
 {
-  "name": "@kahveciderin/concave",
-  "version": "0.5.8",
+  "name": "covara",
+  "version": "0.6.0",
   "description": "Real-time resource API framework built on Hono — runs standalone (Node) and on Cloudflare Workers, with a TypeScript client",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "concave": "./dist/cli/index.js"
+    "covara": "./dist/cli/index.js"
   },
   "exports": {
     ".": {
@@ -152,15 +152,15 @@
     "background-tasks",
     "offline-first"
   ],
-  "author": "kahveciderin",
+  "author": "covara",
   "license": "---",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kahveciderin/concave.git"
+    "url": "git+https://github.com/covara/covara.git"
   },
-  "homepage": "https://github.com/kahveciderin/concave#readme",
+  "homepage": "https://github.com/covara/covara#readme",
   "bugs": {
-    "url": "https://github.com/kahveciderin/concave/issues"
+    "url": "https://github.com/covara/covara/issues"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.4",

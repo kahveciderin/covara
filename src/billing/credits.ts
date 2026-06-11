@@ -20,8 +20,8 @@ export interface CreditsLedger {
   history(account: string, limit?: number): Promise<CreditEntry[]>;
 }
 
-const BALANCE_PREFIX = "concave:credits:balance:";
-const HISTORY_PREFIX = "concave:credits:history:";
+const BALANCE_PREFIX = "covara:credits:balance:";
+const HISTORY_PREFIX = "covara:credits:history:";
 const HISTORY_MAX = 1000;
 
 // KV-backed credits ledger. Balance mutations use the KV's atomic incrBy so

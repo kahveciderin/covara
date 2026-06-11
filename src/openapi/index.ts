@@ -1,7 +1,7 @@
 export {
-  createConcaveRouter,
+  createCovaraRouter,
   extractSchemaInfo,
-  buildConcaveSchema,
+  buildCovaraSchema,
   generateTypeScriptTypes,
   SCHEMA_ENDPOINT,
 } from "./schema";
@@ -10,8 +10,8 @@ export type {
   ResourceSchemaInfo,
   FieldSchemaInfo,
   TypeInfo,
-  ConcaveSchema,
-  ConcaveRouterConfig,
+  CovaraSchema,
+  CovaraRouterConfig,
 } from "./schema";
 
 export {

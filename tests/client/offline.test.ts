@@ -248,7 +248,7 @@ describe("LocalStorageOfflineStorage", () => {
       status: "pending",
     });
 
-    expect(mockLocalStorage["concave_offline_mutations"]).toBeDefined();
+    expect(mockLocalStorage["covara_offline_mutations"]).toBeDefined();
   });
 
   it("should use custom storage key", async () => {
@@ -267,7 +267,7 @@ describe("LocalStorageOfflineStorage", () => {
   });
 
   it("should return empty array for invalid JSON", async () => {
-    mockLocalStorage["concave_offline_mutations"] = "invalid json";
+    mockLocalStorage["covara_offline_mutations"] = "invalid json";
 
     const mutations = await storage.getMutations();
     expect(mutations).toEqual([]);
@@ -345,7 +345,7 @@ describe("LocalStorageOfflineStorage", () => {
 
     await storage.clear();
 
-    expect(mockLocalStorage["concave_offline_mutations"]).toBeUndefined();
+    expect(mockLocalStorage["covara_offline_mutations"]).toBeUndefined();
     const mutations = await storage.getMutations();
     expect(mutations).toEqual([]);
   });

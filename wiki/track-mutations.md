@@ -1,12 +1,12 @@
 # Mutation Tracking
 
-Concave provides automatic mutation tracking via a Drizzle db wrapper that tracks all database mutations to the changelog system. This enables real-time subscriptions and query caching across both `useResource` endpoints and custom Hono routes.
+Covara provides automatic mutation tracking via a Drizzle db wrapper that tracks all database mutations to the changelog system. This enables real-time subscriptions and query caching across both `useResource` endpoints and custom Hono routes.
 
 ## Quick Start
 
 ```typescript
 import { drizzle } from "drizzle-orm/libsql";
-import { trackMutations } from "@kahveciderin/concave";
+import { trackMutations } from "covara";
 import * as schema from "./schema";
 
 const baseDb = drizzle(/* your config */);
@@ -136,7 +136,7 @@ app.route("/posts", useResource(postsTable, {
 Mutations are automatically tracked when you use the wrapped database:
 
 ```typescript
-import { requireUser } from "@kahveciderin/concave";
+import { requireUser } from "covara";
 
 app.post("/api/custom-action", async (c) => {
   const body = await c.req.json<{ title: string }>();
@@ -202,7 +202,7 @@ detail is unavailable, so no `added`/`changed`/`removed` event is emitted.
 ## Batch Statements
 
 Drizzle's `db.batch([...])` runs an array of query builders atomically without awaiting them
-individually, so the per-builder tracking never fires. Concave inspects each statement's compiled
+individually, so the per-builder tracking never fires. Covara inspects each statement's compiled
 SQL, detects mutations, and records a **coarse `invalidate`** (`objectId: "*"`) — the same
 contract as raw SQL — so subscribers and caches stay correct even though individual rows aren't
 visible:
@@ -220,13 +220,13 @@ A statement whose SQL can't be introspected is simply not tracked.
 ## Notifying External Writers
 
 When something **outside** the tracked db mutates a table — a cron job, another service, a
-manual database edit, or a CDC pipeline — Concave can't observe it. Call `recordExternalMutation`
+manual database edit, or a CDC pipeline — Covara can't observe it. Call `recordExternalMutation`
 to notify it manually. It appends a changelog entry, invalidates the query cache, and sends live
 subscribers an `invalidate` event so they refetch. This is the portable alternative to
 database-specific change data capture (CDC):
 
 ```typescript
-import { recordExternalMutation } from "@kahveciderin/concave";
+import { recordExternalMutation } from "covara";
 
 // A separate worker just updated a row in "todos"
 await recordExternalMutation("todos", "update", { objectId: "todo-1" });
@@ -296,7 +296,7 @@ await db.update(usersTable).set({ name: "New" }).where(eq(usersTable.id, userId)
 ### Manual Cache Invalidation
 
 ```typescript
-import { invalidateCache, invalidateAllCache } from "@kahveciderin/concave";
+import { invalidateCache, invalidateAllCache } from "covara";
 
 // Invalidate cache for specific resource
 await invalidateCache("todos");

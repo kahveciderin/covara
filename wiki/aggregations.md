@@ -1,6 +1,6 @@
 # Aggregations
 
-Concave supports powerful aggregation queries for analytics, dashboards, and reporting. Query aggregate statistics with optional grouping.
+Covara supports powerful aggregation queries for analytics, dashboards, and reporting. Query aggregate statistics with optional grouping.
 
 ## Basic Usage
 

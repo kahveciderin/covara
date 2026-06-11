@@ -127,8 +127,8 @@ describe("Task hardening", () => {
       const marker = await store.getCompleted("fixed-key");
       expect(marker?.result).toEqual({ ok: true });
 
-      await kv.zadd("concave:tasks:queue:50", Date.now(), taskId);
-      await kv.del(`concave:tasks:lock:${taskId}`);
+      await kv.zadd("covara:tasks:queue:50", Date.now(), taskId);
+      await kv.del(`covara:tasks:lock:${taskId}`);
 
       await sleep(200);
 

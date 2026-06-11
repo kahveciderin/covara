@@ -8,7 +8,7 @@ import {
   rsql,
   createMetricsCollector,
   createAdminUI,
-  createConcave,
+  createCovara,
   createPassportAdapter,
   useAuth,
   UnauthorizedError,
@@ -21,8 +21,8 @@ import {
   createOpenSearchAdapter,
   initializeStorage,
   useFileResource,
-} from "@kahveciderin/concave";
-import { startServer } from "@kahveciderin/concave/node";
+} from "covara";
+import { startServer } from "covara/node";
 
 import { env } from "./config/config";
 import {
@@ -120,7 +120,7 @@ const auth = useAuth({
   },
 });
 
-const app = createConcave({
+const app = createCovara({
   observability: { metrics: metricsCollector },
   auth,
   health: {
@@ -275,7 +275,7 @@ app.use(
 );
 
 app.route(
-  "/__concave",
+  "/__covara",
   createAdminUI({
     title: "Todo App Admin",
     metricsCollector,
@@ -407,7 +407,7 @@ app.use("*", serveStatic({ root: publicDir }));
 
 const spaFallback = serveStatic({ root: publicDir, path: "index.html" });
 app.get("*", (c, next) => {
-  if (c.req.path.startsWith("/api") || c.req.path.startsWith("/__concave")) {
+  if (c.req.path.startsWith("/api") || c.req.path.startsWith("/__covara")) {
     return next();
   }
   return spaFallback(c, next);
@@ -418,10 +418,10 @@ await startServer(app, {
   onListen: ({ port }) => {
     console.log(`
 =============================================
-  Todo App (powered by Concave)
+  Todo App (powered by Covara)
 =============================================
   App:   http://localhost:${port}
-  Admin: http://localhost:${port}/__concave/ui
+  Admin: http://localhost:${port}/__covara/ui
 =============================================
   `);
   },

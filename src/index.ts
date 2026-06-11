@@ -1,8 +1,8 @@
-// Main server-side exports for Concave
+// Main server-side exports for Covara
 
 // App factory
-export { createConcave, ConcaveApp } from "./server/app";
-export type { ConcaveOptions, ConcaveAuthSetup } from "./server/app";
+export { createCovara, CovaraApp } from "./server/app";
+export type { CovaraOptions, CovaraAuthSetup } from "./server/app";
 
 // Resource (core)
 export { useResource } from "./resource/hook";
@@ -225,9 +225,9 @@ export type {
 export {
   generateOpenAPISpec,
   serveOpenAPI,
-  createConcaveRouter,
+  createCovaraRouter,
   extractSchemaInfo,
-  buildConcaveSchema,
+  buildCovaraSchema,
   generateTypeScriptTypes,
 } from "./openapi";
 export type {
@@ -236,7 +236,7 @@ export type {
   ResourceSchemaInfo,
   FieldSchemaInfo,
   TypeInfo,
-  ConcaveSchema,
+  CovaraSchema,
 } from "./openapi";
 
 // KV Store
@@ -252,7 +252,7 @@ export {
   hasGlobalKV,
   MemoryKVStore,
   RedisKVStore,
-  ConcaveKVDurableObject,
+  CovaraKVDurableObject,
   DurableKVEngine,
   DurableObjectKVStore,
 } from "./kv";

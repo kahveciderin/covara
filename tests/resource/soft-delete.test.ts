@@ -21,7 +21,7 @@ describe("Soft delete", () => {
   let app: ReturnType<typeof createTestApp>;
 
   beforeEach(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-softdel-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-softdel-"));
     libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, `t-${Date.now()}.db`)}` });
     db = drizzle(libsqlClient);
     await libsqlClient.execute(`

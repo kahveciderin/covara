@@ -1,6 +1,6 @@
 # Filtering
 
-Concave uses an RSQL-like syntax for filtering resources. The filter system includes comprehensive built-in operators for common use cases, with support for custom operators when needed.
+Covara uses an RSQL-like syntax for filtering resources. The filter system includes comprehensive built-in operators for common use cases, with support for custom operators when needed.
 
 ## Basic Syntax
 
@@ -274,7 +274,7 @@ path=="C:\\Users\\John"
 
 ## Custom Operators
 
-While Concave includes many built-in operators, you can define custom operators for specialized use cases:
+While Covara includes many built-in operators, you can define custom operators for specialized use cases:
 
 ```typescript
 useResource(usersTable, {

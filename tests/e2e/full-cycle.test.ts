@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { useResource } from "../../src/resource/hook";
-import { createClient, ConcaveClient } from "../../src/client";
+import { createClient, CovaraClient } from "../../src/client";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -39,14 +39,14 @@ type User = typeof usersTable.$inferSelect;
 describe("End-to-End: Full Request Cycle", () => {
   let app: Hono;
   let server: ServerType;
-  let client: ConcaveClient;
+  let client: CovaraClient;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
   let tempDir: string;
 
   beforeAll(async () => {
     // setup file-based database in temp directory
-    tempDir = mkdtempSync(join(tmpdir(), "concave-e2e-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-e2e-"));
     libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, "test.db")}` });
     db = drizzle(libsqlClient);
 
@@ -382,7 +382,7 @@ describe("End-to-End: Full Request Cycle", () => {
 describe("End-to-End: Concurrent Operations", () => {
   let app: Hono;
   let server: ServerType;
-  let client: ConcaveClient;
+  let client: CovaraClient;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
   let tempDir: string;
@@ -394,7 +394,7 @@ describe("End-to-End: Concurrent Operations", () => {
   });
 
   beforeAll(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-e2e-concurrent-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-e2e-concurrent-"));
     libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, "test.db")}` });
     db = drizzle(libsqlClient);
 
@@ -474,7 +474,7 @@ describe("End-to-End: Concurrent Operations", () => {
 describe("End-to-End: Multiple Resources", () => {
   let app: Hono;
   let server: ServerType;
-  let client: ConcaveClient;
+  let client: CovaraClient;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
   let tempDir: string;
@@ -491,7 +491,7 @@ describe("End-to-End: Multiple Resources", () => {
   });
 
   beforeAll(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-e2e-multi-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-e2e-multi-"));
     libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, "test.db")}` });
     db = drizzle(libsqlClient);
 

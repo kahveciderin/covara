@@ -1,6 +1,6 @@
-# Concave Contracts
+# Covara Contracts
 
-This folder contains the formal contracts (guarantees and non-guarantees) for the Concave framework. These contracts are:
+This folder contains the formal contracts (guarantees and non-guarantees) for the Covara framework. These contracts are:
 
 1. **Testable** - Each guarantee has corresponding tests that enforce it
 2. **Versioned** - Breaking changes to contracts require major version bumps

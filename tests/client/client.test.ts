@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createClient, ConcaveClient } from "../../src/client/index";
+import { createClient, CovaraClient } from "../../src/client/index";
 
 describe("createClient", () => {
   let mockFetch: ReturnType<typeof vi.fn>;

@@ -1,5 +1,5 @@
 // Public entry for the structured logger, exposed at the
-// `@kahveciderin/concave/middleware/logging` subpath. The implementation lives
+// `covara/middleware/logging` subpath. The implementation lives
 // in the server runtime layer; this re-export keeps the documented import path
 // stable and runtime-agnostic.
 export {

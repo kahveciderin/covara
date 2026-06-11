@@ -92,8 +92,8 @@ export const logError = (log: ErrorLog) => {
 
 export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   const router = new Hono();
-  const basePath = config.basePath || "/__concave";
-  const title = config.title || "Concave Admin";
+  const basePath = config.basePath || "/__covara";
+  const title = config.title || "Covara Admin";
   const mode = config.security?.mode ?? detectEnvironment();
 
   // Admin auth middleware for protected routes

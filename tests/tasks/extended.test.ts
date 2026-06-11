@@ -321,11 +321,11 @@ describe("Extended task features", () => {
       expect(created?.catchup).toBe("all");
 
       // Force lastRunAt well in the past so several intervals are "missed"
-      await kv.hmset(`concave:tasks:recurring:data:${id}`, {
+      await kv.hmset(`covara:tasks:recurring:data:${id}`, {
         lastRunAt: String(Date.now() - 250),
         nextRunAt: String(Date.now() - 200),
       } as never);
-      await kv.zadd("concave:tasks:recurring", Date.now() - 200, id);
+      await kv.zadd("covara:tasks:recurring", Date.now() - 200, id);
 
       await manager.tick(async (name) => {
         enq.push(name);

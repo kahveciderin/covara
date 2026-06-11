@@ -7,8 +7,8 @@ import {
   TaskDefinition,
 } from "./types";
 
-const RECURRING_KEY = "concave:tasks:recurring";
-const RECURRING_DATA_PREFIX = "concave:tasks:recurring:data:";
+const RECURRING_KEY = "covara:tasks:recurring";
+const RECURRING_DATA_PREFIX = "covara:tasks:recurring:data:";
 
 const MAX_CATCHUP_OCCURRENCES = 1000;
 

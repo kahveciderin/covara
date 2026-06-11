@@ -5,7 +5,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { useResource } from "@/resource/hook";
-import { createClient, ConcaveClient } from "@/client";
+import { createClient, CovaraClient } from "@/client";
 import { createResourceFilter } from "@/resource/filter";
 import { createTestApp } from "../helpers/hono";
 
@@ -21,7 +21,7 @@ const usersTable = sqliteTable("users", {
 describe("Smoke Tests: Core Framework", () => {
   let app: Hono;
   let server: ServerType;
-  let client: ConcaveClient;
+  let client: CovaraClient;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
 

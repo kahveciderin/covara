@@ -51,7 +51,7 @@ const isLogLevel = (value: string | undefined): value is LogLevel =>
   value === "debug" || value === "info" || value === "warn" || value === "error";
 
 export const resolveDefaultLevel = (): LogLevel => {
-  const fromEnv = readEnv("CONCAVE_LOG_LEVEL")?.toLowerCase();
+  const fromEnv = readEnv("COVARA_LOG_LEVEL")?.toLowerCase();
   if (isLogLevel(fromEnv)) return fromEnv;
   if (isDebugEnabled()) return "debug";
   return "info";

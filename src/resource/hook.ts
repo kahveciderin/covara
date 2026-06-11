@@ -694,7 +694,7 @@ export const useResource = <TConfig extends TableConfig>(
     if (userCount >= sseConfig.maxSubscriptionsPerUser) {
       return c.json(
         {
-          type: "/__concave/problems/rate-limit-exceeded",
+          type: "/__covara/problems/rate-limit-exceeded",
           title: "Too many subscriptions",
           status: 429,
           detail: `Maximum ${sseConfig.maxSubscriptionsPerUser} subscriptions per user`,
@@ -707,7 +707,7 @@ export const useResource = <TConfig extends TableConfig>(
     if (ipCount >= sseConfig.maxSubscriptionsPerIP) {
       return c.json(
         {
-          type: "/__concave/problems/rate-limit-exceeded",
+          type: "/__covara/problems/rate-limit-exceeded",
           title: "Too many subscriptions",
           status: 429,
           detail: `Maximum ${sseConfig.maxSubscriptionsPerIP} subscriptions per IP`,
@@ -1040,7 +1040,7 @@ export const useResource = <TConfig extends TableConfig>(
     recordCreate(resourceName, String(createdObj[idColumnName]), createdObj);
     await indexDocument(String(createdObj[idColumnName]), createdObj);
 
-    const optimisticId = c.req.header("x-concave-optimistic-id");
+    const optimisticId = c.req.header("x-covara-optimistic-id");
     const optimisticIds = optimisticId
       ? new Map([[String(createdObj[idColumnName]), optimisticId]])
       : undefined;

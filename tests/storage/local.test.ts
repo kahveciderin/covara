@@ -11,7 +11,7 @@ describe("Local Storage Adapter", () => {
   let basePath: string;
 
   beforeEach(async () => {
-    basePath = join(tmpdir(), `concave-test-${randomUUID()}`);
+    basePath = join(tmpdir(), `covara-test-${randomUUID()}`);
     await mkdir(basePath, { recursive: true });
     storage = createLocalStorage({
       basePath,

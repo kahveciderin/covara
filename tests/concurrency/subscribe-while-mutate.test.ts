@@ -25,7 +25,7 @@ describe("Subscribe While Mutate Tests", () => {
   let collectors: SSECollector[];
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-subscribe-mutate-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-subscribe-mutate-"));
   });
 
   afterAll(() => {

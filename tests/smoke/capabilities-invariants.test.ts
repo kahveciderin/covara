@@ -25,7 +25,7 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
   let tempDir: string;
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-capabilities-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-capabilities-"));
   });
 
   afterAll(() => {

@@ -13,7 +13,7 @@ export interface ServeOptions {
   drainTimeoutMs?: number;
 }
 
-export interface ConcaveServer {
+export interface CovaraServer {
   port: number;
   address: string;
   close: () => Promise<void>;
@@ -22,7 +22,7 @@ export interface ConcaveServer {
 export const startServer = async (
   app: Hono,
   options: ServeOptions = {}
-): Promise<ConcaveServer> => {
+): Promise<CovaraServer> => {
   const { serve } = await import("@hono/node-server");
   const port = options.port ?? Number(readPort() ?? 3000);
   const drainTimeoutMs = options.drainTimeoutMs ?? 10000;

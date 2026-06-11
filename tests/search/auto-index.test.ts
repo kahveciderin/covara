@@ -28,7 +28,7 @@ describe("Search Auto-Indexing", () => {
   let searchAdapter: ReturnType<typeof createMemorySearchAdapter>;
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-autoindex-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-autoindex-"));
   });
 
   afterAll(() => {

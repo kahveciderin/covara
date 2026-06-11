@@ -29,7 +29,7 @@ describe("Search Endpoint", () => {
   let searchAdapter: ReturnType<typeof createMemorySearchAdapter>;
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-search-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-search-"));
   });
 
   afterAll(() => {

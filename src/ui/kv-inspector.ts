@@ -72,7 +72,7 @@ export const createKVInspectorRoutes = (
     if (!isPatternAllowed(pattern)) {
       return c.json(
         {
-          type: "/__concave/problems/forbidden",
+          type: "/__covara/problems/forbidden",
           title: "Pattern not allowed",
           status: 403,
           detail: "This key pattern is not in the allowed list",
@@ -108,7 +108,7 @@ export const createKVInspectorRoutes = (
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to list keys",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -125,7 +125,7 @@ export const createKVInspectorRoutes = (
     if (!isKeyAllowed(key)) {
       return c.json(
         {
-          type: "/__concave/problems/forbidden",
+          type: "/__covara/problems/forbidden",
           title: "Key not allowed",
           status: 403,
           detail: "This key is not in the allowed patterns",
@@ -223,7 +223,7 @@ export const createKVInspectorRoutes = (
 
         return c.json(
           {
-            type: "/__concave/problems/not-found",
+            type: "/__covara/problems/not-found",
             title: "Key not found",
             status: 404,
           },
@@ -258,7 +258,7 @@ export const createKVInspectorRoutes = (
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to get key",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -274,7 +274,7 @@ export const createKVInspectorRoutes = (
     if (!isKeyAllowed(key)) {
       return c.json(
         {
-          type: "/__concave/problems/forbidden",
+          type: "/__covara/problems/forbidden",
           title: "Key not allowed",
           status: 403,
         },
@@ -288,7 +288,7 @@ export const createKVInspectorRoutes = (
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to get TTL",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -311,7 +311,7 @@ export const createKVInspectorRoutes = (
       if (!isKeyAllowed(key)) {
         return c.json(
           {
-            type: "/__concave/problems/forbidden",
+            type: "/__covara/problems/forbidden",
             title: "Key not allowed",
             status: 403,
           },
@@ -342,7 +342,7 @@ export const createKVInspectorRoutes = (
       } catch (error) {
         return c.json(
           {
-            type: "/__concave/problems/internal-error",
+            type: "/__covara/problems/internal-error",
             title: "Failed to set key",
             status: 500,
             detail: error instanceof Error ? error.message : "Unknown error",
@@ -361,7 +361,7 @@ export const createKVInspectorRoutes = (
       if (!isKeyAllowed(key)) {
         return c.json(
           {
-            type: "/__concave/problems/forbidden",
+            type: "/__covara/problems/forbidden",
             title: "Key not allowed",
             status: 403,
           },
@@ -384,7 +384,7 @@ export const createKVInspectorRoutes = (
       } catch (error) {
         return c.json(
           {
-            type: "/__concave/problems/internal-error",
+            type: "/__covara/problems/internal-error",
             title: "Failed to set expiry",
             status: 500,
             detail: error instanceof Error ? error.message : "Unknown error",
@@ -402,7 +402,7 @@ export const createKVInspectorRoutes = (
       if (!isKeyAllowed(key)) {
         return c.json(
           {
-            type: "/__concave/problems/forbidden",
+            type: "/__covara/problems/forbidden",
             title: "Key not allowed",
             status: 403,
           },
@@ -425,7 +425,7 @@ export const createKVInspectorRoutes = (
       } catch (error) {
         return c.json(
           {
-            type: "/__concave/problems/internal-error",
+            type: "/__covara/problems/internal-error",
             title: "Failed to delete key",
             status: 500,
             detail: error instanceof Error ? error.message : "Unknown error",

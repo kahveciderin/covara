@@ -62,7 +62,7 @@ export class IndexedDBOfflineStorage implements OfflineStorage {
   private storeName: string;
   private dbPromise: Promise<IDBDatabaseLike> | null = null;
 
-  constructor(dbName = "concave-offline", storeName = "mutations") {
+  constructor(dbName = "covara-offline", storeName = "mutations") {
     this.dbName = dbName;
     this.storeName = storeName;
     if (!isIndexedDBAvailable()) {

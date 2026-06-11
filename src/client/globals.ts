@@ -1,23 +1,23 @@
-import type { ConcaveClient } from "./types";
+import type { CovaraClient } from "./types";
 
-let globalClient: ConcaveClient | null = null;
+let globalClient: CovaraClient | null = null;
 let globalAuthErrorHandler: (() => void) | null = null;
 
-export const getClient = (): ConcaveClient => {
+export const getClient = (): CovaraClient => {
   // Check globalThis first for HMR stability
-  if (typeof globalThis !== "undefined" && (globalThis as Record<string, unknown>).__concaveClient) {
-    return (globalThis as Record<string, unknown>).__concaveClient as ConcaveClient;
+  if (typeof globalThis !== "undefined" && (globalThis as Record<string, unknown>).__covaraClient) {
+    return (globalThis as Record<string, unknown>).__covaraClient as CovaraClient;
   }
   if (!globalClient) {
-    throw new Error("Concave client not initialized. Call createClient() first.");
+    throw new Error("Covara client not initialized. Call createClient() first.");
   }
   return globalClient;
 };
 
-export const setGlobalClient = (client: ConcaveClient): void => {
+export const setGlobalClient = (client: CovaraClient): void => {
   globalClient = client;
   if (typeof globalThis !== "undefined") {
-    (globalThis as Record<string, unknown>).__concaveClient = client;
+    (globalThis as Record<string, unknown>).__covaraClient = client;
   }
 };
 

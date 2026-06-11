@@ -1,10 +1,10 @@
 import { KVAdapter } from "@/kv/types";
 import { Task, TaskStatus, TaskFilter, TaskProgress } from "./types";
 
-const TASK_DATA_PREFIX = "concave:tasks:data:";
-const STATUS_INDEX_PREFIX = "concave:tasks:status:";
-const NAME_INDEX_PREFIX = "concave:tasks:name:";
-const IDEMPOTENCY_PREFIX = "concave:tasks:idempotency:";
+const TASK_DATA_PREFIX = "covara:tasks:data:";
+const STATUS_INDEX_PREFIX = "covara:tasks:status:";
+const NAME_INDEX_PREFIX = "covara:tasks:name:";
+const IDEMPOTENCY_PREFIX = "covara:tasks:idempotency:";
 
 const serializeTask = (task: Task): Record<string, string> => {
   const result: Record<string, string> = {

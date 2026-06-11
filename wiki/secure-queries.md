@@ -6,12 +6,12 @@ The Secure Query Builder is the scope-enforcement layer used internally by `useR
 
 When you define auth scopes on a resource, all queries automatically have the scope applied. The Secure Query Builder provides additional control for complex scenarios.
 
-> Note: the builder lives in `src/resource/secure-query.ts` and is not part of the public package exports — scope enforcement happens automatically on every `useResource` endpoint. The API below documents the enforcement layer's behavior and guarantees; `createScopeResolver` and `createResourceFilter` are exported from `@kahveciderin/concave` if you need scoped SQL conditions in your own routes.
+> Note: the builder lives in `src/resource/secure-query.ts` and is not part of the public package exports — scope enforcement happens automatically on every `useResource` endpoint. The API below documents the enforcement layer's behavior and guarantees; `createScopeResolver` and `createResourceFilter` are exported from `covara` if you need scoped SQL conditions in your own routes.
 
 ## Basic Usage
 
 ```typescript
-import { createScopeResolver, createResourceFilter, getUser } from "@kahveciderin/concave";
+import { createScopeResolver, createResourceFilter, getUser } from "covara";
 import { createSecureQueryBuilder } from "@/resource/secure-query";
 
 const scopeResolver = createScopeResolver(config.auth);

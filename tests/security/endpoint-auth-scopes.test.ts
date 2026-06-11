@@ -31,7 +31,7 @@ describe("Endpoint Auth Scope Enforcement", () => {
   let searchAdapter: ReturnType<typeof createMemorySearchAdapter>;
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-auth-scope-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-auth-scope-"));
   });
 
   afterAll(() => {

@@ -28,18 +28,18 @@ export const adminAuditPage = (data: AdminAuditPageData): string => html`
     ${input({ name: 'user', placeholder: 'Filter user...' })}
     ${button('Filter', {
       variant: 'primary',
-      hxGet: '/__concave/ui/audit/list',
+      hxGet: '/__covara/ui/audit/list',
       hxTarget: '#audit-list',
       hxInclude: '[name="operation"],[name="user"]',
     })}
     <div style="flex: 1;"></div>
     ${button('Export JSON', {
       variant: 'secondary',
-      hxGet: '/__concave/api/admin-audit/export?format=json',
+      hxGet: '/__covara/api/admin-audit/export?format=json',
     })}
     ${button('Export CSV', {
       variant: 'secondary',
-      hxGet: '/__concave/api/admin-audit/export?format=csv',
+      hxGet: '/__covara/api/admin-audit/export?format=csv',
     })}
   `)}
 
@@ -68,7 +68,7 @@ export const auditList = (entries: AuditEntry[]): string => card({
         <tbody>
           ${entries.map((entry, i) => html`
             <tr style="cursor: pointer;"
-                hx-get="/__concave/ui/audit/${i}"
+                hx-get="/__covara/ui/audit/${i}"
                 hx-target="#audit-detail"
                 hx-swap="innerHTML">
               <td style="white-space: nowrap;">${formatRelativeTime(entry.timestamp)}</td>
@@ -111,7 +111,7 @@ export const auditDetail = (data: AuditDetailData): string => html`
       ${button('\u2715', {
         size: 'sm',
         variant: 'ghost',
-        hxGet: '/__concave/ui/empty',
+        hxGet: '/__covara/ui/empty',
         hxTarget: '#audit-detail',
         hxSwap: 'innerHTML',
       })}

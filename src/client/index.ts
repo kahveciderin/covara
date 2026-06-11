@@ -1,4 +1,4 @@
-import { ClientConfig, ResourceClient, OfflineConfig, ConcaveClient, CheckAuthResult, ProcedureDef, AnyProcedures } from "./types";
+import { ClientConfig, ResourceClient, OfflineConfig, CovaraClient, CheckAuthResult, ProcedureDef, AnyProcedures } from "./types";
 import { createTransport } from "./transport";
 import { createRepository } from "./repository";
 import { createOfflineManager, OfflineManager, LocalStorageOfflineStorage } from "./offline";
@@ -15,7 +15,7 @@ import type { DateFieldRegistry } from "./dates";
 import { createBillingClient } from "./billing";
 
 export { getClient, setGlobalClient, getAuthErrorHandler } from "./globals";
-export type { ConcaveClient } from "./types";
+export type { CovaraClient } from "./types";
 
 export interface SimplifiedClientConfig {
   baseUrl: string;
@@ -34,7 +34,7 @@ export interface SimplifiedClientConfig {
   billing?: { basePath?: string };
 }
 
-export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
+export const createClient = (config: SimplifiedClientConfig): CovaraClient => {
   const auth = createAuthManager();
   let jwtClient: JWTClient | undefined;
 
@@ -103,7 +103,7 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
 
   const offlineConfig: OfflineConfig | undefined =
     config.offline === true
-      ? { enabled: true, storage: new LocalStorageOfflineStorage("concave-mutations") }
+      ? { enabled: true, storage: new LocalStorageOfflineStorage("covara-mutations") }
       : config.offline === false
         ? undefined
         : config.offline;
@@ -120,7 +120,7 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
               path: mutation.resource,
               body: mutation.data,
               headers: mutation.optimisticId ? {
-                "X-Concave-Optimistic-Id": mutation.optimisticId,
+                "X-Covara-Optimistic-Id": mutation.optimisticId,
                 "X-Idempotency-Key": mutation.idempotencyKey,
               } : undefined,
             });
@@ -186,7 +186,7 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
     }
   });
 
-  const client: ConcaveClient = {
+  const client: CovaraClient = {
     transport,
     offline,
     auth,
@@ -281,15 +281,15 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
 };
 
 // HMR-safe client getter
-export const getOrCreateClient = (config: SimplifiedClientConfig): ConcaveClient => {
-  if (typeof globalThis !== "undefined" && (globalThis as Record<string, unknown>).__concaveClient) {
-    return (globalThis as Record<string, unknown>).__concaveClient as ConcaveClient;
+export const getOrCreateClient = (config: SimplifiedClientConfig): CovaraClient => {
+  if (typeof globalThis !== "undefined" && (globalThis as Record<string, unknown>).__covaraClient) {
+    return (globalThis as Record<string, unknown>).__covaraClient as CovaraClient;
   }
   return createClient(config);
 };
 
 // Legacy config support
-export const createClientLegacy = (config: ClientConfig): ConcaveClient => {
+export const createClientLegacy = (config: ClientConfig): CovaraClient => {
   return createClient({
     baseUrl: config.baseUrl,
     headers: config.headers,

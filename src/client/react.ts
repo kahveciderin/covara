@@ -475,7 +475,7 @@ export interface UseAuthResult<TUser = unknown> {
 }
 
 /**
- * Auth hook that integrates with the Concave client and supports multiple auth strategies.
+ * Auth hook that integrates with the Covara client and supports multiple auth strategies.
  *
  * Supports:
  * - `cookie` - Session-based auth (cookies like `session`, `connect.sid`, Auth.js/NextAuth cookies)

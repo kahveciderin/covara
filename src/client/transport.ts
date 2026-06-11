@@ -56,12 +56,12 @@ export class FetchTransport implements Transport {
         error instanceof TransportError &&
         error.status === 401 &&
         this.config.refreshAuth &&
-        !req.headers?.["X-Concave-Retried"]
+        !req.headers?.["X-Covara-Retried"]
       ) {
         await this.config.refreshAuth();
         return this.executeRequest<T>({
           ...req,
-          headers: { ...req.headers, "X-Concave-Retried": "1" },
+          headers: { ...req.headers, "X-Covara-Retried": "1" },
         });
       }
       throw error;
@@ -85,7 +85,7 @@ export class FetchTransport implements Transport {
       ...this.headers,
       ...req.headers,
     };
-    delete (headers as Record<string, string>)["X-Concave-Retried"];
+    delete (headers as Record<string, string>)["X-Covara-Retried"];
 
     try {
       const response = await fetch(url, {

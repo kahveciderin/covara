@@ -97,7 +97,7 @@ export const idempotencyMiddleware = (config: IdempotencyConfig): MiddlewareHand
       if (onStoreError === "fail") {
         return c.json(
           {
-            type: "/__concave/problems/idempotency-store-unavailable",
+            type: "/__covara/problems/idempotency-store-unavailable",
             title: "Idempotency store unavailable",
             status: 503,
             detail: "The idempotency store is unreachable; retry shortly.",
@@ -199,7 +199,7 @@ export const idempotencyKeyValidationMiddleware = (
     if (key && !validateIdempotencyKey(key)) {
       return c.json(
         {
-          type: "/__concave/problems/validation-error",
+          type: "/__covara/problems/validation-error",
           title: "Invalid idempotency key",
           status: 400,
           detail:

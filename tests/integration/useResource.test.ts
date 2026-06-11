@@ -26,7 +26,7 @@ describe("useResource Integration Tests", () => {
   let tempDir: string;
 
   beforeAll(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-integration-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-integration-"));
   });
 
   afterAll(() => {

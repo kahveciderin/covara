@@ -63,7 +63,7 @@ export const createSqliteFtsAdapter = (
   config: SqliteFtsConfig
 ): SearchAdapter => {
   const { db } = config;
-  const prefix = config.tablePrefix ?? "concave_fts_";
+  const prefix = config.tablePrefix ?? "covara_fts_";
   const states: Map<string, IndexState> = new Map();
 
   const ftsTable = (indexName: string) => identifier(`${prefix}${indexName}`);

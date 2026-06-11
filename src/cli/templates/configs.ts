@@ -115,13 +115,13 @@ command = ""
 [observability]
 enabled = true
 
-# Durable Object backing Concave's KV (subscriptions, rate limits, sessions)
+# Durable Object backing Covara's KV (subscriptions, rate limits, sessions)
 [durable_objects]
-bindings = [{ name = "CONCAVE_KV", class_name = "ConcaveKVDurableObject" }]
+bindings = [{ name = "COVARA_KV", class_name = "CovaraKVDurableObject" }]
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["ConcaveKVDurableObject"]
+new_sqlite_classes = ["CovaraKVDurableObject"]
 
 # Optional KV namespace (e.g. caching, feature flags).
 # Create with: wrangler kv namespace create CACHE

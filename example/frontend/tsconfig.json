@@ -14,8 +14,8 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "concave/client/react": ["../../dist/client/react.d.ts"],
-      "concave/client": ["../../dist/client/index.d.ts"]
+      "covara/client/react": ["../../dist/client/react.d.ts"],
+      "covara/client": ["../../dist/client/index.d.ts"]
     }
   },
   "include": ["src"]

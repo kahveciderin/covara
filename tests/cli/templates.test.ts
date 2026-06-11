@@ -14,7 +14,7 @@ import type { ScaffoldOptions } from "@/cli/options";
 const tempDirs: string[] = [];
 
 const makeTempDir = (): string => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "concave-tpl-test-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "covara-tpl-test-"));
   tempDirs.push(dir);
   return dir;
 };
@@ -45,7 +45,7 @@ describe("cloudflare deployment scaffold", () => {
     expect(wrangler).toContain("[[d1_databases]]");
     expect(wrangler).toContain('binding = "DB"');
     expect(wrangler).toContain("[durable_objects]");
-    expect(wrangler).toContain("ConcaveKVDurableObject");
+    expect(wrangler).toContain("CovaraKVDurableObject");
     expect(wrangler).toContain("[[migrations]]");
     expect(wrangler).toContain("new_sqlite_classes");
     expect(wrangler).toContain("kv_namespaces");
@@ -57,7 +57,7 @@ describe("cloudflare deployment scaffold", () => {
     const worker = read(dir, "src/worker.ts");
     expect(worker).toContain("export default");
     expect(worker).toContain("app.fetch");
-    expect(worker).toContain("ConcaveKVDurableObject");
+    expect(worker).toContain("CovaraKVDurableObject");
   });
 
   it("adds wrangler deploy and cf-typegen scripts", () => {
@@ -83,7 +83,7 @@ describe("node deployment scaffold", () => {
     const dockerfile = read(dir, "Dockerfile");
     expect(dockerfile).toContain("FROM node:22-slim AS build");
     expect(dockerfile).toContain("AS runtime");
-    expect(dockerfile).toContain("USER concave");
+    expect(dockerfile).toContain("USER covara");
     expect(dockerfile).toContain("HEALTHCHECK");
     expect(dockerfile).toContain("/healthz");
   });

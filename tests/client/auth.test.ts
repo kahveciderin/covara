@@ -375,7 +375,7 @@ describe("Client Auth", () => {
 
       const storage = new MemoryStorage();
       await storage.set(
-        "concave_auth_pkce",
+        "covara_auth_pkce",
         JSON.stringify(challenge)
       );
 
@@ -418,7 +418,7 @@ describe("Client Auth", () => {
     it("should detect state mismatch", async () => {
       const storage = new MemoryStorage();
       await storage.set(
-        "concave_auth_pkce",
+        "covara_auth_pkce",
         JSON.stringify({
           codeVerifier: "test-verifier",
           codeChallenge: "test-challenge",

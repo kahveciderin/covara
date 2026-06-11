@@ -20,22 +20,22 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "paths": {
-      "@kahveciderin/concave": [
+      "covara": [
         "../dist/index"
       ],
-      "@kahveciderin/concave/node": [
+      "covara/node": [
         "../dist/server/node"
       ],
-      "@kahveciderin/concave/client": [
+      "covara/client": [
         "../dist/client/index"
       ],
-      "@kahveciderin/concave/client/react": [
+      "covara/client/react": [
         "../dist/client/react"
       ],
-      "@kahveciderin/concave/env": [
+      "covara/env": [
         "../dist/env/index"
       ],
-      "@kahveciderin/concave/*": [
+      "covara/*": [
         "../dist/*"
       ],
       "@/*": [

@@ -75,8 +75,8 @@ export interface TrackedDatabase<TDb extends DrizzleDatabase> {
 
 type TrackedDb<TDb extends DrizzleDatabase> = TDb & TrackedDatabase<TDb>;
 
-const CACHE_KEY_PREFIX = "concave:cache:";
-const CACHE_KEYS_SET_PREFIX = "concave:cache:keys:";
+const CACHE_KEY_PREFIX = "covara:cache:";
+const CACHE_KEYS_SET_PREFIX = "covara:cache:keys:";
 
 function generateCacheKey(tableName: string, sql: string, params: unknown[], prefix: string): string {
   const hash = createHash("sha256")

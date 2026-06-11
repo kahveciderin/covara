@@ -1,12 +1,12 @@
 # Search
 
-Concave provides built-in search integration that automatically adds `/search` endpoints to resources when a search adapter is configured. By default, all fields are searchable with zero configuration required.
+Covara provides built-in search integration that automatically adds `/search` endpoints to resources when a search adapter is configured. By default, all fields are searchable with zero configuration required.
 
 ## Quick Start
 
 ```typescript
 import { Hono } from "hono";
-import { useResource, setGlobalSearch, createOpenSearchAdapter } from "@kahveciderin/concave";
+import { useResource, setGlobalSearch, createOpenSearchAdapter } from "covara";
 
 const app = new Hono();
 
@@ -26,19 +26,19 @@ app.route("/api/todos", useResource(todos, { db, id: todos.id }));
 
 ### Built-in Full-Text Search (Recommended)
 
-You don't need OpenSearch to get full-text search. Concave ships adapters that index into
+You don't need OpenSearch to get full-text search. Covara ships adapters that index into
 your **primary database** — SQLite (FTS5) or PostgreSQL (`tsvector`) — so search works with
 zero extra infrastructure. These are the recommended default for most deployments.
 
 ```typescript
-import { setGlobalSearch } from "@kahveciderin/concave";
-import { createSqliteFtsAdapter, createPostgresFtsAdapter } from "@kahveciderin/concave/search";
+import { setGlobalSearch } from "covara";
+import { createSqliteFtsAdapter, createPostgresFtsAdapter } from "covara/search";
 // (the same factories are re-exported from the search module)
 
 // SQLite (libsql / better-sqlite3 / D1) — uses FTS5 virtual tables
 setGlobalSearch(createSqliteFtsAdapter({
   db,                         // a runner with run(sql)/all(sql); your Drizzle db works
-  tablePrefix: "concave_fts_", // optional, default "concave_fts_"
+  tablePrefix: "covara_fts_", // optional, default "covara_fts_"
   columns: ["title", "body"], // optional; defaults to all string fields in the document
 }));
 
@@ -46,7 +46,7 @@ setGlobalSearch(createSqliteFtsAdapter({
 setGlobalSearch(createPostgresFtsAdapter({
   db,                         // a runner with execute(sql)
   language: "english",        // optional text-search config, default "english"
-  tablePrefix: "concave_fts_",
+  tablePrefix: "covara_fts_",
 }));
 ```
 
@@ -64,7 +64,7 @@ Both adapters:
 For production use with OpenSearch or Elasticsearch:
 
 ```typescript
-import { setGlobalSearch, createOpenSearchAdapter } from "@kahveciderin/concave";
+import { setGlobalSearch, createOpenSearchAdapter } from "covara";
 
 setGlobalSearch(createOpenSearchAdapter({
   node: "http://localhost:9200",
@@ -77,7 +77,7 @@ setGlobalSearch(createOpenSearchAdapter({
   ssl: {
     rejectUnauthorized: false,
   },
-  indexPrefix: "myapp_",  // Default: "concave_"
+  indexPrefix: "myapp_",  // Default: "covara_"
 }));
 ```
 
@@ -92,7 +92,7 @@ The OpenSearch adapter:
 For development and testing without external dependencies:
 
 ```typescript
-import { setGlobalSearch, createMemorySearchAdapter } from "@kahveciderin/concave";
+import { setGlobalSearch, createMemorySearchAdapter } from "covara";
 
 setGlobalSearch(createMemorySearchAdapter());
 ```
@@ -254,7 +254,7 @@ Requirements and behavior:
   `startSearchOutboxDrainer()` on Workers.
 
 ```typescript
-import { drainSearchOutbox } from "@kahveciderin/concave";
+import { drainSearchOutbox } from "covara";
 
 export default {
   fetch: app.fetch,
@@ -272,7 +272,7 @@ import {
   drainSearchOutbox,
   startSearchOutboxDrainer,
   getSearchOutboxStats,
-} from "@kahveciderin/concave";
+} from "covara";
 
 // Enqueue an index/delete op (returns false if no global KV is registered)
 await enqueueSearchOp({ index: "todos", type: "index", docId: "1", document: { id: 1, title: "Hi" } });
@@ -295,7 +295,7 @@ const { pending, dead } = await getSearchOutboxStats();
 For manual index control or bulk operations:
 
 ```typescript
-import { getGlobalSearch } from "@kahveciderin/concave";
+import { getGlobalSearch } from "covara";
 
 const search = getGlobalSearch();
 
@@ -392,7 +392,7 @@ interface OpenSearchConfig {
   node: string | string[];
   auth?: { username: string; password: string };
   ssl?: { rejectUnauthorized?: boolean; ca?: string };
-  indexPrefix?: string;  // Default: "concave_"
+  indexPrefix?: string;  // Default: "covara_"
 }
 ```
 
@@ -403,13 +403,13 @@ Create database-backed full-text adapters (no external service required).
 ```typescript
 interface SqliteFtsConfig {
   db: { run(sql): unknown; all(sql): unknown[] };
-  tablePrefix?: string;  // Default: "concave_fts_"
+  tablePrefix?: string;  // Default: "covara_fts_"
   columns?: string[];    // Default: all string fields in the indexed document
 }
 
 interface PostgresFtsConfig {
   db: { execute(sql): Promise<unknown> };
-  tablePrefix?: string;  // Default: "concave_fts_"
+  tablePrefix?: string;  // Default: "covara_fts_"
   columns?: string[];
   language?: string;     // Default: "english"
 }

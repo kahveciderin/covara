@@ -74,7 +74,7 @@ export const createDataExplorerRoutes = (
     if (!isResourceAllowed(resource)) {
       return c.json(
         {
-          type: "/__concave/problems/not-found",
+          type: "/__covara/problems/not-found",
           title: "Resource not found",
           status: 404,
           detail: `Resource '${resource}' is not available in the data explorer`,
@@ -87,7 +87,7 @@ export const createDataExplorerRoutes = (
     if (!schema) {
       return c.json(
         {
-          type: "/__concave/problems/not-found",
+          type: "/__covara/problems/not-found",
           title: "Resource not found",
           status: 404,
           detail: `Resource '${resource}' not found`,
@@ -106,7 +106,7 @@ export const createDataExplorerRoutes = (
     if (!isResourceAllowed(resource)) {
       return c.json(
         {
-          type: "/__concave/problems/not-found",
+          type: "/__covara/problems/not-found",
           title: "Resource not found",
           status: 404,
         },
@@ -118,7 +118,7 @@ export const createDataExplorerRoutes = (
     if (!entry) {
       return c.json(
         {
-          type: "/__concave/problems/not-found",
+          type: "/__covara/problems/not-found",
           title: "Resource not found",
           status: 404,
         },
@@ -239,7 +239,7 @@ export const createDataExplorerRoutes = (
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/filter-parse-error",
+          type: "/__covara/problems/filter-parse-error",
           title: "Invalid query",
           status: 400,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -257,7 +257,7 @@ export const createDataExplorerRoutes = (
     if (!isResourceAllowed(resource)) {
       return c.json(
         {
-          type: "/__concave/problems/not-found",
+          type: "/__covara/problems/not-found",
           title: "Resource not found",
           status: 404,
         },
@@ -269,7 +269,7 @@ export const createDataExplorerRoutes = (
     if (!entry) {
       return c.json(
         {
-          type: "/__concave/problems/not-found",
+          type: "/__covara/problems/not-found",
           title: "Resource not found",
           status: 404,
         },
@@ -285,7 +285,7 @@ export const createDataExplorerRoutes = (
     if (!idColumn) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Internal error",
           status: 500,
           detail: "ID column not found",
@@ -300,7 +300,7 @@ export const createDataExplorerRoutes = (
       if (!item) {
         return c.json(
           {
-            type: "/__concave/problems/not-found",
+            type: "/__covara/problems/not-found",
             title: "Record not found",
             status: 404,
             detail: `Record with id '${id}' not found in '${resource}'`,
@@ -334,7 +334,7 @@ export const createDataExplorerRoutes = (
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Internal error",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -352,7 +352,7 @@ export const createDataExplorerRoutes = (
       if (!isResourceAllowed(resource)) {
         return c.json(
           {
-            type: "/__concave/problems/not-found",
+            type: "/__covara/problems/not-found",
             title: "Resource not found",
             status: 404,
           },
@@ -364,7 +364,7 @@ export const createDataExplorerRoutes = (
       if (!entry) {
         return c.json(
           {
-            type: "/__concave/problems/not-found",
+            type: "/__covara/problems/not-found",
             title: "Resource not found",
             status: 404,
           },
@@ -399,7 +399,7 @@ export const createDataExplorerRoutes = (
       } catch (error) {
         return c.json(
           {
-            type: "/__concave/problems/validation-error",
+            type: "/__covara/problems/validation-error",
             title: "Create failed",
             status: 400,
             detail: error instanceof Error ? error.message : "Unknown error",
@@ -417,7 +417,7 @@ export const createDataExplorerRoutes = (
       if (!isResourceAllowed(resource)) {
         return c.json(
           {
-            type: "/__concave/problems/not-found",
+            type: "/__covara/problems/not-found",
             title: "Resource not found",
             status: 404,
           },
@@ -429,7 +429,7 @@ export const createDataExplorerRoutes = (
       if (!entry) {
         return c.json(
           {
-            type: "/__concave/problems/not-found",
+            type: "/__covara/problems/not-found",
             title: "Resource not found",
             status: 404,
           },
@@ -446,7 +446,7 @@ export const createDataExplorerRoutes = (
       if (!idColumn) {
         return c.json(
           {
-            type: "/__concave/problems/internal-error",
+            type: "/__covara/problems/internal-error",
             title: "Internal error",
             status: 500,
           },
@@ -459,7 +459,7 @@ export const createDataExplorerRoutes = (
         if (!existing) {
           return c.json(
             {
-              type: "/__concave/problems/not-found",
+              type: "/__covara/problems/not-found",
               title: "Record not found",
               status: 404,
             },
@@ -491,7 +491,7 @@ export const createDataExplorerRoutes = (
       } catch (error) {
         return c.json(
           {
-            type: "/__concave/problems/validation-error",
+            type: "/__covara/problems/validation-error",
             title: "Update failed",
             status: 400,
             detail: error instanceof Error ? error.message : "Unknown error",
@@ -509,7 +509,7 @@ export const createDataExplorerRoutes = (
       if (!isResourceAllowed(resource)) {
         return c.json(
           {
-            type: "/__concave/problems/not-found",
+            type: "/__covara/problems/not-found",
             title: "Resource not found",
             status: 404,
           },
@@ -521,7 +521,7 @@ export const createDataExplorerRoutes = (
       if (!entry) {
         return c.json(
           {
-            type: "/__concave/problems/not-found",
+            type: "/__covara/problems/not-found",
             title: "Resource not found",
             status: 404,
           },
@@ -537,7 +537,7 @@ export const createDataExplorerRoutes = (
       if (!idColumn) {
         return c.json(
           {
-            type: "/__concave/problems/internal-error",
+            type: "/__covara/problems/internal-error",
             title: "Internal error",
             status: 500,
           },
@@ -550,7 +550,7 @@ export const createDataExplorerRoutes = (
         if (!existing) {
           return c.json(
             {
-              type: "/__concave/problems/not-found",
+              type: "/__covara/problems/not-found",
               title: "Record not found",
               status: 404,
             },
@@ -574,7 +574,7 @@ export const createDataExplorerRoutes = (
       } catch (error) {
         return c.json(
           {
-            type: "/__concave/problems/validation-error",
+            type: "/__covara/problems/validation-error",
             title: "Delete failed",
             status: 400,
             detail: error instanceof Error ? error.message : "Unknown error",

@@ -1,6 +1,6 @@
 # Environment Variables
 
-Concave provides a type-safe environment variable system with Zod validation, automatic separation of public/private variables, and client-side support for accessing public environment variables.
+Covara provides a type-safe environment variable system with Zod validation, automatic separation of public/private variables, and client-side support for accessing public environment variables.
 
 ## Server-Side Usage
 
@@ -9,7 +9,7 @@ Concave provides a type-safe environment variable system with Zod validation, au
 Use `createEnv` to define your environment schema with Zod validation:
 
 ```typescript
-import { createEnv } from "@kahveciderin/concave";
+import { createEnv } from "covara";
 import { z } from "zod";
 
 export const env = createEnv({
@@ -62,7 +62,7 @@ const env = createEnv({
 2. **Explicit config**: Use `envVariable` for explicit control:
 
 ```typescript
-import { createEnv, envVariable } from "@kahveciderin/concave";
+import { createEnv, envVariable } from "covara";
 
 const env = createEnv({
   API_URL: envVariable(process.env.API_URL, z.string(), { public: true }),
@@ -85,7 +85,7 @@ Use `usePublicEnv` to expose public environment variables through an HTTP endpoi
 
 ```typescript
 import { Hono } from "hono";
-import { createEnv, usePublicEnv } from "@kahveciderin/concave";
+import { createEnv, usePublicEnv } from "covara";
 
 const app = new Hono();
 
@@ -145,7 +145,7 @@ If-None-Match: "a1b2c3d4e5f6g7h8"
 Use the client library to fetch public environment variables:
 
 ```typescript
-import { fetchPublicEnv, createEnvClient } from "@kahveciderin/concave/client";
+import { fetchPublicEnv, createEnvClient } from "covara/client";
 
 // Simple one-time fetch
 const env = await fetchPublicEnv<{ PUBLIC_API_URL: string }>("http://localhost:3000");
@@ -170,7 +170,7 @@ const unsubscribe = envClient.subscribe((env) => {
 Use the `usePublicEnv` hook in React components:
 
 ```typescript
-import { usePublicEnv } from "@kahveciderin/concave/client/react";
+import { usePublicEnv } from "covara/client/react";
 
 interface MyPublicEnv {
   PUBLIC_API_URL: string;
@@ -210,7 +210,7 @@ The typegen tool automatically generates TypeScript types for your public enviro
 
 ```typescript
 // scripts/typegen.ts
-import { createTypegenCLI } from "@kahveciderin/concave/client";
+import { createTypegenCLI } from "covara/client";
 
 await createTypegenCLI(process.argv.slice(2));
 ```
@@ -232,7 +232,7 @@ export type PublicEnv = {
 ### Typegen Options
 
 ```typescript
-import { generateTypes } from "@kahveciderin/concave/client";
+import { generateTypes } from "covara/client";
 
 const result = await generateTypes({
   serverUrl: "http://localhost:3000",

@@ -468,7 +468,7 @@ export interface CheckAuthResult<TUser = unknown> {
   expiresAt?: Date;
 }
 
-export interface ConcaveClient {
+export interface CovaraClient {
   readonly transport: Transport;
   readonly offline?: OfflineManager;
   readonly auth: AuthManager;

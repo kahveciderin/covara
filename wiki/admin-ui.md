@@ -1,26 +1,26 @@
 # Admin UI
 
-Concave includes a comprehensive admin dashboard for development and debugging at `/__concave/ui`. It provides a one-stop shop for monitoring, testing, and debugging your API with environment-aware features.
+Covara includes a comprehensive admin dashboard for development and debugging at `/__covara/ui`. It provides a one-stop shop for monitoring, testing, and debugging your API with environment-aware features.
 
 ## Setup
 
-With `createConcave`, just enable it:
+With `createCovara`, just enable it:
 
 ```typescript
-const app = createConcave({
+const app = createCovara({
   adminUI: true,                       // or a full AdminUIConfig object
 });
 ```
 
-Health endpoints are mounted by default and the admin UI is served at `/__concave`.
+Health endpoints are mounted by default and the admin UI is served at `/__covara`.
 
 For manual setup with a plain Hono app:
 
 ```typescript
 import { Hono } from "hono";
-import { createAdminUI, registerResource } from "@kahveciderin/concave/ui";
-import { createHealthEndpoints } from "@kahveciderin/concave";
-import { createMetricsCollector, observabilityMiddleware } from "@kahveciderin/concave/middleware/observability";
+import { createAdminUI, registerResource } from "covara/ui";
+import { createHealthEndpoints } from "covara";
+import { createMetricsCollector, observabilityMiddleware } from "covara/middleware/observability";
 
 const app = new Hono();
 
@@ -37,8 +37,8 @@ app.route("/", createHealthEndpoints({
   thresholds: { eventLoopLagMs: 100, memoryPercent: 90 },
 }));
 
-// Mount admin UI at /__concave
-app.route("/__concave", createAdminUI({
+// Mount admin UI at /__covara
+app.route("/__covara", createAdminUI({
   title: "My API Admin",
   metricsCollector,
   // Security configuration for production
@@ -88,7 +88,7 @@ registerResource({
 Kubernetes-compatible health probes for liveness and readiness checks:
 
 ```typescript
-import { createHealthEndpoints } from "@kahveciderin/concave";
+import { createHealthEndpoints } from "covara";
 
 app.route("/", createHealthEndpoints({
   enabled: true,           // Default: true
@@ -239,10 +239,10 @@ createAdminUI({
 **API Key:**
 ```bash
 # Via header
-curl -H "X-Admin-API-Key: your-key" localhost:3000/__concave/api/data/users
+curl -H "X-Admin-API-Key: your-key" localhost:3000/__covara/api/data/users
 
 # Via Bearer token
-curl -H "Authorization: Bearer your-key" localhost:3000/__concave/api/data/users
+curl -H "Authorization: Bearer your-key" localhost:3000/__covara/api/data/users
 ```
 
 **Session Auth (app integration):**
@@ -263,9 +263,9 @@ merged) from `user.roles` (string[]), `user.role` (string), `user.metadata.roles
 (string[]), and `user.metadata.role` (string). `requireRole` accepts a single role
 or an array; the check passes if the user has any of the required roles.
 
-**Audit export:** `GET /__concave/admin/audit/export` returns the audit log as
+**Audit export:** `GET /__covara/admin/audit/export` returns the audit log as
 JSON (`{ entries, mode, exportedAt }`), gated by the same authorization. The
-legacy `GET /__concave/api/admin-audit/export?format=json|csv` is also available.
+legacy `GET /__covara/api/admin-audit/export?format=json|csv` is also available.
 
 ## Pages
 
@@ -356,9 +356,9 @@ createAdminUI({
 
 **API Endpoints:**
 ```
-GET  /__concave/api/data/:resource          # List with pagination
-GET  /__concave/api/data/:resource/:id      # Get single record
-GET  /__concave/api/data/:resource/schema   # Schema introspection
+GET  /__covara/api/data/:resource          # List with pagination
+GET  /__covara/api/data/:resource/:id      # Get single record
+GET  /__covara/api/data/:resource/schema   # Schema introspection
 ```
 
 All access is logged to the admin audit log.
@@ -375,9 +375,9 @@ Modify resource data with full audit logging (when `readOnly: false`):
 
 **API Endpoints:**
 ```
-POST   /__concave/api/data/:resource        # Create
-PATCH  /__concave/api/data/:resource/:id    # Update
-DELETE /__concave/api/data/:resource/:id    # Delete
+POST   /__covara/api/data/:resource        # Create
+PATCH  /__covara/api/data/:resource/:id    # Update
+DELETE /__covara/api/data/:resource/:id    # Delete
 ```
 
 #### Admin Audit Log
@@ -392,7 +392,7 @@ View all admin bypass operations:
 
 **API Endpoint:**
 ```
-GET /__concave/api/admin-audit?limit=100&offset=0
+GET /__covara/api/admin-audit?limit=100&offset=0
 ```
 
 ### Tools Section
@@ -511,9 +511,9 @@ createAdminUI({
 
 **API Endpoints:**
 ```
-GET  /__concave/api/tasks/queue         # Queue stats
-GET  /__concave/api/tasks/task/:id      # Task details
-GET  /__concave/api/tasks/workers       # Worker status
+GET  /__covara/api/tasks/queue         # Queue stats
+GET  /__covara/api/tasks/task/:id      # Task details
+GET  /__covara/api/tasks/workers       # Worker status
 ```
 
 #### Dead Letter Queue
@@ -528,9 +528,9 @@ Failed task management:
 
 **API Endpoints:**
 ```
-GET    /__concave/api/tasks/dlq           # List DLQ entries
-POST   /__concave/api/tasks/dlq/:id/retry # Retry a task
-DELETE /__concave/api/tasks/dlq/:id       # Remove from DLQ
+GET    /__covara/api/tasks/dlq           # List DLQ entries
+POST   /__covara/api/tasks/dlq/:id/retry # Retry a task
+DELETE /__covara/api/tasks/dlq/:id       # Remove from DLQ
 ```
 
 ### KV Store Section
@@ -560,11 +560,11 @@ createAdminUI({
 
 **API Endpoints:**
 ```
-GET    /__concave/api/kv/keys?pattern=*   # List keys
-GET    /__concave/api/kv/key/:key         # Get value
-PUT    /__concave/api/kv/key/:key         # Set value
-DELETE /__concave/api/kv/key/:key         # Delete key
-GET    /__concave/api/kv/key/:key/ttl     # Get TTL
+GET    /__covara/api/kv/keys?pattern=*   # List keys
+GET    /__covara/api/kv/key/:key         # Get value
+PUT    /__covara/api/kv/key/:key         # Set value
+DELETE /__covara/api/kv/key/:key         # Delete key
+GET    /__covara/api/kv/key/:key/ttl     # Get TTL
 ```
 
 ### Help Section
@@ -597,16 +597,16 @@ Available error types:
 | `internal-error` | Server error |
 | `unknown-error` | Unrecognized error |
 
-These docs are served locally at `/__concave/problems/:type` and are referenced by the `type` field in RFC 7807 problem details responses. All API error responses now use relative URLs instead of external URLs.
+These docs are served locally at `/__covara/problems/:type` and are referenced by the `type` field in RFC 7807 problem details responses. All API error responses now use relative URLs instead of external URLs.
 
 ## Configuration
 
 ```typescript
 interface AdminUIConfig {
-  // Custom page title (default: "Concave Admin")
+  // Custom page title (default: "Covara Admin")
   title?: string;
 
-  // Base path for API URLs (default: "/__concave")
+  // Base path for API URLs (default: "/__covara")
   basePath?: string;
 
   // Security configuration
@@ -681,11 +681,11 @@ interface AdminUIConfig {
 ### Full Example
 
 ```typescript
-import { createAdminUI, registerResource } from "@kahveciderin/concave/ui";
-import { changelog, createHealthEndpoints } from "@kahveciderin/concave";
-import { createMetricsCollector, observabilityMiddleware } from "@kahveciderin/concave/middleware/observability";
-import { getTaskScheduler, getTaskRegistry, startTaskWorkers } from "@kahveciderin/concave/tasks";
-import { createKV } from "@kahveciderin/concave/kv";
+import { createAdminUI, registerResource } from "covara/ui";
+import { changelog, createHealthEndpoints } from "covara";
+import { createMetricsCollector, observabilityMiddleware } from "covara/middleware/observability";
+import { getTaskScheduler, getTaskRegistry, startTaskWorkers } from "covara/tasks";
+import { createKV } from "covara/kv";
 
 const metricsCollector = createMetricsCollector({ maxMetrics: 1000 });
 
@@ -701,7 +701,7 @@ app.route("/", createHealthEndpoints({
 }));
 
 // Admin UI (with auth in production)
-app.route("/__concave", createAdminUI({
+app.route("/__covara", createAdminUI({
   title: "My API Admin",
   metricsCollector,
   security: {
@@ -754,7 +754,7 @@ app.route("/posts", useResource(postsTable, { ... }));
 Resources must be registered to appear in the admin panel:
 
 ```typescript
-import { registerResource, unregisterResource, clearRegistry } from "@kahveciderin/concave/ui";
+import { registerResource, unregisterResource, clearRegistry } from "covara/ui";
 
 // Register a resource
 registerResource({
@@ -821,37 +821,37 @@ The admin UI exposes these JSON API endpoints:
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /__concave/api/resources` | List registered resources |
-| `GET /__concave/api/metrics` | Request metrics and slow queries |
-| `GET /__concave/api/requests` | Request log (up to 200) |
-| `GET /__concave/api/errors` | Error log (up to 100) |
-| `GET /__concave/api/changelog` | Changelog entries |
-| `GET /__concave/api/subscriptions` | Active SSE subscriptions |
-| `GET /__concave/api/environment` | Current environment info |
-| `GET /__concave/api/admin-audit` | Admin audit log |
-| `GET /__concave/api/data/:resource` | Data explorer (list) |
-| `GET /__concave/api/data/:resource/:id` | Data explorer (get) |
-| `GET /__concave/api/data/:resource/schema` | Schema introspection |
-| `POST /__concave/api/data/:resource` | Data editor (create) |
-| `PATCH /__concave/api/data/:resource/:id` | Data editor (update) |
-| `DELETE /__concave/api/data/:resource/:id` | Data editor (delete) |
-| `GET /__concave/api/tasks/queue` | Task queue stats |
-| `GET /__concave/api/tasks/task/:id` | Task details |
-| `GET /__concave/api/tasks/dlq` | Dead letter queue |
-| `POST /__concave/api/tasks/dlq/:id/retry` | Retry failed task |
-| `DELETE /__concave/api/tasks/dlq/:id` | Remove from DLQ |
-| `GET /__concave/api/tasks/workers` | Worker status |
-| `GET /__concave/api/kv/keys` | KV key listing |
-| `GET /__concave/api/kv/key/:key` | KV get value |
-| `PUT /__concave/api/kv/key/:key` | KV set value |
-| `DELETE /__concave/api/kv/key/:key` | KV delete key |
-| `GET /__concave/problems/:type` | Error type documentation |
+| `GET /__covara/api/resources` | List registered resources |
+| `GET /__covara/api/metrics` | Request metrics and slow queries |
+| `GET /__covara/api/requests` | Request log (up to 200) |
+| `GET /__covara/api/errors` | Error log (up to 100) |
+| `GET /__covara/api/changelog` | Changelog entries |
+| `GET /__covara/api/subscriptions` | Active SSE subscriptions |
+| `GET /__covara/api/environment` | Current environment info |
+| `GET /__covara/api/admin-audit` | Admin audit log |
+| `GET /__covara/api/data/:resource` | Data explorer (list) |
+| `GET /__covara/api/data/:resource/:id` | Data explorer (get) |
+| `GET /__covara/api/data/:resource/schema` | Schema introspection |
+| `POST /__covara/api/data/:resource` | Data editor (create) |
+| `PATCH /__covara/api/data/:resource/:id` | Data editor (update) |
+| `DELETE /__covara/api/data/:resource/:id` | Data editor (delete) |
+| `GET /__covara/api/tasks/queue` | Task queue stats |
+| `GET /__covara/api/tasks/task/:id` | Task details |
+| `GET /__covara/api/tasks/dlq` | Dead letter queue |
+| `POST /__covara/api/tasks/dlq/:id/retry` | Retry failed task |
+| `DELETE /__covara/api/tasks/dlq/:id` | Remove from DLQ |
+| `GET /__covara/api/tasks/workers` | Worker status |
+| `GET /__covara/api/kv/keys` | KV key listing |
+| `GET /__covara/api/kv/key/:key` | KV get value |
+| `PUT /__covara/api/kv/key/:key` | KV set value |
+| `DELETE /__covara/api/kv/key/:key` | KV delete key |
+| `GET /__covara/problems/:type` | Error type documentation |
 
 ## Theming
 
 ### Dark Mode
 
-Toggle between light and dark themes using the button in the header. Theme preference is persisted in localStorage under the key `concave-theme`.
+Toggle between light and dark themes using the button in the header. Theme preference is persisted in localStorage under the key `covara-theme`.
 
 ### Design System
 
@@ -920,7 +920,7 @@ createAdminUI({
 
 ```typescript
 if (process.env.NODE_ENV !== "production") {
-  app.route("/__concave", createAdminUI({ ... }));
+  app.route("/__covara", createAdminUI({ ... }));
 }
 ```
 
@@ -978,10 +978,10 @@ Verify your authentication method:
 
 ```bash
 # API key via header
-curl -H "X-Admin-API-Key: your-key" localhost:3000/__concave/api/resources
+curl -H "X-Admin-API-Key: your-key" localhost:3000/__covara/api/resources
 
 # API key via Bearer token
-curl -H "Authorization: Bearer your-key" localhost:3000/__concave/api/resources
+curl -H "Authorization: Bearer your-key" localhost:3000/__covara/api/resources
 ```
 
 ## Related

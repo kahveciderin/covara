@@ -7,7 +7,7 @@
  * Usage:
  *
  * ```typescript
- * import { createKV, setGlobalKV, getGlobalKV } from 'concave';
+ * import { createKV, setGlobalKV, getGlobalKV } from 'covara';
  *
  * // Initialize once at app startup
  * const kv = await createKV({ type: 'memory' }); // or 'redis'
@@ -40,7 +40,7 @@ export { MemoryKVStore, createMemoryKV } from "./memory";
 export { RedisKVStore, createRedisKV, createRedisKVFromConfig } from "./redis";
 
 export {
-  ConcaveKVDurableObject,
+  CovaraKVDurableObject,
   DurableKVEngine,
   DurableObjectKVStore,
   createDurableObjectKV,

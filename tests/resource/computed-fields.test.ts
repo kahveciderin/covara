@@ -22,7 +22,7 @@ describe("Computed / virtual fields", () => {
   let app: ReturnType<typeof createTestApp>;
 
   beforeEach(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-computed-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-computed-"));
     libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, `t-${Date.now()}.db`)}` });
     db = drizzle(libsqlClient);
     await libsqlClient.execute(

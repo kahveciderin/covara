@@ -7,8 +7,8 @@ import {
 import { OIDCClient } from "./oidc-client";
 
 const STORAGE_KEYS = {
-  tokens: "concave_auth_tokens",
-  pkce: "concave_auth_pkce",
+  tokens: "covara_auth_tokens",
+  pkce: "covara_auth_pkce",
 } as const;
 
 export class MemoryStorage implements TokenStorage {
@@ -32,7 +32,7 @@ export class MemoryStorage implements TokenStorage {
 }
 
 export class LocalStorageAdapter implements TokenStorage {
-  constructor(private prefix: string = "concave_") {}
+  constructor(private prefix: string = "covara_") {}
 
   async get(key: string): Promise<string | null> {
     if (typeof localStorage === "undefined") return null;
@@ -63,7 +63,7 @@ export class LocalStorageAdapter implements TokenStorage {
 }
 
 export class SessionStorageAdapter implements TokenStorage {
-  constructor(private prefix: string = "concave_") {}
+  constructor(private prefix: string = "covara_") {}
 
   async get(key: string): Promise<string | null> {
     if (typeof sessionStorage === "undefined") return null;

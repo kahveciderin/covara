@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createMemoryKV, MemoryKVStore } from "@/kv/memory";
 import { createKV } from "@/kv";
 import {
-  ConcaveKVDurableObject,
+  CovaraKVDurableObject,
   createDurableObjectKV,
   type DurableObjectStateLike,
   type DurableObjectStorageLike,
@@ -121,7 +121,7 @@ class FakeDOState implements DurableObjectStateLike {
 
 class FakeNamespace implements DurableObjectNamespaceLike {
   states = new Map<string, FakeDOState>();
-  private objects = new Map<string, ConcaveKVDurableObject>();
+  private objects = new Map<string, CovaraKVDurableObject>();
 
   idFromName(name: string): unknown {
     return name;
@@ -133,7 +133,7 @@ class FakeNamespace implements DurableObjectNamespaceLike {
     if (!instance) {
       const state = new FakeDOState();
       this.states.set(name, state);
-      instance = new ConcaveKVDurableObject(state);
+      instance = new CovaraKVDurableObject(state);
       this.objects.set(name, instance);
     }
     const target = instance;
@@ -701,7 +701,7 @@ describe("Durable Object KV specifics", () => {
     await kv.publish("chan", "before");
     expect(received).toEqual(["before"]);
 
-    const state = namespace.states.get("concave-kv")!;
+    const state = namespace.states.get("covara-kv")!;
     const [serverSocket] = state.getWebSockets("chan");
     (serverSocket as FakeWebSocket).close();
 

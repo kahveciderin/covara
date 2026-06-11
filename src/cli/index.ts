@@ -17,17 +17,17 @@ import {
 } from "./options.js";
 import { generateResource, generateMigration } from "./generate.js";
 
-const HELP = `concave - scaffolding CLI for the Concave framework
+const HELP = `covara - scaffolding CLI for the Covara framework
 
 Usage:
-  concave create <app-name> [options]
-  concave generate resource <name>
-  concave generate migration [-- drizzle-kit args]
-  concave help
-  concave --version
+  covara create <app-name> [options]
+  covara generate resource <name>
+  covara generate migration [-- drizzle-kit args]
+  covara help
+  covara --version
 
 Commands:
-  create <app-name>           Scaffold a new Concave project
+  create <app-name>           Scaffold a new Covara project
   generate resource <name>    Scaffold a Drizzle table + registration snippet
   generate migration          Generate a migration via drizzle-kit
 
@@ -47,7 +47,7 @@ const readVersion = (): string => {
           name?: string;
           version?: string;
         };
-        if (pkg.name === "@kahveciderin/concave" && pkg.version) {
+        if (pkg.name === "covara" && pkg.version) {
           return pkg.version;
         }
       } catch {
@@ -110,7 +110,7 @@ const parseCreateArgs = (args: string[]): ParsedCreateArgs => {
   }
 
   if (name === undefined) {
-    throw new Error("missing <app-name> (usage: concave create <app-name>)");
+    throw new Error("missing <app-name> (usage: covara create <app-name>)");
   }
 
   return { name, template, db, install };
@@ -162,7 +162,7 @@ const runGenerate = (args: string[]): number => {
   if (kind === "resource") {
     const name = rest.find((arg) => !arg.startsWith("-"));
     if (!name) {
-      throw new Error("missing <name> (usage: concave generate resource <name>)");
+      throw new Error("missing <name> (usage: covara generate resource <name>)");
     }
     const result = generateResource(name, process.cwd());
     for (const file of result.files) {

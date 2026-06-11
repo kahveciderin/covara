@@ -68,7 +68,7 @@ export const createPostgresFtsAdapter = (
   config: PostgresFtsConfig
 ): SearchAdapter => {
   const { db } = config;
-  const prefix = config.tablePrefix ?? "concave_fts_";
+  const prefix = config.tablePrefix ?? "covara_fts_";
   const language = config.language ?? "english";
   const states: Map<string, IndexState> = new Map();
 

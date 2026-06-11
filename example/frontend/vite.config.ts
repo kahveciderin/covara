@@ -21,8 +21,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      'concave/client/react': path.resolve(__dirname, '../../dist/client/react.js'),
-      'concave/client': path.resolve(__dirname, '../../dist/client/index.js'),
+      'covara/client/react': path.resolve(__dirname, '../../dist/client/react.js'),
+      'covara/client': path.resolve(__dirname, '../../dist/client/index.js'),
     },
   },
 });

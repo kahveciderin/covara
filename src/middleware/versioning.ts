@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 
-export const CONCAVE_VERSION = "1.0.0";
+export const COVARA_VERSION = "1.0.0";
 
 export interface DeprecationWarning {
   feature?: string;
@@ -20,8 +20,8 @@ export interface VersioningConfig {
 }
 
 const DEFAULT_CONFIG: Required<Omit<VersioningConfig, "deprecationWarnings" | "deprecations" | "minSupportedVersion">> = {
-  currentVersion: CONCAVE_VERSION,
-  headerName: "X-Concave-Version",
+  currentVersion: COVARA_VERSION,
+  headerName: "X-Covara-Version",
 };
 
 export const versioningMiddleware = (config: VersioningConfig = {}): MiddlewareHandler => {
@@ -56,7 +56,7 @@ export const versioningMiddleware = (config: VersioningConfig = {}): MiddlewareH
           return warning.message;
         });
 
-        c.header("X-Concave-Warn", warningMessages.join("; "));
+        c.header("X-Covara-Warn", warningMessages.join("; "));
 
         const sunsetDate = applicableWarnings
           .map((w) => w.sunsetDate)
@@ -134,7 +134,7 @@ export const wrapWithVersion = <T>(
 ): VersionedResponse<T> => {
   const response: VersionedResponse<T> = {
     data,
-    version: CONCAVE_VERSION,
+    version: COVARA_VERSION,
     timestamp: new Date().toISOString(),
   };
 
@@ -213,13 +213,13 @@ export const checkMinimumVersion = (
 
 export const createVersionChecker = (minVersion: string): MiddlewareHandler => {
   return async (c, next) => {
-    const clientVersion = c.req.header("x-concave-client-version");
+    const clientVersion = c.req.header("x-covara-client-version");
     const result = checkMinimumVersion(clientVersion, minVersion);
 
     if (!result.supported) {
       return c.json(
         {
-          type: "/__concave/problems/unsupported-version",
+          type: "/__covara/problems/unsupported-version",
           title: "Unsupported client version",
           status: 400,
           detail: result.message,
@@ -234,8 +234,8 @@ export const createVersionChecker = (minVersion: string): MiddlewareHandler => {
   };
 };
 
-export const CURSOR_VERSION_HEADER = "X-Concave-Cursor-Version";
-export const SCHEMA_VERSION_HEADER = "X-Concave-Schema-Version";
+export const CURSOR_VERSION_HEADER = "X-Covara-Cursor-Version";
+export const SCHEMA_VERSION_HEADER = "X-Covara-Schema-Version";
 
 export const schemaVersionMiddleware = (schemaVersion: string | number): MiddlewareHandler => {
   const versionStr = String(schemaVersion);

@@ -21,7 +21,7 @@ describe("Bulk upsert (POST /batch/upsert)", () => {
   let app: ReturnType<typeof createTestApp>;
 
   beforeEach(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-upsert-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-upsert-"));
     libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, `t-${Date.now()}.db`)}` });
     db = drizzle(libsqlClient);
     await libsqlClient.execute(

@@ -65,7 +65,7 @@ describe("FetchTransport robustness", () => {
 
       const secondHeaders = mockFetch.mock.calls[1][1].headers as Record<string, string>;
       expect(secondHeaders["X-Foo"]).toBe("bar");
-      expect(secondHeaders["X-Concave-Retried"]).toBeUndefined();
+      expect(secondHeaders["X-Covara-Retried"]).toBeUndefined();
     });
 
     it("surfaces the error if the retry also returns 401 (no infinite loop)", async () => {

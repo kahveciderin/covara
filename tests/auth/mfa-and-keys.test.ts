@@ -36,10 +36,10 @@ describe("TOTP", () => {
   it("generates a base32 secret and an otpauth URI", () => {
     const secret = generateTotpSecret();
     expect(secret).toMatch(/^[A-Z2-7]+$/);
-    const uri = getTotpUri({ secret, account: "user@example.com", issuer: "Concave" });
-    expect(uri).toContain("otpauth://totp/Concave:user%40example.com");
+    const uri = getTotpUri({ secret, account: "user@example.com", issuer: "Covara" });
+    expect(uri).toContain("otpauth://totp/Covara:user%40example.com");
     expect(uri).toContain(`secret=${secret}`);
-    expect(uri).toContain("issuer=Concave");
+    expect(uri).toContain("issuer=Covara");
   });
 
   it("verifies a freshly generated token", () => {
@@ -97,7 +97,7 @@ describe("MFA login gating routes", () => {
     const { router, middleware } = useAuth({
       adapter: authAdapter,
       mfa: {
-        issuer: "Concave",
+        issuer: "Covara",
         requireOnLogin: true,
         getUserByEmail: async (email) => {
           for (const u of users.values()) {

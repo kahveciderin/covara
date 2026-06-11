@@ -1,6 +1,6 @@
 # Authentication
 
-Concave provides a complete authentication system built on OpenID Connect (OIDC). The framework can act as its own OIDC Provider, giving you standard OAuth2/OIDC flows, JWT tokens, and compatibility with any OIDC client.
+Covara provides a complete authentication system built on OpenID Connect (OIDC). The framework can act as its own OIDC Provider, giving you standard OAuth2/OIDC flows, JWT tokens, and compatibility with any OIDC client.
 
 ## OIDC Provider (Recommended)
 
@@ -10,7 +10,7 @@ The OIDC provider gives you a complete identity server with standard endpoints, 
 
 ```typescript
 import { Hono } from "hono";
-import { createOIDCProvider } from "@kahveciderin/concave";
+import { createOIDCProvider } from "covara";
 
 const app = new Hono();
 
@@ -178,7 +178,7 @@ interface OIDCProviderConfig {
 Add Google, Microsoft, or other OIDC providers:
 
 ```typescript
-import { createOIDCProvider, oidcProviders } from "@kahveciderin/concave";
+import { createOIDCProvider, oidcProviders } from "covara";
 
 const { router, middleware } = createOIDCProvider({
   issuer: "https://auth.myapp.com",
@@ -277,12 +277,12 @@ consent again.
 
 ## Client-Side OIDC Authentication
 
-The Concave client library handles OIDC flows automatically with PKCE, token refresh, and 401 retry.
+The Covara client library handles OIDC flows automatically with PKCE, token refresh, and 401 retry.
 
 ### Basic Setup
 
 ```typescript
-import { createClient } from "@kahveciderin/concave/client";
+import { createClient } from "covara/client";
 
 const client = createClient({
   baseUrl: "https://api.myapp.com",
@@ -330,7 +330,7 @@ unsubscribe();
 
 ```typescript
 import { useState, useEffect } from "react";
-import { createClient, AuthState } from "@kahveciderin/concave/client";
+import { createClient, AuthState } from "covara/client";
 
 const client = createClient({
   baseUrl: "https://api.myapp.com",
@@ -403,7 +403,7 @@ import {
   MemoryStorage,
   LocalStorageAdapter,
   SessionStorageAdapter,
-} from "@kahveciderin/concave/client";
+} from "covara/client";
 
 // Memory storage (default - most secure, tokens lost on refresh)
 const client = createClient({
@@ -464,7 +464,7 @@ The `useAuth` function creates auth routes and middleware in one call:
 
 ```typescript
 import { Hono } from "hono";
-import { createPassportAdapter, useAuth, hashPassword, verifyPassword } from "@kahveciderin/concave";
+import { createPassportAdapter, useAuth, hashPassword, verifyPassword } from "covara";
 
 const app = new Hono();
 
@@ -508,10 +508,10 @@ app.use("*", middleware);
 
 `router` is a `Hono` instance and `middleware` is a Hono `MiddlewareHandler`. After the middleware runs, the user is available in handlers via `c.get("user")` or the `getUser(c)` / `requireUser(c)` helpers.
 
-With `createConcave`, pass the result directly:
+With `createCovara`, pass the result directly:
 
 ```typescript
-const app = createConcave({
+const app = createCovara({
   auth: { router, middleware },  // mounts router at <basePath>/auth, applies middleware
   // auth: { router, middleware, path: "/auth" },  // custom mount path
 });
@@ -623,12 +623,12 @@ session is created — sessions are rotated on every login.
 
 ## Password Hashing
 
-Concave ships a Workers-safe scrypt password hasher, so you don't need `bcrypt` or any
+Covara ships a Workers-safe scrypt password hasher, so you don't need `bcrypt` or any
 native dependency. Hashes are self-describing strings (`scrypt$N=...,r=...,p=...$salt$hash`),
 so parameters can evolve without a separate column.
 
 ```typescript
-import { hashPassword, verifyPassword, needsRehash } from "@kahveciderin/concave";
+import { hashPassword, verifyPassword, needsRehash } from "covara";
 
 // On signup
 const passwordHash = await hashPassword(plaintext);
@@ -681,7 +681,7 @@ Redis-backed) for multi-instance deployments; the default is in-memory.
 ### Email Verification
 
 ```typescript
-import { InMemoryVerificationTokenStore } from "@kahveciderin/concave";
+import { InMemoryVerificationTokenStore } from "covara";
 
 useAuth({
   adapter,
@@ -748,7 +748,7 @@ passwords (`password`, `123456`, `qwerty`, …); disable it with `useBuiltInDeny
 it with your own `denylist`. The policy helpers are also available standalone:
 
 ```typescript
-import { validatePasswordStrength, enforcePasswordStrength, builtInPasswordDenylist } from "@kahveciderin/concave";
+import { validatePasswordStrength, enforcePasswordStrength, builtInPasswordDenylist } from "covara";
 
 const { valid, errors } = validatePasswordStrength(password, { minLength: 12 });
 enforcePasswordStrength(password, { minLength: 12 }); // throws ValidationError if invalid
@@ -792,7 +792,7 @@ The TOTP primitives are exported for custom flows: `generateTotpSecret`, `genera
 ### Magic Links (Passwordless Login)
 
 ```typescript
-import { InMemoryVerificationTokenStore } from "@kahveciderin/concave";
+import { InMemoryVerificationTokenStore } from "covara";
 
 useAuth({
   adapter,
@@ -826,7 +826,7 @@ import {
   revokeApiKey,
   rotateApiKey,
   InMemoryApiKeyStore,
-} from "@kahveciderin/concave";
+} from "covara";
 
 const store = new InMemoryApiKeyStore(); // or your own ApiKeyStore backed by a table
 
@@ -863,7 +863,7 @@ The `ApiKeyStore` interface is `create` / `list` / `findById` / `delete` / `touc
 For custom username/password authentication:
 
 ```typescript
-import { createPassportAdapter } from "@kahveciderin/concave";
+import { createPassportAdapter } from "covara";
 
 const authAdapter = createPassportAdapter({
   // Required: lookup user by ID
@@ -891,7 +891,7 @@ const authAdapter = createPassportAdapter({
 For integration with Auth.js/NextAuth.js:
 
 ```typescript
-import { createAuthJsAdapter } from "@kahveciderin/concave";
+import { createAuthJsAdapter } from "covara";
 
 const authAdapter = createAuthJsAdapter({
   db,
@@ -908,7 +908,7 @@ const authAdapter = createAuthJsAdapter({
 Use the `rsql` template helper to define row-level access control:
 
 ```typescript
-import { useResource, rsql } from "@kahveciderin/concave";
+import { useResource, rsql } from "covara";
 
 app.route("/api/posts", useResource(postsTable, {
   id: postsTable.id,
@@ -939,7 +939,7 @@ app.route("/api/posts", useResource(postsTable, {
 Common patterns are available as presets:
 
 ```typescript
-import { scopePatterns } from "@kahveciderin/concave";
+import { scopePatterns } from "covara";
 
 // Owner-only access
 auth: scopePatterns.ownerOnly("userId"),
@@ -959,7 +959,7 @@ auth: scopePatterns.orgBased("organizationId"),
 Build scopes programmatically:
 
 ```typescript
-import { rsql, eq, ne, gt, gte, lt, lte, inList, notIn, like, notLike, isNull, isNotNull, and, or } from "@kahveciderin/concave";
+import { rsql, eq, ne, gt, gte, lt, lte, inList, notIn, like, notLike, isNull, isNotNull, and, or } from "covara";
 
 // Basic equality
 const scope = eq("userId", user.id);
@@ -991,7 +991,7 @@ The filter grammar has no NOT combinator, so there is no `not()` helper — use 
 Additional middleware helpers:
 
 ```typescript
-import { requireAuth, requireRole, requirePermission, getUser } from "@kahveciderin/concave";
+import { requireAuth, requireRole, requirePermission, getUser } from "covara";
 
 // Require authentication
 app.get("/profile", requireAuth(), (c) => {
@@ -1016,8 +1016,8 @@ app.post("/posts", requirePermission("posts:create"), async (c) => {
 The `useAuth` hook provides authentication state in React and supports multiple authentication strategies:
 
 ```typescript
-import { getOrCreateClient } from "@kahveciderin/concave/client";
-import { useAuth } from "@kahveciderin/concave/client/react";
+import { getOrCreateClient } from "covara/client";
+import { useAuth } from "covara/client/react";
 
 const client = getOrCreateClient({
   baseUrl: location.origin,
@@ -1112,11 +1112,11 @@ interface UseAuthResult<TUser> {
 
 ### JWT Auth with Client
 
-When using JWT auth with the Concave client, the hook automatically integrates:
+When using JWT auth with the Covara client, the hook automatically integrates:
 
 ```typescript
-import { getOrCreateClient } from "@kahveciderin/concave/client";
-import { useAuth, useJWTAuth } from "@kahveciderin/concave/client/react";
+import { getOrCreateClient } from "covara/client";
+import { useAuth, useJWTAuth } from "covara/client/react";
 
 // Option 1: Use createClient with jwt config
 const client = getOrCreateClient({
@@ -1133,7 +1133,7 @@ function App() {
 }
 
 // Option 2: Use dedicated JWT hook for full control
-import { initJWTClient, useJWTAuth } from "@kahveciderin/concave/client/react";
+import { initJWTClient, useJWTAuth } from "covara/client/react";
 
 initJWTClient({
   baseUrl: location.origin,
@@ -1355,7 +1355,7 @@ Clears the session and logs out the user.
 If you need more control, you can use the adapter's routes directly:
 
 ```typescript
-import { createPassportAdapter, createAuthMiddleware } from "@kahveciderin/concave";
+import { createPassportAdapter, createAuthMiddleware } from "covara";
 
 const authAdapter = createPassportAdapter({
   getUserById: async (id) => db.query.users.findFirst({ where: eq(users.id, id) }),
@@ -1386,7 +1386,7 @@ app.post("/custom-login", async (c) => {
 Good for development. Sessions are lost on server restart.
 
 ```typescript
-import { InMemorySessionStore } from "@kahveciderin/concave";
+import { InMemorySessionStore } from "covara";
 
 const authAdapter = createPassportAdapter({
   sessionStore: new InMemorySessionStore(),

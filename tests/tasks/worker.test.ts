@@ -548,7 +548,7 @@ describe("TaskWorker", () => {
       const storedTask = await scheduler.getTask(taskId);
       expect(storedTask?.status).toBe("completed");
 
-      await kv.zadd("concave:tasks:queue:50", Date.now(), taskId);
+      await kv.zadd("covara:tasks:queue:50", Date.now(), taskId);
       await sleep(150);
 
       expect(executionCount).toBe(1);

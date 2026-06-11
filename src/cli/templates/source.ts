@@ -31,8 +31,8 @@ export const renderSchema = (options: ScaffoldOptions): string =>
 
 export const NODE_SQLITE_INDEX = `import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
-import { createConcave } from "@kahveciderin/concave";
-import { startServer } from "@kahveciderin/concave/node";
+import { createCovara } from "covara";
+import { startServer } from "covara/node";
 import { todos } from "./schema.js";
 
 const client = createClient({
@@ -40,7 +40,7 @@ const client = createClient({
 });
 const db = drizzle(client);
 
-const app = createConcave({ cors: true }).resource(todos, {
+const app = createCovara({ cors: true }).resource(todos, {
   db,
   id: todos.id,
   auth: { public: true },
@@ -50,14 +50,14 @@ const server = await startServer(app, {
   port: Number(process.env.PORT ?? 3000),
 });
 
-console.log(\`Concave running at http://localhost:\${server.port}\`);
+console.log(\`Covara running at http://localhost:\${server.port}\`);
 console.log(\`Try: curl http://localhost:\${server.port}/api/todos\`);
 `;
 
 export const NODE_POSTGRES_INDEX = `import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { createConcave } from "@kahveciderin/concave";
-import { startServer } from "@kahveciderin/concave/node";
+import { createCovara } from "covara";
+import { startServer } from "covara/node";
 import { todos } from "./schema.js";
 
 if (!process.env.DATABASE_URL) {
@@ -67,7 +67,7 @@ if (!process.env.DATABASE_URL) {
 const client = postgres(process.env.DATABASE_URL);
 const db = drizzle(client);
 
-const app = createConcave({ cors: true }).resource(todos, {
+const app = createCovara({ cors: true }).resource(todos, {
   db,
   id: todos.id,
   auth: { public: true },
@@ -77,7 +77,7 @@ const server = await startServer(app, {
   port: Number(process.env.PORT ?? 3000),
 });
 
-console.log(\`Concave running at http://localhost:\${server.port}\`);
+console.log(\`Covara running at http://localhost:\${server.port}\`);
 console.log(\`Try: curl http://localhost:\${server.port}/api/todos\`);
 `;
 
@@ -86,30 +86,30 @@ export const renderNodeIndex = (options: ScaffoldOptions): string =>
 
 export const CLOUDFLARE_D1_WORKER = `import { drizzle } from "drizzle-orm/d1";
 import {
-  createConcave,
+  createCovara,
   createDurableObjectKV,
   setGlobalKV,
   initializeEventSubscription,
-  type ConcaveApp,
+  type CovaraApp,
   type DurableObjectNamespaceLike,
-} from "@kahveciderin/concave";
+} from "covara";
 import { todos } from "./schema";
 
-export { ConcaveKVDurableObject } from "@kahveciderin/concave";
+export { CovaraKVDurableObject } from "covara";
 
 interface Env {
   DB: D1Database;
-  CONCAVE_KV: DurableObjectNamespaceLike;
+  COVARA_KV: DurableObjectNamespaceLike;
 }
 
-let app: ConcaveApp | undefined;
+let app: CovaraApp | undefined;
 
-const buildApp = (env: Env): ConcaveApp => {
-  setGlobalKV(createDurableObjectKV(env.CONCAVE_KV));
+const buildApp = (env: Env): CovaraApp => {
+  setGlobalKV(createDurableObjectKV(env.COVARA_KV));
   void initializeEventSubscription();
 
   const db = drizzle(env.DB);
-  return createConcave({ cors: true }).resource(todos, {
+  return createCovara({ cors: true }).resource(todos, {
     db,
     id: todos.id,
     auth: { public: true },
@@ -127,31 +127,31 @@ export default {
 export const CLOUDFLARE_POSTGRES_WORKER = `import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import {
-  createConcave,
+  createCovara,
   createDurableObjectKV,
   setGlobalKV,
   initializeEventSubscription,
-  type ConcaveApp,
+  type CovaraApp,
   type DurableObjectNamespaceLike,
-} from "@kahveciderin/concave";
+} from "covara";
 import { todos } from "./schema";
 
-export { ConcaveKVDurableObject } from "@kahveciderin/concave";
+export { CovaraKVDurableObject } from "covara";
 
 interface Env {
   DATABASE_URL: string;
-  CONCAVE_KV: DurableObjectNamespaceLike;
+  COVARA_KV: DurableObjectNamespaceLike;
 }
 
-let app: ConcaveApp | undefined;
+let app: CovaraApp | undefined;
 
-const buildApp = (env: Env): ConcaveApp => {
-  setGlobalKV(createDurableObjectKV(env.CONCAVE_KV));
+const buildApp = (env: Env): CovaraApp => {
+  setGlobalKV(createDurableObjectKV(env.COVARA_KV));
   void initializeEventSubscription();
 
   const client = postgres(env.DATABASE_URL, { max: 5, fetch_types: false });
   const db = drizzle(client);
-  return createConcave({ cors: true }).resource(todos, {
+  return createCovara({ cors: true }).resource(todos, {
     db,
     id: todos.id,
     auth: { public: true },

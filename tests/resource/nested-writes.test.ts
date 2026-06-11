@@ -33,7 +33,7 @@ describe("Nested write-through mutations", () => {
   let app: ReturnType<typeof createTestApp>;
 
   beforeEach(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-nested-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-nested-"));
     libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, `t-${Date.now()}.db`)}` });
     db = drizzle(libsqlClient);
     await libsqlClient.execute(`CREATE TABLE authors (id TEXT PRIMARY KEY, name TEXT NOT NULL)`);

@@ -34,13 +34,13 @@ export const filterTesterPage = (data: FilterTesterPageData): string => html`
       <div style="display: flex; gap: 8px;">
         ${button('Test Filter', {
           variant: 'primary',
-          hxPost: '/__concave/ui/filter/test',
+          hxPost: '/__covara/ui/filter/test',
           hxTarget: '#filter-result',
           hxInclude: '[name="resource"],[name="filter"]',
         })}
         ${button('Parse Only', {
           variant: 'secondary',
-          hxPost: '/__concave/ui/filter/parse',
+          hxPost: '/__covara/ui/filter/parse',
           hxTarget: '#filter-result',
           hxInclude: '[name="filter"]',
         })}

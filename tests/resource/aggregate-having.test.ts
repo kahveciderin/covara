@@ -21,7 +21,7 @@ describe("Aggregation HAVING", () => {
   let app: ReturnType<typeof createTestApp>;
 
   beforeEach(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-having-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-having-"));
     libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, `t-${Date.now()}.db`)}` });
     db = drizzle(libsqlClient);
     await libsqlClient.execute(`

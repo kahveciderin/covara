@@ -77,7 +77,7 @@ export const renderResourceRegistration = (name: string): string => {
 // 2. Import it where you build the app:
 //      import { ${varName} } from "./resources/${name}.js";
 //
-// 3. Register the resource on your Concave app:
+// 3. Register the resource on your Covara app:
 //      app.resource(${varName}, {
 //        db,
 //        id: ${varName}.id,
@@ -127,7 +127,7 @@ export const generateMigration = (
 ): GenerateMigrationResult => {
   if (!fs.existsSync(path.join(cwd, "drizzle.config.ts"))) {
     throw new Error(
-      "no drizzle.config.ts found in the current directory; run this inside a Concave project"
+      "no drizzle.config.ts found in the current directory; run this inside a Covara project"
     );
   }
 

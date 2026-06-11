@@ -1,4 +1,4 @@
-import { generateTypes } from "@kahveciderin/concave/client";
+import { generateTypes } from "covara/client";
 import { writeFileSync } from "fs";
 import { join } from "path";
 

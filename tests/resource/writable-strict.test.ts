@@ -16,7 +16,7 @@ const accounts = sqliteTable("accounts", {
 });
 
 const makeApp = (opts: { writable?: string[]; strict?: boolean }) => {
-  const tempDir = mkdtempSync(join(tmpdir(), "concave-wr-"));
+  const tempDir = mkdtempSync(join(tmpdir(), "covara-wr-"));
   const libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, `t-${Date.now()}.db`)}` });
   const db = drizzle(libsqlClient);
   return libsqlClient

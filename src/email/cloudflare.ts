@@ -60,7 +60,7 @@ const chunk76 = (value: string): string => {
 };
 
 const boundary = (label: string): string =>
-  `----=_concave_${label}_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+  `----=_covara_${label}_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 
 const attachmentPart = (
   attachment: EmailAttachment,

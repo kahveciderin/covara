@@ -36,7 +36,7 @@ ledger, the webhook handling, and the server router.
 - **Dedupe/credit-grant require a global KV.** Without a KV, webhooks are still
   verified and parsed, but dedupe and auto-grant are skipped.
 - **No reconciliation/polling.** State is event-driven; if a webhook is never
-  delivered, Concave does not poll the provider to reconcile (handle critical
+  delivered, Covara does not poll the provider to reconcile (handle critical
   flows in `onEvent` and consider a periodic reconcile task).
 - **Account resolution is best-effort.** Auto-grant resolves the account from
   `metadata.accountId`/`userId` (set this at checkout) or the customer id; if

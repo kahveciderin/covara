@@ -3,7 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { isDebugEnabled, isProduction } from "@/server/env";
 
-const ERROR_TYPE_BASE = "/__concave/problems";
+const ERROR_TYPE_BASE = "/__covara/problems";
 
 export const ERROR_TYPES = {
   NOT_FOUND: `${ERROR_TYPE_BASE}/not-found`,

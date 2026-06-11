@@ -63,7 +63,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to fetch queue",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -85,7 +85,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
       if (!task) {
         return c.json(
           {
-            type: "/__concave/problems/not-found",
+            type: "/__covara/problems/not-found",
             title: "Task not found",
             status: 404,
           },
@@ -97,7 +97,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to fetch task",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -132,7 +132,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to cancel task",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -168,7 +168,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to fetch DLQ",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -190,7 +190,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
       if (!entry) {
         return c.json(
           {
-            type: "/__concave/problems/not-found",
+            type: "/__covara/problems/not-found",
             title: "DLQ entry not found",
             status: 404,
           },
@@ -202,7 +202,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to fetch DLQ entry",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -237,7 +237,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to retry task",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -261,7 +261,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
       if (!entry) {
         return c.json(
           {
-            type: "/__concave/problems/not-found",
+            type: "/__covara/problems/not-found",
             title: "DLQ entry not found",
             status: 404,
           },
@@ -283,7 +283,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to purge DLQ entry",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -304,7 +304,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to fetch workers",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",
@@ -334,7 +334,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono =>
     } catch (error) {
       return c.json(
         {
-          type: "/__concave/problems/internal-error",
+          type: "/__covara/problems/internal-error",
           title: "Failed to fetch definitions",
           status: 500,
           detail: error instanceof Error ? error.message : "Unknown error",

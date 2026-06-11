@@ -1,6 +1,6 @@
 # Pagination
 
-Concave uses cursor-based pagination for efficient traversal of large datasets. This approach provides consistent results even when data is being modified.
+Covara uses cursor-based pagination for efficient traversal of large datasets. This approach provides consistent results even when data is being modified.
 
 ## Basic Usage
 

@@ -1,13 +1,13 @@
 # Storage (File Uploads)
 
-Concave provides a comprehensive file upload system with support for local filesystem storage, S3-compatible storage, and an in-memory adapter for testing. Files are first-class resources that can be related to other resources.
+Covara provides a comprehensive file upload system with support for local filesystem storage, S3-compatible storage, and an in-memory adapter for testing. Files are first-class resources that can be related to other resources.
 
 ## Quick Start
 
 ```typescript
 import { Hono } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { useFileResource, initializeStorage } from "@kahveciderin/concave";
+import { useFileResource, initializeStorage } from "covara";
 
 const app = new Hono();
 
@@ -40,7 +40,7 @@ app.route("/api/files", useFileResource(filesTable, {
 For development and simple deployments:
 
 ```typescript
-import { initializeStorage } from "@kahveciderin/concave";
+import { initializeStorage } from "covara";
 
 initializeStorage({
   type: "local",
@@ -63,7 +63,7 @@ Features:
 For production with S3, MinIO, or compatible services:
 
 ```typescript
-import { initializeStorage } from "@kahveciderin/concave";
+import { initializeStorage } from "covara";
 
 initializeStorage({
   type: "s3",
@@ -105,7 +105,7 @@ isn't available). The adapter works in two modes:
 **Bindings mode** (inside a Worker, using an R2 bucket binding):
 
 ```typescript
-import { initializeStorage } from "@kahveciderin/concave";
+import { initializeStorage } from "covara";
 
 initializeStorage({
   type: "r2",
@@ -148,7 +148,7 @@ presigned upload/download URLs; bindings mode streams through the Worker.
 For testing without filesystem/network dependencies:
 
 ```typescript
-import { initializeStorage } from "@kahveciderin/concave";
+import { initializeStorage } from "covara";
 
 initializeStorage({ type: "memory" });
 ```
@@ -334,7 +334,7 @@ GET /api/todos?include=image
 ### Upload Files
 
 ```typescript
-import { createFileClient } from "@kahveciderin/concave/client";
+import { createFileClient } from "covara/client";
 
 const files = createFileClient({
   transport: client.transport,
@@ -361,7 +361,7 @@ await files.delete(fileId);
 ### React Hooks
 
 ```tsx
-import { useFileUpload, useFile, useFiles } from "@kahveciderin/concave/client/react";
+import { useFileUpload, useFile, useFiles } from "covara/client/react";
 
 function UploadButton() {
   const { upload, isUploading, progress, error } = useFileUpload({

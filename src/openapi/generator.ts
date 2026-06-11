@@ -7,7 +7,7 @@ import {
   ETagResourceConfig,
   CustomOperator,
 } from "@/resource/types";
-import { CONCAVE_VERSION } from "@/middleware/versioning";
+import { COVARA_VERSION } from "@/middleware/versioning";
 
 export interface OpenAPIV3Document {
   openapi: string;
@@ -777,8 +777,8 @@ export const generateOpenAPISpec = (
   const spec: OpenAPIV3Document = {
     openapi: "3.0.3",
     info: {
-      title: config.title ?? "Concave API",
-      version: config.version ?? CONCAVE_VERSION,
+      title: config.title ?? "Covara API",
+      version: config.version ?? COVARA_VERSION,
       description: config.description,
     },
     servers: config.servers,

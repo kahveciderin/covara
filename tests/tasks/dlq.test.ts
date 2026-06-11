@@ -325,8 +325,8 @@ describe("Dead Letter Queue", () => {
     it("should purge only old tasks when time specified", async () => {
       const oldTask = createTestTask({ id: "old-task" });
       await storage.store(oldTask);
-      await kv.zadd("concave:tasks:dead", Date.now() - 10000, oldTask.id);
-      await kv.hmset(`concave:tasks:dead:data:${oldTask.id}`, {
+      await kv.zadd("covara:tasks:dead", Date.now() - 10000, oldTask.id);
+      await kv.hmset(`covara:tasks:dead:data:${oldTask.id}`, {
         taskId: oldTask.id,
         task: JSON.stringify(oldTask),
         failedAt: String(Date.now() - 10000),

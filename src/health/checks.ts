@@ -94,7 +94,7 @@ export const checkKV = async (kv: KVAdapter): Promise<HealthCheckResult> => {
       };
     }
 
-    const testKey = "__concave_health_check";
+    const testKey = "__covara_health_check";
     await kv.set(testKey, "1", { ex: 10 });
     const value = await kv.get(testKey);
 

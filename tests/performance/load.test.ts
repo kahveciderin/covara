@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { useResource } from "../../src/resource/hook";
-import { createClient, ConcaveClient } from "../../src/client";
+import { createClient, CovaraClient } from "../../src/client";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -28,13 +28,13 @@ const itemsTable = sqliteTable("items", {
 describe("Performance: Load Testing", () => {
   let app: Hono;
   let server: ServerType;
-  let client: ConcaveClient;
+  let client: CovaraClient;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
   let tempDir: string;
 
   beforeAll(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "concave-perf-"));
+    tempDir = mkdtempSync(join(tmpdir(), "covara-perf-"));
     libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, "test.db")}` });
     db = drizzle(libsqlClient);
 
@@ -297,7 +297,7 @@ describe("Performance: Load Testing", () => {
 describe("Performance: Memory and Connection Handling", () => {
   it("should handle many client connections without memory leak", async () => {
     // this test creates multiple clients to verify no connection leak
-    const clients: ConcaveClient[] = [];
+    const clients: CovaraClient[] = [];
 
     for (let i = 0; i < 100; i++) {
       clients.push(createClient({ baseUrl: "http://localhost:9999" }));

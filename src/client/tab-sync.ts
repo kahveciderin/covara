@@ -157,7 +157,7 @@ const noopTabSync: TabSync = {
  * environments without BroadcastChannel (React Native, Node), so callers never
  * need to feature-detect themselves.
  */
-export const createTabSync = (channelName = "concave-tab-sync"): TabSync => {
+export const createTabSync = (channelName = "covara-tab-sync"): TabSync => {
   if (!hasBroadcastChannel()) {
     return noopTabSync;
   }

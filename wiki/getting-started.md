@@ -1,15 +1,15 @@
-# Getting Started with Concave
+# Getting Started with Covara
 
-Concave is a real-time API framework built on Hono that provides automatic CRUD endpoints, subscriptions, authentication, and more. It runs standalone on Node.js and on Cloudflare Workers.
+Covara is a real-time API framework built on Hono that provides automatic CRUD endpoints, subscriptions, authentication, and more. It runs standalone on Node.js and on Cloudflare Workers.
 
 ## Quick Start with the CLI
 
 The fastest way to start is the scaffolding CLI:
 
 ```bash
-npx concave create my-app                          # Node + SQLite (default)
-npx concave create my-app --template cloudflare    # Cloudflare Workers + D1
-npx concave create my-app --db postgres            # PostgreSQL
+npx covara create my-app                          # Node + SQLite (default)
+npx covara create my-app --template cloudflare    # Cloudflare Workers + D1
+npx covara create my-app --db postgres            # PostgreSQL
 ```
 
 Options:
@@ -27,7 +27,7 @@ This scaffolds a complete project with a schema, database setup, drizzle-kit con
 ### Installation
 
 ```bash
-npm install @kahveciderin/concave drizzle-orm @libsql/client zod
+npm install covara drizzle-orm @libsql/client zod
 ```
 
 ### 1. Define Your Schema
@@ -60,12 +60,12 @@ export const db = drizzle(client);
 
 ```typescript
 // src/main.ts
-import { createConcave } from "@kahveciderin/concave";
-import { startServer } from "@kahveciderin/concave/node";
+import { createCovara } from "covara";
+import { startServer } from "covara/node";
 import { usersTable } from "./schema.js";
 import { db } from "./db.js";
 
-const app = createConcave({ cors: true }).resource(usersTable, {
+const app = createCovara({ cors: true }).resource(usersTable, {
   id: usersTable.id,
   db,
   auth: { public: true },
@@ -93,24 +93,24 @@ That's it! You now have a full REST API with:
 | `DELETE` | `/api/users/batch` | Batch delete |
 | `POST` | `/api/users/rpc/:name` | RPC procedures |
 
-Health endpoints (`/healthz`, `/readyz`) and the OpenAPI spec (under `/__concave`) are mounted by default.
+Health endpoints (`/healthz`, `/readyz`) and the OpenAPI spec (under `/__covara`) are mounted by default.
 
-## The `createConcave` Factory
+## The `createCovara` Factory
 
-`createConcave(options)` returns a `ConcaveApp` (which extends Hono) with sensible defaults: RFC 7807 error handling, health endpoints, and OpenAPI generation.
+`createCovara(options)` returns a `CovaraApp` (which extends Hono) with sensible defaults: RFC 7807 error handling, health endpoints, and OpenAPI generation.
 
 ```typescript
-import { createConcave } from "@kahveciderin/concave";
+import { createCovara } from "covara";
 
-const app = createConcave({
+const app = createCovara({
   basePath: "/api",          // resource mount prefix (default: "/api")
   cors: true,                // or a hono/cors config object
   auth: { router, middleware },  // result of useAuth()
   middleware: [],            // extra Hono MiddlewareHandlers applied to all routes
   observability: true,       // request metrics
   health: true,              // /healthz + /readyz (default: enabled)
-  adminUI: true,             // admin dashboard at /__concave (default: disabled)
-  openapi: true,             // OpenAPI spec at /__concave (default: enabled)
+  adminUI: true,             // admin dashboard at /__covara (default: disabled)
+  openapi: true,             // OpenAPI spec at /__covara (default: enabled)
 })
   .resource(usersTable, { id: usersTable.id, db })       // mounts at /api/users
   .resource("/people", usersTable, { id: usersTable.id, db });  // custom path
@@ -122,7 +122,7 @@ const app = createConcave({
 
 ```typescript
 import { Hono } from "hono";
-import { useResource, errorHandler, notFoundHandler } from "@kahveciderin/concave";
+import { useResource, errorHandler, notFoundHandler } from "covara";
 
 const app = new Hono();
 app.onError(errorHandler);
@@ -182,7 +182,7 @@ useResource(usersTable, {
 ### Node.js
 
 ```typescript
-import { startServer } from "@kahveciderin/concave/node";
+import { startServer } from "covara/node";
 
 const server = await startServer(app, {
   port: 3000,
@@ -195,23 +195,23 @@ const server = await startServer(app, {
 
 ### Cloudflare Workers
 
-A `ConcaveApp` is a Hono app, so it is directly usable as a Worker:
+A `CovaraApp` is a Hono app, so it is directly usable as a Worker:
 
 ```typescript
 // src/worker.ts
 import { drizzle } from "drizzle-orm/d1";
-import { createConcave, type ConcaveApp } from "@kahveciderin/concave";
+import { createCovara, type CovaraApp } from "covara";
 import { todos } from "./schema";
 
 interface Env {
   DB: D1Database;
 }
 
-let app: ConcaveApp | undefined;
+let app: CovaraApp | undefined;
 
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
-    app ??= createConcave({ cors: true }).resource(todos, {
+    app ??= createCovara({ cors: true }).resource(todos, {
       db: drizzle(env.DB),
       id: todos.id,
       auth: { public: true },
@@ -242,7 +242,7 @@ Connect from React with real-time subscriptions and offline support:
 
 ```typescript
 // client.ts
-import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { getOrCreateClient } from "covara/client";
 
 export const client = getOrCreateClient({
   baseUrl: location.origin,
@@ -251,7 +251,7 @@ export const client = getOrCreateClient({
 });
 
 // App.tsx
-import { useAuth, useLiveList } from "@kahveciderin/concave/client/react";
+import { useAuth, useLiveList } from "covara/client/react";
 
 function App() {
   const { user, isAuthenticated, logout } = useAuth<User>();
@@ -299,11 +299,11 @@ function UserList() {
 - [Mutation Tracking](./track-mutations.md) - Automatic changelog and cache invalidation
 - [Error Handling](./error-handling.md) - Error types and handling
 - [Deployment](./deployment.md) - Node, Cloudflare Workers, databases
-- [Migrating from Express](./migrating-from-express.md) - Upgrade guide from Express-era Concave
+- [Migrating from Express](./migrating-from-express.md) - Upgrade guide from Express-era Covara
 
 ### API Documentation
 - [OpenAPI](./openapi.md) - OpenAPI spec generation
 - [Middleware](./middleware.md) - Observability, versioning, rate limiting
 
 ### Development Tools
-- [Admin UI](./admin-ui.md) - Built-in admin dashboard at /__concave/ui
+- [Admin UI](./admin-ui.md) - Built-in admin dashboard at /__covara/ui

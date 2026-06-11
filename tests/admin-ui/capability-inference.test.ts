@@ -201,9 +201,9 @@ describe("Capability Inference", () => {
           db,
         })
       );
-      app.route("/__concave", createAdminUI({}));
+      app.route("/__covara", createAdminUI({}));
 
-      const response = await get(app, "/__concave/ui/resources");
+      const response = await get(app, "/__covara/ui/resources");
       expect(response.status).toBe(200);
 
       // Should show all endpoint types
@@ -228,9 +228,9 @@ describe("Capability Inference", () => {
           },
         })
       );
-      app.route("/__concave", createAdminUI({}));
+      app.route("/__covara", createAdminUI({}));
 
-      const response = await get(app, "/__concave/ui/resources");
+      const response = await get(app, "/__covara/ui/resources");
       expect(response.status).toBe(200);
 
       // Should show GET but not mutation endpoints

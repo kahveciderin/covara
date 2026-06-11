@@ -125,7 +125,7 @@ describe("Typegen", () => {
     expect(result.code).toContain("} as const;");
   });
 
-  it("should import types from @kahveciderin/concave/client", async () => {
+  it("should import types from covara/client", async () => {
     const { generateTypes } = await import("../../src/client/typegen");
 
     const result = await generateTypes({
@@ -134,7 +134,7 @@ describe("Typegen", () => {
       includeClient: true,
     });
 
-    expect(result.code).toContain('import type { ResourceClient, ConcaveClient } from "@kahveciderin/concave/client";');
+    expect(result.code).toContain('import type { ResourceClient, CovaraClient } from "covara/client";');
   });
 
   it("should generate TypedResources using LiveQuery with type tracking", async () => {
@@ -151,7 +151,7 @@ describe("Typegen", () => {
     expect(result.code).toContain("todo: LiveQuery<Todo, {}>;");
   });
 
-  it("should generate TypedConcaveClient extending ConcaveClient", async () => {
+  it("should generate TypedCovaraClient extending CovaraClient", async () => {
     const { generateTypes } = await import("../../src/client/typegen");
 
     const result = await generateTypes({
@@ -160,7 +160,7 @@ describe("Typegen", () => {
       includeClient: true,
     });
 
-    expect(result.code).toContain("export interface TypedConcaveClient extends ConcaveClient {");
+    expect(result.code).toContain("export interface TypedCovaraClient extends CovaraClient {");
     expect(result.code).toContain("resources: TypedResources;");
   });
 
@@ -173,7 +173,7 @@ describe("Typegen", () => {
       includeClient: true,
     });
 
-    expect(result.code).toContain("export function createTypedClient(baseClient: ConcaveClient): TypedConcaveClient {");
+    expect(result.code).toContain("export function createTypedClient(baseClient: CovaraClient): TypedCovaraClient {");
     expect(result.code).toContain("resources: {");
     expect(result.code).toContain("user: createLiveQuery<User, {}>(baseClient, ResourcePaths.user),");
     expect(result.code).toContain("todo: createLiveQuery<Todo, {}>(baseClient, ResourcePaths.todo),");
@@ -265,7 +265,7 @@ describe("Typegen", () => {
     });
 
     expect(result.code).toContain("function createLiveQuery<T extends { id: string }, Relations = {}, Included = {}, Selected extends keyof T = keyof T>(");
-    expect(result.code).toContain("baseClient: ConcaveClient,");
+    expect(result.code).toContain("baseClient: CovaraClient,");
     expect(result.code).toContain("const resourceClient = baseClient.resource<T>(path);");
     expect(result.code).toContain("query() { return resourceClient.query(); },");
   });
@@ -278,7 +278,7 @@ const compileGeneratedCode = async (generated: string, usage: string): Promise<s
   const path = await import("path");
 
   const root = path.resolve(__dirname, "../..");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "concave-typegen-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "covara-typegen-"));
   const generatedFile = path.join(dir, "api-types.ts");
   const usageFile = path.join(dir, "usage.ts");
   fs.writeFileSync(generatedFile, generated);
@@ -295,7 +295,7 @@ const compileGeneratedCode = async (generated: string, usage: string): Promise<s
       skipLibCheck: true,
       esModuleInterop: true,
       paths: {
-        "@kahveciderin/concave/client": [path.join(root, "src/client/index.ts")],
+        "covara/client": [path.join(root, "src/client/index.ts")],
         "@/*": [path.join(root, "src/*")],
       },
     });
@@ -334,9 +334,9 @@ describe("Typegen generated code compiles", () => {
     const usage = `
 import { createTypedClient, ResourcePaths } from "./api-types";
 import type { User, UserInput, Todo, TodoUpdate } from "./api-types";
-import type { ConcaveClient } from "@kahveciderin/concave/client";
+import type { CovaraClient } from "covara/client";
 
-declare const base: ConcaveClient;
+declare const base: CovaraClient;
 const client = createTypedClient(base);
 
 // Path constants match the server-reported mount paths
@@ -494,9 +494,9 @@ describe("Typegen with Relations", () => {
     const usage = `
 import { createTypedClient } from "./api-types";
 import type { Category, PostWithRelations, PostWith } from "./api-types";
-import type { ConcaveClient } from "@kahveciderin/concave/client";
+import type { CovaraClient } from "covara/client";
 
-declare const base: ConcaveClient;
+declare const base: CovaraClient;
 const client = createTypedClient(base);
 
 // include() narrows to known relation names and tracks the included type
@@ -599,9 +599,9 @@ describe("Typegen identifier and nullability handling", () => {
     const usage = `
 import { createTypedClient } from "./api-types";
 import type { todoItemsInput } from "./api-types";
-import type { ConcaveClient } from "@kahveciderin/concave/client";
+import type { CovaraClient } from "covara/client";
 
-declare const base: ConcaveClient;
+declare const base: CovaraClient;
 const client = createTypedClient(base);
 void client.resources.todoItems;
 

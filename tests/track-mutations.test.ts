@@ -784,7 +784,7 @@ describe("Query Caching", () => {
 
       await trackedDb.select().from(todosTable);
 
-      const keysSetBefore = await kv.smembers("concave:cache:keys:todos");
+      const keysSetBefore = await kv.smembers("covara:cache:keys:todos");
       expect(keysSetBefore.length).toBeGreaterThan(0);
 
       // Verify the cache key has data
@@ -814,7 +814,7 @@ describe("Query Caching", () => {
 
       await invalidateCache("todos");
 
-      const keysSet = await kv.smembers("concave:cache:keys:todos");
+      const keysSet = await kv.smembers("covara:cache:keys:todos");
       expect(keysSet).toHaveLength(0);
     });
 
@@ -831,7 +831,7 @@ describe("Query Caching", () => {
 
       await invalidateAllCache();
 
-      const cacheKeys = await kv.keys("concave:cache:*");
+      const cacheKeys = await kv.keys("covara:cache:*");
       expect(cacheKeys).toHaveLength(0);
     });
   });
@@ -853,7 +853,7 @@ describe("Query Caching", () => {
       await db.insert(todosTable).values({ id: "1", title: "Test" });
       await trackedDb.select().from(todosTable);
 
-      const keysSet = await kv.smembers("concave:cache:keys:todos");
+      const keysSet = await kv.smembers("covara:cache:keys:todos");
       expect(keysSet).toHaveLength(0);
     });
 
