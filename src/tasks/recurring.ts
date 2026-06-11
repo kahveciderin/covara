@@ -1,9 +1,16 @@
 import { CronExpressionParser } from "cron-parser";
 import { KVAdapter } from "@/kv/types";
-import { RecurringConfig, RecurringSchedule, TaskDefinition } from "./types";
+import {
+  CatchupPolicy,
+  RecurringConfig,
+  RecurringSchedule,
+  TaskDefinition,
+} from "./types";
 
 const RECURRING_KEY = "concave:tasks:recurring";
 const RECURRING_DATA_PREFIX = "concave:tasks:recurring:data:";
+
+const MAX_CATCHUP_OCCURRENCES = 1000;
 
 const serializeSchedule = (
   schedule: RecurringSchedule
@@ -15,6 +22,7 @@ const serializeSchedule = (
   timezone: schedule.timezone,
   nextRunAt: String(schedule.nextRunAt),
   createdAt: String(schedule.createdAt),
+  catchup: schedule.catchup ?? "skip",
   ...(schedule.cron && { cron: schedule.cron }),
   ...(schedule.interval && { interval: String(schedule.interval) }),
   ...(schedule.lastRunAt && { lastRunAt: String(schedule.lastRunAt) }),
@@ -30,6 +38,7 @@ const deserializeSchedule = (
   timezone: data.timezone,
   nextRunAt: parseInt(data.nextRunAt, 10),
   createdAt: parseInt(data.createdAt, 10),
+  catchup: (data.catchup as CatchupPolicy) ?? "skip",
   ...(data.cron && { cron: data.cron }),
   ...(data.interval && { interval: parseInt(data.interval, 10) }),
   ...(data.lastRunAt && { lastRunAt: parseInt(data.lastRunAt, 10) }),
@@ -68,6 +77,40 @@ export const calculateNextRun = (
   throw new Error("Either cron or interval must be specified");
 };
 
+export const computeMissedOccurrences = (
+  config: RecurringConfig,
+  fromExclusive: number,
+  toInclusive: number
+): number[] => {
+  if (toInclusive < fromExclusive) return [];
+
+  const occurrences: number[] = [];
+
+  if (config.cron) {
+    const interval = CronExpressionParser.parse(config.cron, {
+      currentDate: new Date(fromExclusive),
+      tz: config.timezone ?? "UTC",
+    });
+    while (occurrences.length < MAX_CATCHUP_OCCURRENCES) {
+      const next = interval.next().toDate().getTime();
+      if (next > toInclusive) break;
+      occurrences.push(next);
+    }
+    return occurrences;
+  }
+
+  if (config.interval) {
+    let t = fromExclusive + config.interval;
+    while (t <= toInclusive && occurrences.length < MAX_CATCHUP_OCCURRENCES) {
+      occurrences.push(t);
+      t += config.interval;
+    }
+    return occurrences;
+  }
+
+  throw new Error("Either cron or interval must be specified");
+};
+
 export const createRecurringManager = (kv: KVAdapter): RecurringManager => ({
   async create(
     task: TaskDefinition,
@@ -88,6 +131,7 @@ export const createRecurringManager = (kv: KVAdapter): RecurringManager => ({
       enabled: true,
       nextRunAt,
       createdAt: now,
+      catchup: config.catchup ?? "skip",
     };
 
     await kv.hmset(
@@ -167,16 +211,20 @@ export const createRecurringManager = (kv: KVAdapter): RecurringManager => ({
       const schedule = deserializeSchedule(data);
       if (!schedule.enabled) continue;
 
-      await enqueue(schedule.taskName, schedule.input);
+      const cfg: RecurringConfig = {
+        cron: schedule.cron,
+        interval: schedule.interval,
+        timezone: schedule.timezone,
+      };
+      const catchup: CatchupPolicy = schedule.catchup ?? "skip";
 
-      const nextRunAt = calculateNextRun(
-        {
-          cron: schedule.cron,
-          interval: schedule.interval,
-          timezone: schedule.timezone,
-        },
-        now
-      );
+      const fireTimes = resolveFireTimes(schedule, cfg, catchup, now);
+
+      for (let i = 0; i < fireTimes; i++) {
+        await enqueue(schedule.taskName, schedule.input);
+      }
+
+      const nextRunAt = calculateNextRun(cfg, now);
 
       await kv.hmset(`${RECURRING_DATA_PREFIX}${scheduleId}`, {
         lastRunAt: String(now),
@@ -186,6 +234,21 @@ export const createRecurringManager = (kv: KVAdapter): RecurringManager => ({
     }
   },
 });
+
+const resolveFireTimes = (
+  schedule: RecurringSchedule,
+  cfg: RecurringConfig,
+  catchup: CatchupPolicy,
+  now: number
+): number => {
+  if (catchup === "skip" || catchup === "last") {
+    return 1;
+  }
+
+  const from = schedule.lastRunAt ?? schedule.nextRunAt;
+  const missed = computeMissedOccurrences(cfg, from, now);
+  return Math.max(1, missed.length);
+};
 
 export const startRecurringScheduler = (
   kv: KVAdapter,

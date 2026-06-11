@@ -364,8 +364,8 @@ export class MemoryKVStore implements KVAdapter {
     const len = list.length;
 
     // Handle negative indices
-    let s = start < 0 ? Math.max(len + start, 0) : start;
-    let e = stop < 0 ? len + stop : stop;
+    const s = start < 0 ? Math.max(len + start, 0) : start;
+    const e = stop < 0 ? len + stop : stop;
 
     // Redis includes the element at stop index
     return list.slice(s, e + 1);
@@ -384,8 +384,8 @@ export class MemoryKVStore implements KVAdapter {
     const list = stored.value as string[];
     const len = list.length;
 
-    let s = start < 0 ? Math.max(len + start, 0) : start;
-    let e = stop < 0 ? len + stop : stop;
+    const s = start < 0 ? Math.max(len + start, 0) : start;
+    const e = stop < 0 ? len + stop : stop;
 
     stored.value = list.slice(s, e + 1);
   }
@@ -443,8 +443,8 @@ export class MemoryKVStore implements KVAdapter {
     const zset = this.getZSet(this.key(key));
     const len = zset.length;
 
-    let s = start < 0 ? Math.max(len + start, 0) : start;
-    let e = stop < 0 ? len + stop : stop;
+    const s = start < 0 ? Math.max(len + start, 0) : start;
+    const e = stop < 0 ? len + stop : stop;
 
     return zset.slice(s, e + 1).map((m) => m.member);
   }
@@ -606,9 +606,9 @@ export class MemoryKVStore implements KVAdapter {
   // Lua scripting (simplified - just for basic atomic operations)
 
   async eval(
-    script: string,
-    keys: string[],
-    args: string[]
+    _script: string,
+    _keys: string[],
+    _args: string[]
   ): Promise<unknown> {
     // In-memory implementation doesn't support Lua
     // This is a placeholder that just returns null

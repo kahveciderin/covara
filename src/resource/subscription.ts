@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { Response } from "express";
+import { SSEWriter } from "@/server/sse";
 import { Filter, CompiledFilterExpression } from "./filter";
 import { changelog } from "./changelog";
 import {
@@ -16,7 +16,31 @@ import { getGlobalKV, hasGlobalKV, KVAdapter } from "../kv";
 
 // Local process state (cannot be shared across processes)
 // HTTP handlers must stay in memory on the process that owns the connection
-const localHandlers = new Map<string, Response>();
+const localHandlers = new Map<string, SSEWriter>();
+
+// Backpressure policy per local handler: what to do when a client's outbound
+// buffer is full (slow consumer). "invalidate" forces a refetch+resume,
+// "disconnect" drops the connection, "drop" silently skips the event.
+export type BackpressurePolicy = "invalidate" | "disconnect" | "drop";
+const localHandlerPolicies = new Map<string, BackpressurePolicy>();
+
+// Per-resource field-read masking. The resource hook registers a masker that
+// strips non-readable table columns; we apply it to every outgoing event object
+// AFTER filter matching (so masked columns can still be used in subscription
+// filters) and BEFORE the payload reaches the client.
+const resourceMaskers = new Map<string, (item: Record<string, unknown>) => Record<string, unknown>>();
+
+export const registerResourceMask = (
+  resource: string,
+  mask: (item: Record<string, unknown>) => Record<string, unknown>
+): void => {
+  resourceMaskers.set(resource, mask);
+};
+
+const maskForResource = <T extends Record<string, unknown>>(resource: string, item: T): T => {
+  const mask = resourceMaskers.get(resource);
+  return mask ? (mask(item) as T) : item;
+};
 
 // Local cache for compiled filters (each process can have its own cache)
 const compiledFiltersCache = new Map<string, CompiledFilterExpression>();
@@ -232,14 +256,20 @@ export const getSubscription = async (subscriptionId: string): Promise<Subscript
   return subscription;
 };
 
-export const registerHandler = (handlerId: string, res: Response): void => {
-  localHandlers.set(handlerId, res);
+export const registerHandler = (
+  handlerId: string,
+  writer: SSEWriter,
+  backpressurePolicy: BackpressurePolicy = "invalidate"
+): void => {
+  localHandlers.set(handlerId, writer);
   localHandlerIds.add(handlerId);
+  localHandlerPolicies.set(handlerId, backpressurePolicy);
 };
 
 export const unregisterHandler = async (handlerId: string): Promise<void> => {
   localHandlers.delete(handlerId);
   localHandlerIds.delete(handlerId);
+  localHandlerPolicies.delete(handlerId);
 
   const kv = getKV();
   if (kv) {
@@ -317,7 +347,30 @@ const sendEvent = <T extends SubscriptionEvent>(
   }
 
   const handler = localHandlers.get(handlerId);
-  if (!handler || handler.writableEnded) {
+  if (!handler || handler.closed) {
+    return false;
+  }
+
+  // Slow-consumer handling: if the client's outbound buffer is already full,
+  // do not keep enqueuing (which would grow memory unboundedly). Apply the
+  // configured backpressure policy. With "invalidate"/"disconnect" the client
+  // reconnects and the changelog catchup redelivers anything it missed, so no
+  // event is silently lost within the changelog window.
+  if (handler.backpressured) {
+    const policy = localHandlerPolicies.get(handlerId) ?? "invalidate";
+    if (policy === "drop") {
+      return false;
+    }
+    if (policy === "invalidate") {
+      try {
+        handler.write(
+          `data: ${JSON.stringify({ type: "invalidate", reason: "slow-consumer" })}\n\n`
+        );
+      } catch {
+        // best effort — buffer may already be full
+      }
+    }
+    handler.close();
     return false;
   }
 
@@ -337,10 +390,17 @@ const broadcastEvent = async (event: BroadcastEvent): Promise<void> => {
   await kv.publish(EVENTS_CHANNEL, JSON.stringify(event));
 };
 
-// Initialize event subscription for this process
+let eventSubscriptionInitialized = false;
+
+// Initialize cross-process event fan-out for this process. Idempotent: safe to
+// call multiple times (only the first call subscribes). Auto-invoked by
+// initializeKV() so multi-instance deployments receive each other's events
+// without the developer remembering a manual wiring step.
 export const initializeEventSubscription = async (): Promise<void> => {
   const kv = getKV();
   if (!kv) return;
+  if (eventSubscriptionInitialized) return;
+  eventSubscriptionInitialized = true;
 
   await kv.subscribe(EVENTS_CHANNEL, async (message: string) => {
     try {
@@ -376,7 +436,7 @@ export const sendExistingItems = async <T extends Record<string, unknown>>(
       seq: await getNextSeq(subscriptionId),
       timestamp: Date.now(),
       type: "existing",
-      object: item,
+      object: maskForResource(subscription.resource, item),
     };
 
     // Send directly if local, otherwise broadcast
@@ -451,7 +511,7 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
         seq: await getNextSeq(subId),
         timestamp: Date.now(),
         type: "added",
-        object: itemToSend,
+        object: maskForResource(resource, itemToSend),
         ...(optimisticId && { meta: { optimisticId } }),
       };
 
@@ -524,7 +584,7 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
           seq: await getNextSeq(subId),
           timestamp: Date.now(),
           type: "added",
-          object: itemToSend,
+          object: maskForResource(resource, itemToSend),
         };
 
         if (!sendEvent(subscription.handlerId, event)) {
@@ -542,7 +602,7 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
           seq: await getNextSeq(subId),
           timestamp: Date.now(),
           type: "changed",
-          object: itemToSend,
+          object: maskForResource(resource, itemToSend),
           previousObjectId,
         };
 
@@ -618,6 +678,20 @@ export const sendInvalidateEvent = async (
 
   if (!sendEvent(subscription.handlerId, event)) {
     await broadcastEvent({ type: "invalidate", subscriptionId, event });
+  }
+};
+
+// Send an `invalidate` to every subscription on a resource, forcing clients to
+// refetch. Used for mutations the framework can't observe row-by-row: raw SQL
+// and writes from external processes (via recordExternalMutation).
+export const invalidateResourceSubscriptions = async (
+  resource: string,
+  reason?: string
+): Promise<void> => {
+  const allSubs = await getAllSubscriptions();
+  for (const [subId, subscription] of allSubs) {
+    if (subscription.resource !== resource) continue;
+    await sendInvalidateEvent(subId, reason);
   }
 };
 
@@ -716,7 +790,7 @@ export const isHandlerConnected = (handlerId: string): boolean => {
   }
 
   const handler = localHandlers.get(handlerId);
-  return handler !== undefined && !handler.writableEnded;
+  return handler !== undefined && !handler.closed;
 };
 
 export const getHandlerSubscriptions = async (handlerId: string): Promise<string[]> => {
@@ -777,10 +851,30 @@ export const getSubscriptionStats = async (): Promise<{
   };
 };
 
+// Gracefully close every SSE connection owned by this process. Used during
+// shutdown draining so clients receive a clean stream end (and reconnect with
+// resume) instead of a dropped socket.
+export const closeAllHandlers = (): number => {
+  let closed = 0;
+  for (const writer of localHandlers.values()) {
+    try {
+      writer.close();
+      closed++;
+    } catch {
+      // ignore writers already torn down
+    }
+  }
+  return closed;
+};
+
+export const getActiveHandlerCount = (): number => localHandlers.size;
+
 export const clearAllSubscriptions = async (): Promise<void> => {
   compiledFiltersCache.clear();
   localHandlers.clear();
   localHandlerIds.clear();
+  localHandlerPolicies.clear();
+  eventSubscriptionInitialized = false;
 
   const kv = getKV();
   if (!kv) return;

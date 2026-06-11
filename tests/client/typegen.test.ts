@@ -118,8 +118,10 @@ describe("Typegen", () => {
     });
 
     expect(result.code).toContain("export const ResourcePaths = {");
-    expect(result.code).toContain('"/api/api/users"');
-    expect(result.code).toContain('"/api/api/todos"');
+    expect(result.code).toContain('"/api/users"');
+    expect(result.code).toContain('"/api/todos"');
+    expect(result.code).not.toContain('"/api/api/users"');
+    expect(result.code).not.toContain('"/api/api/todos"');
     expect(result.code).toContain("} as const;");
   });
 
@@ -269,6 +271,105 @@ describe("Typegen", () => {
   });
 });
 
+const compileGeneratedCode = async (generated: string, usage: string): Promise<string[]> => {
+  const ts = await import("typescript");
+  const fs = await import("fs");
+  const os = await import("os");
+  const path = await import("path");
+
+  const root = path.resolve(__dirname, "../..");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "concave-typegen-"));
+  const generatedFile = path.join(dir, "api-types.ts");
+  const usageFile = path.join(dir, "usage.ts");
+  fs.writeFileSync(generatedFile, generated);
+  fs.writeFileSync(usageFile, usage);
+
+  try {
+    const program = ts.createProgram([generatedFile, usageFile], {
+      strict: true,
+      noEmit: true,
+      target: ts.ScriptTarget.ES2020,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      lib: ["lib.es2020.d.ts", "lib.dom.d.ts"],
+      skipLibCheck: true,
+      esModuleInterop: true,
+      paths: {
+        "@kahveciderin/concave/client": [path.join(root, "src/client/index.ts")],
+        "@/*": [path.join(root, "src/*")],
+      },
+    });
+    const diagnostics = ts.getPreEmitDiagnostics(program);
+    return diagnostics.map(
+      (d) =>
+        `${d.file?.fileName ?? "?"}:${d.start ?? 0} ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+describe("Typegen generated code compiles", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.includes("/env")) {
+        return Promise.reject(new Error("Env endpoint not available"));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(mockSchema),
+      });
+    }));
+  });
+
+  it("generated TypeScript typechecks against the real client library", async () => {
+    const { generateTypes } = await import("../../src/client/typegen");
+
+    const result = await generateTypes({
+      serverUrl: "http://localhost:3000",
+      output: "typescript",
+      includeClient: true,
+    });
+
+    const usage = `
+import { createTypedClient, ResourcePaths } from "./api-types";
+import type { User, UserInput, Todo, TodoUpdate } from "./api-types";
+import type { ConcaveClient } from "@kahveciderin/concave/client";
+
+declare const base: ConcaveClient;
+const client = createTypedClient(base);
+
+// Path constants match the server-reported mount paths
+const userPath: "/api/users" = ResourcePaths.user;
+const todoPath: "/api/todos" = ResourcePaths.todo;
+void userPath;
+void todoPath;
+
+// Primary keys and nullable fields are optional on Input
+const input: UserInput = { name: "a", email: "a@example.com", createdAt: "now" };
+void input;
+
+const update: TodoUpdate = { completed: true };
+void update;
+
+// Fluent LiveQuery keeps the resource type
+const query = client.resources.user.filter("age>18").select("id", "name");
+const _selected: "id" | "name" = null as unknown as typeof query._selected extends infer S ? S extends "id" | "name" ? S : never : never;
+void _selected;
+
+async function main(): Promise<User | Todo> {
+  const list = await client.resources.user.list();
+  const todo = await client.resources.todo.get("1");
+  return list.items[0] ?? todo;
+}
+void main;
+`;
+
+    const diagnostics = await compileGeneratedCode(result.code, usage);
+    expect(diagnostics).toEqual([]);
+  }, 60000);
+});
+
 // Test schema with relations
 const mockSchemaWithRelations = {
   version: "1.0.0",
@@ -380,4 +481,135 @@ describe("Typegen with Relations", () => {
     expect(result.code).toContain("post: createLiveQuery<Post, PostRelations>(baseClient, ResourcePaths.post),");
     expect(result.code).toContain("category: createLiveQuery<Category, {}>(baseClient, ResourcePaths.category),");
   });
+
+  it("generated code with relations typechecks against the real client library", async () => {
+    const { generateTypes } = await import("../../src/client/typegen");
+
+    const result = await generateTypes({
+      serverUrl: "http://localhost:3000",
+      output: "typescript",
+      includeClient: true,
+    });
+
+    const usage = `
+import { createTypedClient } from "./api-types";
+import type { Category, PostWithRelations, PostWith } from "./api-types";
+import type { ConcaveClient } from "@kahveciderin/concave/client";
+
+declare const base: ConcaveClient;
+const client = createTypedClient(base);
+
+// include() narrows to known relation names and tracks the included type
+const withCategory = client.resources.post.include("category");
+type Included = typeof withCategory._included;
+const included: Included = { category: null };
+void included;
+
+const post: PostWithRelations = { id: "1", title: "t", categoryId: null, category: null };
+const picked: PostWith<"category"> = { id: "1", title: "t", categoryId: null };
+void post;
+void picked;
+
+const category: Category | null = post.category ?? null;
+void category;
+`;
+
+    const diagnostics = await compileGeneratedCode(result.code, usage);
+    expect(diagnostics).toEqual([]);
+  }, 60000);
+});
+
+describe("Typegen identifier and nullability handling", () => {
+  const oddSchema = {
+    version: "1.0.0",
+    timestamp: new Date().toISOString(),
+    resources: [
+      {
+        name: "todo-items",
+        path: "/api/todo-items",
+        fields: [
+          { name: "id", type: { kind: "primitive", primitive: "string" }, nullable: false, primaryKey: true },
+          { name: "display-name", type: { kind: "primitive", primitive: "string" }, nullable: false },
+          { name: "note", type: { kind: "primitive", primitive: "string" }, nullable: true },
+          { name: "count", type: { kind: "primitive", primitive: "integer" }, nullable: false, defaultValue: 0 },
+          { name: "serial", type: { kind: "primitive", primitive: "integer" }, nullable: false, autoIncrement: true },
+        ],
+        capabilities: {},
+        procedures: [],
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.includes("/env")) {
+        return Promise.reject(new Error("Env endpoint not available"));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(oddSchema),
+      });
+    }));
+  });
+
+  it("sanitizes resource names into valid identifiers and quotes odd field names", async () => {
+    const { generateTypes } = await import("../../src/client/typegen");
+
+    const result = await generateTypes({
+      serverUrl: "http://localhost:3000",
+      output: "typescript",
+      includeClient: true,
+    });
+
+    expect(result.code).toContain("export interface todoItems {");
+    expect(result.code).toContain('"display-name": string;');
+    expect(result.code).toContain('todoItems: "/api/todo-items" as const,');
+    expect(result.code).toContain("todoItems: LiveQuery<todoItems, {}>;");
+  });
+
+  it("marks nullable, defaulted, and primary-key input fields optional and drops auto-increment fields", async () => {
+    const { generateTypes } = await import("../../src/client/typegen");
+
+    const result = await generateTypes({
+      serverUrl: "http://localhost:3000",
+      output: "typescript",
+      includeClient: true,
+    });
+
+    const inputSection = result.code.slice(
+      result.code.indexOf("export type todoItemsInput"),
+      result.code.indexOf("export type todoItemsUpdate")
+    );
+    expect(inputSection).toContain("id?: string;");
+    expect(inputSection).toContain('"display-name": string;');
+    expect(inputSection).toContain("note?: string | null;");
+    expect(inputSection).toContain("count?: number;");
+    expect(inputSection).not.toContain("serial");
+  });
+
+  it("generated code with odd identifiers typechecks", async () => {
+    const { generateTypes } = await import("../../src/client/typegen");
+
+    const result = await generateTypes({
+      serverUrl: "http://localhost:3000",
+      output: "typescript",
+      includeClient: true,
+    });
+
+    const usage = `
+import { createTypedClient } from "./api-types";
+import type { todoItemsInput } from "./api-types";
+import type { ConcaveClient } from "@kahveciderin/concave/client";
+
+declare const base: ConcaveClient;
+const client = createTypedClient(base);
+void client.resources.todoItems;
+
+const input: todoItemsInput = { "display-name": "hello" };
+void input;
+`;
+
+    const diagnostics = await compileGeneratedCode(result.code, usage);
+    expect(diagnostics).toEqual([]);
+  }, 60000);
 });

@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { ValidationError } from "./error";
 
 export interface DryRunResult<T = unknown> {

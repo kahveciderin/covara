@@ -52,20 +52,37 @@ describe("Query Builder", () => {
     });
 
     describe("String operators", () => {
-      it("should build like filter", () => {
-        expect(q.like("name", "%john%")).toBe('name=like="%john%"');
+      it("should build like filter using the server %= operator", () => {
+        expect(q.like("name", "%john%")).toBe('name%="%john%"');
       });
 
-      it("should build startsWith filter", () => {
-        expect(q.startsWith("email", "admin")).toBe('email=like="admin%"');
+      it("should build notLike filter using the server !%= operator", () => {
+        expect(q.notLike("name", "%john%")).toBe('name!%="%john%"');
       });
 
-      it("should build endsWith filter", () => {
-        expect(q.endsWith("file", ".pdf")).toBe('file=like="%.pdf"');
+      it("should build ilike filter", () => {
+        expect(q.ilike("name", "%john%")).toBe('name=ilike="%john%"');
       });
 
-      it("should build contains filter", () => {
-        expect(q.contains("description", "important")).toBe('description=like="%important%"');
+      it("should build startsWith filter without pattern injection", () => {
+        expect(q.startsWith("email", "admin")).toBe('email=startswith="admin"');
+      });
+
+      it("should build endsWith filter without pattern injection", () => {
+        expect(q.endsWith("file", ".pdf")).toBe('file=endswith=".pdf"');
+      });
+
+      it("should build contains filter without pattern injection", () => {
+        expect(q.contains("description", "important")).toBe('description=contains="important"');
+      });
+
+      it("should build icontains filter", () => {
+        expect(q.icontains("description", "IMPORTANT")).toBe('description=icontains="IMPORTANT"');
+      });
+
+      it("should not corrupt values containing LIKE wildcards", () => {
+        expect(q.contains("title", "50% off")).toBe('title=contains="50% off"');
+        expect(q.startsWith("code", "a_b")).toBe('code=startswith="a_b"');
       });
     });
 
@@ -205,9 +222,9 @@ describe("Query Builder", () => {
 
     it("should work with string fields", () => {
       const name = createFieldBuilder<string>("name");
-      
+
       expect(name.eq("John")).toBe('name=="John"');
-      expect(name.contains("john")).toBe('name=like="%john%"');
+      expect(name.contains("john")).toBe('name=contains="john"');
     });
 
     it("should work with nullable fields", () => {
@@ -279,7 +296,7 @@ describe("Query Builder", () => {
       );
 
       expect(filter).toBe(
-        '((name=like="%john%"),(email=like="%john%"));(status=="active");(deletedAt=isnull=true)'
+        '((name=contains="john"),(email=contains="john"));(status=="active");(deletedAt=isnull=true)'
       );
     });
 
@@ -314,6 +331,81 @@ describe("Query Builder", () => {
       expect(filter).toBe(
         '(tenantId=="tenant-123");((visibility=="public"),(ownerId=="user-456"))'
       );
+    });
+  });
+
+  describe("Server round-trip compatibility", () => {
+    // Regression: q.like/notLike/contains/startsWith/endsWith previously emitted
+    // the operators =like=/=notlike= which the server filter parser rejects.
+    // Every expression produced by the client query builder must be parseable
+    // and executable by the server-side filter.
+    const buildServerFilter = async () => {
+      const { sqliteTable, text, integer } = await import("drizzle-orm/sqlite-core");
+      const { createResourceFilter } = await import("@/resource/filter");
+      const table = sqliteTable("items", {
+        id: text("id").primaryKey(),
+        name: text("name"),
+        email: text("email"),
+        status: text("status"),
+        age: integer("age"),
+        deletedAt: text("deleted_at"),
+      });
+      return createResourceFilter(table);
+    };
+
+    it("parses every operator the client emits", async () => {
+      const filter = await buildServerFilter();
+
+      const expressions = [
+        q.eq("name", "John"),
+        q.neq("status", "inactive"),
+        q.gt("age", 18),
+        q.gte("age", 18),
+        q.lt("age", 65),
+        q.lte("age", 65),
+        q.like("name", "%john%"),
+        q.notLike("name", "%john%"),
+        q.ilike("name", "%john%"),
+        q.in("status", ["active", "pending"]),
+        q.out("status", ["banned"]),
+        q.isNull("deletedAt"),
+        q.isNotNull("email"),
+        q.startsWith("email", "admin"),
+        q.endsWith("email", ".com"),
+        q.contains("name", "john"),
+        q.icontains("name", "JOHN"),
+        q.between("age", 18, 65),
+        q.and(q.eq("status", "active"), q.gt("age", 18)),
+        q.or(q.eq("status", "active"), q.eq("status", "pending")),
+      ];
+
+      for (const expr of expressions) {
+        expect(() => filter.compile(expr), `should parse: ${expr}`).not.toThrow();
+      }
+    });
+
+    it("executes client-built filters with correct semantics", async () => {
+      const filter = await buildServerFilter();
+      const object = {
+        id: "1",
+        name: "John Doe",
+        email: "admin@example.com",
+        status: "active",
+        age: 30,
+        deletedAt: null,
+      };
+
+      expect(filter.execute(q.contains("name", "ohn D"), object)).toBe(true);
+      expect(filter.execute(q.contains("name", "50% off"), object)).toBe(false);
+      expect(filter.execute(q.startsWith("email", "admin"), object)).toBe(true);
+      expect(filter.execute(q.endsWith("email", ".com"), object)).toBe(true);
+      expect(filter.execute(q.like("name", "John%"), object)).toBe(true);
+      expect(filter.execute(q.notLike("name", "Jane%"), object)).toBe(true);
+      expect(filter.execute(q.between("age", 18, 65), object)).toBe(true);
+      expect(filter.execute(q.isNull("deletedAt"), object)).toBe(true);
+      expect(
+        filter.execute(q.and(q.eq("status", "active"), q.gt("age", 18)), object)
+      ).toBe(true);
     });
   });
 

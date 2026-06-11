@@ -16,7 +16,7 @@ Concave supports defining relationships between resources and loading related da
 ```typescript
 import { useResource } from "@kahveciderin/concave";
 
-app.use("/api/posts", useResource(postsTable, {
+app.route("/api/posts", useResource(postsTable, {
   db,
   id: postsTable.id,
   relations: {
@@ -87,9 +87,37 @@ GET /api/posts?include=comments(limit:5;select:id,text,createdAt)
 
 | Option | Description | Example |
 |--------|-------------|---------|
-| `limit` | Maximum items to load | `comments(limit:10)` |
+| `limit` | Maximum items to load (per parent for `hasMany`/`manyToMany`) | `comments(limit:10)` |
+| `offset` | Skip items before loading (per parent) | `comments(limit:10;offset:10)` |
 | `select` | Fields to include | `author(select:id,name)` |
-| `filter` | Filter related items | `comments(filter:status=="approved")` |
+| `filter` | Filter related items (RSQL) | `comments(filter:status=="approved")` |
+
+`limit`/`offset` are applied **per parent row** for `hasMany`/`manyToMany` relations, so each
+parent gets its own page of related rows rather than a single global slice. The `filter`
+expression is combined with the relation's foreign-key join condition.
+
+### Eager Relations
+
+A relation marked `strategy: "eager"` is loaded automatically on `GET /` and `GET /:id`
+**without** the client passing `?include=`:
+
+```typescript
+relations: {
+  author: {
+    resource: "users",
+    schema: usersTable,
+    type: "belongsTo",
+    foreignKey: postsTable.authorId,
+    references: usersTable.id,
+    strategy: "eager",   // always loaded
+  },
+}
+```
+
+If the client also includes an eager relation explicitly (e.g. `?include=author(limit:5)`), the
+explicit spec wins — its `filter`/`limit`/`offset`/`select`/nested options override the bare
+eager load. Relations with `strategy: "lazy"` (or no strategy) load only when explicitly
+requested via `?include=`.
 
 ### Examples
 
@@ -133,6 +161,7 @@ interface RelationConfig {
   };
 
   // Optional
+  strategy?: "eager" | "lazy";     // "eager" auto-loads on list/get; default lazy
   defaultSelect?: string[];        // Default fields to load
   filterable?: boolean;            // Allow filtering on this relation
   subscribeToChanges?: boolean;    // Include in subscription events
@@ -144,7 +173,7 @@ interface RelationConfig {
 Configure include behavior at the resource level:
 
 ```typescript
-app.use("/api/posts", useResource(postsTable, {
+app.route("/api/posts", useResource(postsTable, {
   db,
   id: postsTable.id,
   relations: { /* ... */ },
@@ -211,7 +240,7 @@ const postTagsTable = sqliteTable("postTags", {
 });
 
 // Resource configuration
-app.use("/api/posts", useResource(postsTable, {
+app.route("/api/posts", useResource(postsTable, {
   db,
   id: postsTable.id,
   relations: {
@@ -244,7 +273,7 @@ Load deeply nested data:
 // posts -> author (user) -> profile
 // posts -> comments -> author (user)
 
-app.use("/api/users", useResource(usersTable, {
+app.route("/api/users", useResource(usersTable, {
   db,
   id: usersTable.id,
   relations: {
@@ -276,6 +305,55 @@ GET /api/posts?filter=author.organizationId=="org-123"
 
 Note: Filtering on relations requires `filterable: true` in the relation config and may use subqueries which can impact performance on large datasets.
 
+## Nested Write-Through Mutations
+
+With `nestedWrites: true` on the resource, a `POST /` body may embed related objects under their
+relation names. They are created together with the main row in a **single transaction**, with
+foreign keys wired automatically. If any insert fails, the whole transaction rolls back.
+
+```typescript
+app.route("/api/posts", useResource(postsTable, {
+  db,
+  id: postsTable.id,
+  nestedWrites: true,   // off by default
+  relations: {
+    author:   { resource: "users", schema: usersTable, type: "belongsTo",
+                foreignKey: postsTable.authorId, references: usersTable.id },
+    comments: { resource: "comments", schema: commentsTable, type: "hasMany",
+                foreignKey: commentsTable.postId, references: postsTable.id },
+  },
+}));
+```
+
+```jsonc
+// POST /api/posts
+{
+  "title": "Hello",
+  // belongsTo parent — created first, its key wired into the post's foreignKey
+  "author": { "id": "u1", "name": "Ada" },
+  // hasMany children — created after the post, wired to the new post's referenced key
+  "comments": [
+    { "text": "first!" },
+    { "text": "nice" }
+  ]
+}
+```
+
+Order of operations inside the transaction:
+
+1. `belongsTo` parents are inserted first; the new parent's referenced value is written into the
+   main row's foreign-key column.
+2. The main row is inserted (after `onBeforeCreate` hooks run).
+3. `hasMany`/`hasOne` children are inserted, each wired to the new row's referenced key. A
+   `hasOne` value may be a single object; `hasMany` accepts an array (a single object is also
+   accepted and treated as one child).
+
+The response is the created main row (children/parents are not echoed back; refetch with
+`?include=` to read them).
+
+**Limitation:** `manyToMany` nested writes are **not** supported. Embedding a `manyToMany`
+relation in the create body has no effect on the junction table — manage those links separately.
+
 ## TypeScript Types
 
 ```typescript
@@ -290,6 +368,7 @@ interface IncludeSpec {
   select?: string[];
   filter?: string;
   limit?: number;
+  offset?: number;
   nested?: IncludeSpec[];
 }
 ```

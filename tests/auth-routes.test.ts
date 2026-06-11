@@ -1,23 +1,29 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import cookieParser from "cookie-parser";
-import request from "supertest";
+import { Hono, type Context } from "hono";
 import { useAuth, AuthUser, UseAuthOptions } from "@/auth/routes";
 import { createPassportAdapter, PassportAdapter } from "@/auth/adapters/passport";
 import { InMemorySessionStore } from "@/auth/types";
+import { createTestApp, get, post } from "./helpers/hono";
 
-const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err.statusCode || err.status || 500;
-  res.status(status).json({
-    error: {
-      message: err.message,
-      code: err.code || "INTERNAL_ERROR",
-    },
+const makeContext = async (
+  headers: Record<string, string> = {}
+): Promise<Context> => {
+  let captured: Context | undefined;
+  const probe = new Hono();
+  probe.get("*", (c) => {
+    captured = c;
+    return c.text("ok");
   });
+  await probe.request("/", { headers });
+  if (!captured) throw new Error("Failed to capture context");
+  return captured;
 };
 
+const setCookies = (response: Response): string[] =>
+  response.headers.getSetCookie();
+
 describe("Auth Routes (useAuth)", () => {
-  let app: Express;
+  let app: Hono;
   let sessionStore: InMemorySessionStore;
   let authAdapter: PassportAdapter;
   let mockUsers: Map<string, AuthUser & { passwordHash: string }>;
@@ -30,9 +36,7 @@ describe("Auth Routes (useAuth)", () => {
   });
 
   beforeEach(() => {
-    app = express();
-    app.use(express.json());
-    app.use(cookieParser());
+    app = createTestApp();
 
     sessionStore = new InMemorySessionStore();
     mockUsers = new Map();
@@ -51,13 +55,12 @@ describe("Auth Routes (useAuth)", () => {
   describe("GET /me", () => {
     beforeEach(() => {
       const { router, middleware } = useAuth({ adapter: authAdapter });
-      app.use("/api/auth", router);
-      app.use(middleware);
-      app.use(errorHandler);
+      app.route("/api/auth", router);
+      app.use("*", middleware);
     });
 
     it("should return null when not authenticated", async () => {
-      const res = await request(app).get("/api/auth/me");
+      const res = await get(app, "/api/auth/me");
 
       expect(res.status).toBe(200);
       expect(res.body.user).toBeNull();
@@ -66,9 +69,9 @@ describe("Auth Routes (useAuth)", () => {
     it("should return user when authenticated via session cookie", async () => {
       const session = await authAdapter.createSession("user-1");
 
-      const res = await request(app)
-        .get("/api/auth/me")
-        .set("Cookie", `session=${session.id}`);
+      const res = await get(app, "/api/auth/me", {
+        cookie: `session=${session.id}`,
+      });
 
       expect(res.status).toBe(200);
       expect(res.body.user).not.toBeNull();
@@ -81,18 +84,18 @@ describe("Auth Routes (useAuth)", () => {
       const session = await authAdapter.createSession("user-1");
       await authAdapter.invalidateSession(session.id);
 
-      const res = await request(app)
-        .get("/api/auth/me")
-        .set("Cookie", `session=${session.id}`);
+      const res = await get(app, "/api/auth/me", {
+        cookie: `session=${session.id}`,
+      });
 
       expect(res.status).toBe(200);
       expect(res.body.user).toBeNull();
     });
 
     it("should return null for invalid session ID", async () => {
-      const res = await request(app)
-        .get("/api/auth/me")
-        .set("Cookie", "session=invalid-session-id");
+      const res = await get(app, "/api/auth/me", {
+        cookie: "session=invalid-session-id",
+      });
 
       expect(res.status).toBe(200);
       expect(res.body.user).toBeNull();
@@ -102,9 +105,9 @@ describe("Auth Routes (useAuth)", () => {
       const session = await authAdapter.createSession("user-1");
       mockUsers.delete("user-1");
 
-      const res = await request(app)
-        .get("/api/auth/me")
-        .set("Cookie", `session=${session.id}`);
+      const res = await get(app, "/api/auth/me", {
+        cookie: `session=${session.id}`,
+      });
 
       expect(res.status).toBe(200);
       expect(res.body.user).toBeNull();
@@ -126,73 +129,76 @@ describe("Auth Routes (useAuth)", () => {
           },
         },
       });
-      app.use("/api/auth", router);
-      app.use(middleware);
-      app.use(errorHandler);
+      app.route("/api/auth", router);
+      app.use("*", middleware);
     });
 
     it("should login with valid credentials and set session cookie", async () => {
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({ email: "test@example.com", password: "password123" });
+      const res = await post(app, "/api/auth/login", {
+        email: "test@example.com",
+        password: "password123",
+      });
 
       expect(res.status).toBe(200);
       expect(res.body.user).not.toBeNull();
       expect(res.body.user.id).toBe("user-1");
       expect(res.body.sessionId).toBeDefined();
 
-      const cookies = res.headers["set-cookie"];
-      expect(cookies).toBeDefined();
-      expect(cookies.some((c: string) => c.startsWith("session="))).toBe(true);
+      const cookies = setCookies(res.res);
+      expect(cookies.length).toBeGreaterThan(0);
+      expect(cookies.some((c) => c.startsWith("session="))).toBe(true);
     });
 
     it("should reject login with invalid email", async () => {
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({ email: "wrong@example.com", password: "password123" });
+      const res = await post(app, "/api/auth/login", {
+        email: "wrong@example.com",
+        password: "password123",
+      });
 
       expect(res.status).toBe(401);
-      expect(res.body.error.message).toContain("Invalid");
+      expect(res.body.detail).toContain("Invalid");
     });
 
     it("should reject login with invalid password", async () => {
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({ email: "test@example.com", password: "wrongpassword" });
+      const res = await post(app, "/api/auth/login", {
+        email: "test@example.com",
+        password: "wrongpassword",
+      });
 
       expect(res.status).toBe(401);
-      expect(res.body.error.message).toContain("Invalid");
+      expect(res.body.detail).toContain("Invalid");
     });
 
     it("should reject login with missing email", async () => {
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({ password: "password123" });
+      const res = await post(app, "/api/auth/login", {
+        password: "password123",
+      });
 
       expect(res.status).toBe(400);
-      expect(res.body.error.message).toContain("required");
+      expect(res.body.detail).toContain("required");
     });
 
     it("should reject login with missing password", async () => {
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({ email: "test@example.com" });
+      const res = await post(app, "/api/auth/login", {
+        email: "test@example.com",
+      });
 
       expect(res.status).toBe(400);
-      expect(res.body.error.message).toContain("required");
+      expect(res.body.detail).toContain("required");
     });
 
     it("should allow authenticated request after login using session cookie", async () => {
-      const loginRes = await request(app)
-        .post("/api/auth/login")
-        .send({ email: "test@example.com", password: "password123" });
+      const loginRes = await post(app, "/api/auth/login", {
+        email: "test@example.com",
+        password: "password123",
+      });
 
-      const sessionCookie = loginRes.headers["set-cookie"]
-        .find((c: string) => c.startsWith("session="));
+      const sessionCookie = setCookies(loginRes.res).find((c) =>
+        c.startsWith("session=")
+      );
+      expect(sessionCookie).toBeDefined();
 
-      const meRes = await request(app)
-        .get("/api/auth/me")
-        .set("Cookie", sessionCookie);
+      const meRes = await get(app, "/api/auth/me", { cookie: sessionCookie! });
 
       expect(meRes.status).toBe(200);
       expect(meRes.body.user).not.toBeNull();
@@ -217,63 +223,68 @@ describe("Auth Routes (useAuth)", () => {
           validatePassword: (password) => password.length >= 6,
         },
       });
-      app.use("/api/auth", router);
-      app.use(middleware);
-      app.use(errorHandler);
+      app.route("/api/auth", router);
+      app.use("*", middleware);
     });
 
     it("should create user and set session cookie", async () => {
-      const res = await request(app)
-        .post("/api/auth/signup")
-        .send({ email: "new@example.com", password: "newpassword123", name: "New User" });
+      const res = await post(app, "/api/auth/signup", {
+        email: "new@example.com",
+        password: "newpassword123",
+        name: "New User",
+      });
 
       expect(res.status).toBe(200);
       expect(res.body.user).not.toBeNull();
       expect(res.body.user.email).toBe("new@example.com");
 
-      const cookies = res.headers["set-cookie"];
-      expect(cookies).toBeDefined();
-      expect(cookies.some((c: string) => c.startsWith("session="))).toBe(true);
+      const cookies = setCookies(res.res);
+      expect(cookies.length).toBeGreaterThan(0);
+      expect(cookies.some((c) => c.startsWith("session="))).toBe(true);
     });
 
     it("should reject signup with invalid email", async () => {
-      const res = await request(app)
-        .post("/api/auth/signup")
-        .send({ email: "invalidemail", password: "password123" });
+      const res = await post(app, "/api/auth/signup", {
+        email: "invalidemail",
+        password: "password123",
+      });
 
       expect(res.status).toBe(400);
-      expect(res.body.error.message).toContain("email");
+      expect(res.body.detail).toContain("email");
     });
 
     it("should reject signup with weak password", async () => {
-      const res = await request(app)
-        .post("/api/auth/signup")
-        .send({ email: "new@example.com", password: "123" });
+      const res = await post(app, "/api/auth/signup", {
+        email: "new@example.com",
+        password: "123",
+      });
 
       expect(res.status).toBe(400);
-      expect(res.body.error.message).toContain("Password");
+      expect(res.body.detail).toContain("Password");
     });
 
     it("should reject signup with missing fields", async () => {
-      const res = await request(app)
-        .post("/api/auth/signup")
-        .send({ email: "new@example.com" });
+      const res = await post(app, "/api/auth/signup", {
+        email: "new@example.com",
+      });
 
       expect(res.status).toBe(400);
-      expect(res.body.error.message).toContain("required");
+      expect(res.body.detail).toContain("required");
     });
 
     it("should allow authenticated request after signup using session cookie", async () => {
-      const signupRes = await request(app)
-        .post("/api/auth/signup")
-        .send({ email: "new@example.com", password: "newpassword123", name: "New User" });
+      const signupRes = await post(app, "/api/auth/signup", {
+        email: "new@example.com",
+        password: "newpassword123",
+        name: "New User",
+      });
 
-      const sessionCookie = signupRes.headers["set-cookie"]
-        .find((c: string) => c.startsWith("session="));
+      const sessionCookie = setCookies(signupRes.res).find((c) =>
+        c.startsWith("session=")
+      );
+      expect(sessionCookie).toBeDefined();
 
-      const meRes = await request(app)
-        .get("/api/auth/me")
-        .set("Cookie", sessionCookie);
+      const meRes = await get(app, "/api/auth/me", { cookie: sessionCookie! });
 
       expect(meRes.status).toBe(200);
       expect(meRes.body.user).not.toBeNull();
@@ -284,44 +295,42 @@ describe("Auth Routes (useAuth)", () => {
   describe("POST /logout", () => {
     beforeEach(() => {
       const { router, middleware } = useAuth({ adapter: authAdapter });
-      app.use("/api/auth", router);
-      app.use(middleware);
-      app.use(errorHandler);
+      app.route("/api/auth", router);
+      app.use("*", middleware);
     });
 
     it("should clear session and return success", async () => {
       const session = await authAdapter.createSession("user-1");
 
-      const res = await request(app)
-        .post("/api/auth/logout")
-        .set("Cookie", `session=${session.id}`);
+      const res = await post(app, "/api/auth/logout", undefined, {
+        cookie: `session=${session.id}`,
+      });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
 
-      const cookies = res.headers["set-cookie"];
-      expect(cookies).toBeDefined();
-      const sessionCookie = cookies.find((c: string) => c.startsWith("session="));
+      const cookies = setCookies(res.res);
+      expect(cookies.length).toBeGreaterThan(0);
+      const sessionCookie = cookies.find((c) => c.startsWith("session="));
       expect(sessionCookie).toMatch(/Expires=Thu, 01 Jan 1970|Max-Age=0/);
     });
 
     it("should invalidate session so subsequent requests fail", async () => {
       const session = await authAdapter.createSession("user-1");
 
-      await request(app)
-        .post("/api/auth/logout")
-        .set("Cookie", `session=${session.id}`);
+      await post(app, "/api/auth/logout", undefined, {
+        cookie: `session=${session.id}`,
+      });
 
-      const meRes = await request(app)
-        .get("/api/auth/me")
-        .set("Cookie", `session=${session.id}`);
+      const meRes = await get(app, "/api/auth/me", {
+        cookie: `session=${session.id}`,
+      });
 
       expect(meRes.body.user).toBeNull();
     });
 
     it("should succeed even when not authenticated", async () => {
-      const res = await request(app)
-        .post("/api/auth/logout");
+      const res = await post(app, "/api/auth/logout");
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -345,13 +354,13 @@ describe("Auth Routes (useAuth)", () => {
         },
         onLogin,
       });
-      app.use("/api/auth", router);
-      app.use(middleware);
-      app.use(errorHandler);
+      app.route("/api/auth", router);
+      app.use("*", middleware);
 
-      await request(app)
-        .post("/api/auth/login")
-        .send({ email: "test@example.com", password: "password123" });
+      await post(app, "/api/auth/login", {
+        email: "test@example.com",
+        password: "password123",
+      });
 
       expect(onLogin).toHaveBeenCalledTimes(1);
       expect(onLogin.mock.calls[0][0].id).toBe("user-1");
@@ -364,15 +373,14 @@ describe("Auth Routes (useAuth)", () => {
         adapter: authAdapter,
         onLogout,
       });
-      app.use("/api/auth", router);
-      app.use(middleware);
-      app.use(errorHandler);
+      app.route("/api/auth", router);
+      app.use("*", middleware);
 
       const session = await authAdapter.createSession("user-1");
 
-      await request(app)
-        .post("/api/auth/logout")
-        .set("Cookie", `session=${session.id}`);
+      await post(app, "/api/auth/logout", undefined, {
+        cookie: `session=${session.id}`,
+      });
 
       expect(onLogout).toHaveBeenCalledTimes(1);
       expect(onLogout.mock.calls[0][0]?.id).toBe("user-1");
@@ -393,13 +401,14 @@ describe("Auth Routes (useAuth)", () => {
         },
         onSignup,
       });
-      app.use("/api/auth", router);
-      app.use(middleware);
-      app.use(errorHandler);
+      app.route("/api/auth", router);
+      app.use("*", middleware);
 
-      await request(app)
-        .post("/api/auth/signup")
-        .send({ email: "hook@example.com", password: "password123", name: "Hook User" });
+      await post(app, "/api/auth/signup", {
+        email: "hook@example.com",
+        password: "password123",
+        name: "Hook User",
+      });
 
       expect(onSignup).toHaveBeenCalledTimes(1);
       expect(onSignup.mock.calls[0][0].email).toBe("hook@example.com");
@@ -421,16 +430,16 @@ describe("Auth Routes (useAuth)", () => {
           },
         },
       });
-      app.use("/api/auth", router);
-      app.use(middleware);
-      app.use(errorHandler);
+      app.route("/api/auth", router);
+      app.use("*", middleware);
 
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({ email: "test@example.com", password: "password123" });
+      const res = await post(app, "/api/auth/login", {
+        email: "test@example.com",
+        password: "password123",
+      });
 
-      const cookies = res.headers["set-cookie"];
-      expect(cookies.some((c: string) => c.startsWith("auth_session="))).toBe(true);
+      const cookies = setCookies(res.res);
+      expect(cookies.some((c) => c.startsWith("auth_session="))).toBe(true);
     });
   });
 
@@ -443,15 +452,14 @@ describe("Auth Routes (useAuth)", () => {
           displayName: user.name,
         }),
       });
-      app.use("/api/auth", router);
-      app.use(middleware);
-      app.use(errorHandler);
+      app.route("/api/auth", router);
+      app.use("*", middleware);
 
       const session = await authAdapter.createSession("user-1");
 
-      const res = await request(app)
-        .get("/api/auth/me")
-        .set("Cookie", `session=${session.id}`);
+      const res = await get(app, "/api/auth/me", {
+        cookie: `session=${session.id}`,
+      });
 
       expect(res.body.user.userId).toBe("user-1");
       expect(res.body.user.displayName).toBe("Test User");
@@ -460,41 +468,37 @@ describe("Auth Routes (useAuth)", () => {
   });
 
   describe("Middleware integration", () => {
-    it("should populate req.user on authenticated requests", async () => {
+    it("should populate the user context on authenticated requests", async () => {
       let capturedUser: any = null;
 
       const { router, middleware } = useAuth({ adapter: authAdapter });
-      app.use("/api/auth", router);
-      app.use(middleware);
-      app.get("/test", (req, res) => {
-        capturedUser = req.user;
-        res.json({ hasUser: !!req.user });
+      app.route("/api/auth", router);
+      app.use("*", middleware);
+      app.get("/test", (c) => {
+        capturedUser = c.get("user") ?? null;
+        return c.json({ hasUser: !!c.get("user") });
       });
-      app.use(errorHandler);
 
       const session = await authAdapter.createSession("user-1");
 
-      await request(app)
-        .get("/test")
-        .set("Cookie", `session=${session.id}`);
+      await get(app, "/test", { cookie: `session=${session.id}` });
 
       expect(capturedUser).not.toBeNull();
       expect(capturedUser.id).toBe("user-1");
     });
 
-    it("should set req.user to null on unauthenticated requests", async () => {
+    it("should leave the user context unset on unauthenticated requests", async () => {
       let capturedUser: any = "not-called";
 
       const { router, middleware } = useAuth({ adapter: authAdapter });
-      app.use("/api/auth", router);
-      app.use(middleware);
-      app.get("/test", (req, res) => {
-        capturedUser = req.user;
-        res.json({ hasUser: !!req.user });
+      app.route("/api/auth", router);
+      app.use("*", middleware);
+      app.get("/test", (c) => {
+        capturedUser = c.get("user") ?? null;
+        return c.json({ hasUser: !!c.get("user") });
       });
-      app.use(errorHandler);
 
-      await request(app).get("/test");
+      await get(app, "/test");
 
       expect(capturedUser).toBeNull();
     });
@@ -513,53 +517,33 @@ describe("PassportAdapter Credential Extraction", () => {
     });
   });
 
-  const createMockRequest = (overrides: Partial<Request> = {}): Request => {
-    return {
-      headers: {},
-      cookies: {},
-      isAuthenticated: () => false,
-      user: undefined,
-      session: undefined,
-      sessionID: undefined,
-      ...overrides,
-    } as unknown as Request;
-  };
-
   describe("Session Cookie Extraction", () => {
-    it("should extract credentials from 'session' cookie", () => {
-      const req = createMockRequest({
-        cookies: { session: "my-session-id" },
-      });
+    it("should extract credentials from 'session' cookie", async () => {
+      const c = await makeContext({ cookie: "session=my-session-id" });
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
 
       expect(credentials).not.toBeNull();
       expect(credentials?.type).toBe("session");
       expect(credentials?.sessionId).toBe("my-session-id");
     });
 
-    it("should extract credentials from 'connect.sid' cookie with passport data", () => {
-      const req = createMockRequest({
-        cookies: { "connect.sid": "passport-session-id" },
-        session: { passport: { user: "user-123" } },
-      });
+    it("should extract credentials from 'connect.sid' cookie", async () => {
+      const c = await makeContext({ cookie: "connect.sid=passport-session-id" });
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
 
       expect(credentials).not.toBeNull();
       expect(credentials?.type).toBe("session");
       expect(credentials?.sessionId).toBe("passport-session-id");
     });
 
-    it("should prioritize passport isAuthenticated() over session cookie", () => {
-      const req = createMockRequest({
-        cookies: { session: "my-session-id" },
-        isAuthenticated: () => true,
-        user: { id: "passport-user" },
-        session: { id: "passport-session-id" },
+    it("should prioritize passport 'connect.sid' cookie over plain session cookie", async () => {
+      const c = await makeContext({
+        cookie: "session=my-session-id; connect.sid=passport-session-id",
       });
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
 
       expect(credentials?.type).toBe("session");
       expect(credentials?.sessionId).toBe("passport-session-id");
@@ -567,37 +551,31 @@ describe("PassportAdapter Credential Extraction", () => {
   });
 
   describe("Bearer Token Extraction", () => {
-    it("should extract credentials from Authorization Bearer header", () => {
-      const req = createMockRequest({
-        headers: { authorization: "Bearer my-jwt-token" },
-      });
+    it("should extract credentials from Authorization Bearer header", async () => {
+      const c = await makeContext({ authorization: "Bearer my-jwt-token" });
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
 
       expect(credentials).not.toBeNull();
       expect(credentials?.type).toBe("bearer");
       expect(credentials?.token).toBe("my-jwt-token");
     });
 
-    it("should not extract bearer when Authorization header has different scheme", () => {
-      const req = createMockRequest({
-        headers: { authorization: "Digest something" },
-      });
+    it("should not extract bearer when Authorization header has different scheme", async () => {
+      const c = await makeContext({ authorization: "Digest something" });
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
 
       expect(credentials).toBeNull();
     });
   });
 
   describe("Basic Auth Extraction", () => {
-    it("should extract credentials from Authorization Basic header", () => {
+    it("should extract credentials from Authorization Basic header", async () => {
       const encoded = Buffer.from("user:pass").toString("base64");
-      const req = createMockRequest({
-        headers: { authorization: `Basic ${encoded}` },
-      });
+      const c = await makeContext({ authorization: `Basic ${encoded}` });
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
 
       expect(credentials).not.toBeNull();
       expect(credentials?.type).toBe("basic");
@@ -607,12 +585,10 @@ describe("PassportAdapter Credential Extraction", () => {
   });
 
   describe("API Key Extraction", () => {
-    it("should extract credentials from X-API-Key header", () => {
-      const req = createMockRequest({
-        headers: { "x-api-key": "my-api-key" },
-      });
+    it("should extract credentials from X-API-Key header", async () => {
+      const c = await makeContext({ "x-api-key": "my-api-key" });
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
 
       expect(credentials).not.toBeNull();
       expect(credentials?.type).toBe("apiKey");
@@ -621,48 +597,43 @@ describe("PassportAdapter Credential Extraction", () => {
   });
 
   describe("No Credentials", () => {
-    it("should return null when no credentials present", () => {
-      const req = createMockRequest();
+    it("should return null when no credentials present", async () => {
+      const c = await makeContext();
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
 
       expect(credentials).toBeNull();
     });
 
-    it("should return null for empty cookies and headers", () => {
-      const req = createMockRequest({
-        headers: {},
-        cookies: {},
-      });
+    it("should return null for empty cookies and headers", async () => {
+      const c = await makeContext({ cookie: "" });
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
 
       expect(credentials).toBeNull();
     });
   });
 
   describe("Priority Order", () => {
-    it("should prioritize session cookie over bearer token", () => {
-      const req = createMockRequest({
-        cookies: { session: "session-id" },
-        headers: { authorization: "Bearer jwt-token" },
+    it("should prioritize session cookie over bearer token", async () => {
+      const c = await makeContext({
+        cookie: "session=session-id",
+        authorization: "Bearer jwt-token",
       });
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
 
       expect(credentials?.type).toBe("session");
       expect(credentials?.sessionId).toBe("session-id");
     });
 
-    it("should prioritize bearer token over API key when no session", () => {
-      const req = createMockRequest({
-        headers: {
-          authorization: "Bearer jwt-token",
-          "x-api-key": "api-key",
-        },
+    it("should prioritize bearer token over API key when no session", async () => {
+      const c = await makeContext({
+        authorization: "Bearer jwt-token",
+        "x-api-key": "api-key",
       });
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
 
       expect(credentials?.type).toBe("bearer");
       expect(credentials?.token).toBe("jwt-token");
@@ -737,16 +708,14 @@ describe("PassportAdapter Session Validation", () => {
 });
 
 describe("End-to-end Auth Flow", () => {
-  let app: Express;
+  let app: Hono;
   let sessionStore: InMemorySessionStore;
   let authAdapter: PassportAdapter;
   let mockUsers: Map<string, any>;
   let userIdCounter = 100;
 
   beforeEach(() => {
-    app = express();
-    app.use(express.json());
-    app.use(cookieParser());
+    app = createTestApp();
 
     sessionStore = new InMemorySessionStore();
     mockUsers = new Map();
@@ -787,113 +756,99 @@ describe("End-to-end Auth Flow", () => {
       },
     });
 
-    app.use("/api/auth", router);
-    app.use(middleware);
+    app.route("/api/auth", router);
+    app.use("*", middleware);
 
-    app.get("/protected", (req, res) => {
-      if (!req.user) {
-        return res.status(401).json({ error: "Unauthorized" });
+    app.get("/protected", (c) => {
+      const user = c.get("user");
+      if (!user) {
+        return c.json({ error: "Unauthorized" }, 401);
       }
-      res.json({ message: "Protected content", user: req.user });
+      return c.json({ message: "Protected content", user });
     });
-
-    app.use(errorHandler);
   });
 
   it("should complete full signup -> access -> logout -> denied flow", async () => {
-    const signupRes = await request(app)
-      .post("/api/auth/signup")
-      .send({ email: "e2e@example.com", password: "e2epassword", name: "E2E User" });
+    const signupRes = await post(app, "/api/auth/signup", {
+      email: "e2e@example.com",
+      password: "e2epassword",
+      name: "E2E User",
+    });
 
     expect(signupRes.status).toBe(200);
-    const sessionCookie = signupRes.headers["set-cookie"]
-      .find((c: string) => c.startsWith("session="));
+    const sessionCookie = setCookies(signupRes.res).find((c) =>
+      c.startsWith("session=")
+    );
+    expect(sessionCookie).toBeDefined();
 
-    const protectedRes = await request(app)
-      .get("/protected")
-      .set("Cookie", sessionCookie);
+    const protectedRes = await get(app, "/protected", { cookie: sessionCookie! });
 
     expect(protectedRes.status).toBe(200);
     expect(protectedRes.body.user.email).toBe("e2e@example.com");
 
-    await request(app)
-      .post("/api/auth/logout")
-      .set("Cookie", sessionCookie);
+    await post(app, "/api/auth/logout", undefined, { cookie: sessionCookie! });
 
-    const deniedRes = await request(app)
-      .get("/protected")
-      .set("Cookie", sessionCookie);
+    const deniedRes = await get(app, "/protected", { cookie: sessionCookie! });
 
     expect(deniedRes.status).toBe(401);
   });
 
   it("should complete full login -> me -> logout -> me(null) flow", async () => {
-    const loginRes = await request(app)
-      .post("/api/auth/login")
-      .send({ email: "existing@example.com", password: "existing-password" });
+    const loginRes = await post(app, "/api/auth/login", {
+      email: "existing@example.com",
+      password: "existing-password",
+    });
 
     expect(loginRes.status).toBe(200);
     expect(loginRes.body.user.id).toBe("existing-user");
 
-    const sessionCookie = loginRes.headers["set-cookie"]
-      .find((c: string) => c.startsWith("session="));
+    const sessionCookie = setCookies(loginRes.res).find((c) =>
+      c.startsWith("session=")
+    );
+    expect(sessionCookie).toBeDefined();
 
-    const meRes = await request(app)
-      .get("/api/auth/me")
-      .set("Cookie", sessionCookie);
+    const meRes = await get(app, "/api/auth/me", { cookie: sessionCookie! });
 
     expect(meRes.status).toBe(200);
     expect(meRes.body.user).not.toBeNull();
     expect(meRes.body.user.id).toBe("existing-user");
 
-    await request(app)
-      .post("/api/auth/logout")
-      .set("Cookie", sessionCookie);
+    await post(app, "/api/auth/logout", undefined, { cookie: sessionCookie! });
 
-    const meAfterLogoutRes = await request(app)
-      .get("/api/auth/me")
-      .set("Cookie", sessionCookie);
+    const meAfterLogoutRes = await get(app, "/api/auth/me", {
+      cookie: sessionCookie!,
+    });
 
     expect(meAfterLogoutRes.status).toBe(200);
     expect(meAfterLogoutRes.body.user).toBeNull();
   });
 
   it("should handle multiple sessions for same user", async () => {
-    const login1 = await request(app)
-      .post("/api/auth/login")
-      .send({ email: "existing@example.com", password: "existing-password" });
+    const login1 = await post(app, "/api/auth/login", {
+      email: "existing@example.com",
+      password: "existing-password",
+    });
 
-    const login2 = await request(app)
-      .post("/api/auth/login")
-      .send({ email: "existing@example.com", password: "existing-password" });
+    const login2 = await post(app, "/api/auth/login", {
+      email: "existing@example.com",
+      password: "existing-password",
+    });
 
-    const session1 = login1.headers["set-cookie"]
-      .find((c: string) => c.startsWith("session="));
-    const session2 = login2.headers["set-cookie"]
-      .find((c: string) => c.startsWith("session="));
+    const session1 = setCookies(login1.res).find((c) => c.startsWith("session="));
+    const session2 = setCookies(login2.res).find((c) => c.startsWith("session="));
+    expect(session1).toBeDefined();
+    expect(session2).toBeDefined();
 
-    const me1 = await request(app)
-      .get("/api/auth/me")
-      .set("Cookie", session1);
-
-    const me2 = await request(app)
-      .get("/api/auth/me")
-      .set("Cookie", session2);
+    const me1 = await get(app, "/api/auth/me", { cookie: session1! });
+    const me2 = await get(app, "/api/auth/me", { cookie: session2! });
 
     expect(me1.body.user.id).toBe("existing-user");
     expect(me2.body.user.id).toBe("existing-user");
 
-    await request(app)
-      .post("/api/auth/logout")
-      .set("Cookie", session1);
+    await post(app, "/api/auth/logout", undefined, { cookie: session1! });
 
-    const me1AfterLogout = await request(app)
-      .get("/api/auth/me")
-      .set("Cookie", session1);
-
-    const me2AfterLogout = await request(app)
-      .get("/api/auth/me")
-      .set("Cookie", session2);
+    const me1AfterLogout = await get(app, "/api/auth/me", { cookie: session1! });
+    const me2AfterLogout = await get(app, "/api/auth/me", { cookie: session2! });
 
     expect(me1AfterLogout.body.user).toBeNull();
     expect(me2AfterLogout.body.user).not.toBeNull();

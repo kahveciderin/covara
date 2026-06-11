@@ -1,20 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import { Server } from "http";
+import { Hono } from "hono";
+import { serve, type ServerType } from "@hono/node-server";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
-import { useResource } from "../../src/resource/hook";
-import { createClient, ConcaveClient } from "../../src/client";
-import { createResourceFilter } from "../../src/resource/filter";
+import { useResource } from "@/resource/hook";
+import { createClient, ConcaveClient } from "@/client";
+import { createResourceFilter } from "@/resource/filter";
+import { createTestApp } from "../helpers/hono";
 
 // smoke tests validate that core functionality works at a basic level
 // these should be fast and reliable
-
-const injectTestUser = (req: Request, res: Response, next: NextFunction) => {
-  (req as any).user = { id: "test-user", email: "test@test.com", roles: ["admin"] };
-  next();
-};
 
 const usersTable = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -23,8 +19,8 @@ const usersTable = sqliteTable("users", {
 });
 
 describe("Smoke Tests: Core Framework", () => {
-  let app: Express;
-  let server: Server;
+  let app: Hono;
+  let server: ServerType;
   let client: ConcaveClient;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
@@ -41,16 +37,12 @@ describe("Smoke Tests: Core Framework", () => {
       )
     `);
 
-    app = express();
-    app.use(express.json());
-    app.use(injectTestUser);
-    app.use("/users", useResource(usersTable, { id: usersTable.id, db }));
+    app = createTestApp({ user: { id: "test-user", email: "test@test.com" } });
+    app.route("/users", useResource(usersTable, { id: usersTable.id, db }));
 
     await new Promise<void>((resolve) => {
-      server = app.listen(0, () => {
-        const addr = server.address();
-        const port = typeof addr === "object" && addr ? addr.port : 0;
-        client = createClient({ baseUrl: `http://localhost:${port}` });
+      server = serve({ fetch: app.fetch, port: 0 }, (info) => {
+        client = createClient({ baseUrl: `http://localhost:${info.port}` });
         resolve();
       });
     });

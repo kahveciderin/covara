@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi, beforeAll, afterAll } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import request from "supertest";
+import { Hono } from "hono";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
@@ -9,27 +8,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { useResource } from "@/resource/hook";
 import { sql } from "drizzle-orm";
-
-const injectTestUser = (req: Request, res: Response, next: NextFunction) => {
-  (req as any).user = { id: "test-user", email: "test@test.com", roles: ["admin"] };
-  next();
-};
-
-const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err.statusCode || err.status || 500;
-  res.status(status).json({
-    error: {
-      message: err.message,
-      code: err.code || "INTERNAL_ERROR",
-    },
-  });
-};
-
-// Helper to setup app with routes and error handler
-const setupApp = (appInstance: Express, routerFactory: () => ReturnType<typeof useResource>) => {
-  appInstance.use("/users", routerFactory());
-  appInstance.use(errorHandler);
-};
+import { createTestApp, get, post, patch, put, del } from "../helpers/hono";
 
 const testUsersTable = sqliteTable("test_users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -41,7 +20,7 @@ const testUsersTable = sqliteTable("test_users", {
 });
 
 describe("useResource Integration Tests", () => {
-  let app: Express;
+  let app: Hono;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
   let tempDir: string;
@@ -74,9 +53,7 @@ describe("useResource Integration Tests", () => {
 
     vi.doMock("@/db/db", () => ({ db }));
 
-    app = express();
-    app.use(express.json());
-    app.use(injectTestUser);
+    app = createTestApp({ user: {} });
   });
 
   afterEach(() => {
@@ -86,22 +63,23 @@ describe("useResource Integration Tests", () => {
 
   describe("Basic CRUD Operations", () => {
     beforeEach(() => {
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
           db,
         })
       );
-      app.use(errorHandler);
     });
 
     describe("POST / - Create", () => {
       it("should create a new resource", async () => {
-        const response = await request(app)
-          .post("/users")
-          .send({ name: "John Doe", email: "john@test.com", age: 30 })
-          .expect(201);
+        const response = await post(app, "/users", {
+          name: "John Doe",
+          email: "john@test.com",
+          age: 30,
+        });
+        expect(response.status).toBe(201);
 
         expect(response.body).toMatchObject({
           name: "John Doe",
@@ -112,12 +90,11 @@ describe("useResource Integration Tests", () => {
       });
 
       it("should return 400 for invalid data", async () => {
-        const response = await request(app)
-          .post("/users")
-          .send({ name: "John Doe" })
-          .expect(400);
+        const response = await post(app, "/users", { name: "John Doe" });
+        expect(response.status).toBe(400);
 
-        expect(response.body.error).toBeDefined();
+        expect(response.body.code).toBeDefined();
+        expect(response.body.detail).toBeDefined();
       });
 
       it("should create multiple resources sequentially", async () => {
@@ -128,10 +105,8 @@ describe("useResource Integration Tests", () => {
         ];
 
         for (const user of users) {
-          const response = await request(app)
-            .post("/users")
-            .send(user)
-            .expect(201);
+          const response = await post(app, "/users", user);
+          expect(response.status).toBe(201);
 
           expect(response.body.name).toBe(user.name);
         }
@@ -149,21 +124,21 @@ describe("useResource Integration Tests", () => {
         ];
 
         for (const user of users) {
-          await request(app).post("/users").send(user);
+          await post(app, "/users", user);
         }
       });
 
       it("should list all resources", async () => {
-        const response = await request(app).get("/users").expect(200);
+        const response = await get(app, "/users");
+        expect(response.status).toBe(200);
 
         expect(response.body.items).toHaveLength(5);
         expect(response.body.hasMore).toBe(false);
       });
 
       it("should filter resources with == operator", async () => {
-        const response = await request(app)
-          .get('/users?filter=status=="active"')
-          .expect(200);
+        const response = await get(app, '/users?filter=status=="active"');
+        expect(response.status).toBe(200);
 
         expect(response.body.items).toHaveLength(3);
         expect(
@@ -172,34 +147,33 @@ describe("useResource Integration Tests", () => {
       });
 
       it("should filter resources with > operator", async () => {
-        const response = await request(app)
-          .get("/users?filter=age>30")
-          .expect(200);
+        const response = await get(app, "/users?filter=age>30");
+        expect(response.status).toBe(200);
 
         expect(response.body.items).toHaveLength(2);
         expect(response.body.items.every((u: any) => u.age > 30)).toBe(true);
       });
 
       it("should filter resources with complex AND expression", async () => {
-        const response = await request(app)
-          .get('/users?filter=status=="active";age>=28')
-          .expect(200);
+        const response = await get(app, '/users?filter=status=="active";age>=28');
+        expect(response.status).toBe(200);
 
         expect(response.body.items).toHaveLength(2);
       });
 
       it("should filter resources with OR expression", async () => {
-        const response = await request(app)
-          .get('/users?filter=status=="active",status=="pending"')
-          .expect(200);
+        const response = await get(
+          app,
+          '/users?filter=status=="active",status=="pending"'
+        );
+        expect(response.status).toBe(200);
 
         expect(response.body.items).toHaveLength(4);
       });
 
       it("should apply pagination with limit", async () => {
-        const response = await request(app)
-          .get("/users?limit=2")
-          .expect(200);
+        const response = await get(app, "/users?limit=2");
+        expect(response.status).toBe(200);
 
         expect(response.body.items).toHaveLength(2);
         expect(response.body.hasMore).toBe(true);
@@ -207,31 +181,32 @@ describe("useResource Integration Tests", () => {
       });
 
       it("should apply cursor-based pagination", async () => {
-        const page1 = await request(app).get("/users?limit=2").expect(200);
+        const page1 = await get(app, "/users?limit=2");
+        expect(page1.status).toBe(200);
 
         expect(page1.body.items).toHaveLength(2);
 
-        const page2 = await request(app)
-          .get(`/users?limit=2&cursor=${page1.body.nextCursor}`)
-          .expect(200);
+        const page2 = await get(
+          app,
+          `/users?limit=2&cursor=${encodeURIComponent(page1.body.nextCursor)}`
+        );
+        expect(page2.status).toBe(200);
 
         expect(page2.body.items).toHaveLength(2);
         expect(page2.body.items[0].id).not.toBe(page1.body.items[0].id);
       });
 
       it("should return total count when requested", async () => {
-        const response = await request(app)
-          .get("/users?totalCount=true&limit=2")
-          .expect(200);
+        const response = await get(app, "/users?totalCount=true&limit=2");
+        expect(response.status).toBe(200);
 
         expect(response.body.totalCount).toBe(5);
         expect(response.body.items).toHaveLength(2);
       });
 
       it("should apply field selection", async () => {
-        const response = await request(app)
-          .get("/users?select=id,name")
-          .expect(200);
+        const response = await get(app, "/users?select=id,name");
+        expect(response.status).toBe(200);
 
         const firstItem = response.body.items[0];
         expect(firstItem.id).toBeDefined();
@@ -241,9 +216,8 @@ describe("useResource Integration Tests", () => {
       });
 
       it("should apply ordering", async () => {
-        const response = await request(app)
-          .get("/users?orderBy=age:desc")
-          .expect(200);
+        const response = await get(app, "/users?orderBy=age:desc");
+        expect(response.status).toBe(200);
 
         const ages = response.body.items.map((u: any) => u.age);
         expect(ages).toEqual([...ages].sort((a, b) => b - a));
@@ -254,31 +228,32 @@ describe("useResource Integration Tests", () => {
       let createdId: number;
 
       beforeEach(async () => {
-        const response = await request(app)
-          .post("/users")
-          .send({ name: "Test User", email: "test@test.com", age: 25 });
+        const response = await post(app, "/users", {
+          name: "Test User",
+          email: "test@test.com",
+          age: 25,
+        });
         createdId = response.body.id;
       });
 
       it("should return a single resource by id", async () => {
-        const response = await request(app)
-          .get(`/users/${createdId}`)
-          .expect(200);
+        const response = await get(app, `/users/${createdId}`);
+        expect(response.status).toBe(200);
 
         expect(response.body.id).toBe(createdId);
         expect(response.body.name).toBe("Test User");
       });
 
       it("should return 404 for non-existent resource", async () => {
-        const response = await request(app).get("/users/99999").expect(404);
+        const response = await get(app, "/users/99999");
+        expect(response.status).toBe(404);
 
-        expect(response.body.error.code).toBe("NOT_FOUND");
+        expect(response.body.code).toBe("NOT_FOUND");
       });
 
       it("should apply field selection to single resource", async () => {
-        const response = await request(app)
-          .get(`/users/${createdId}?select=id,name`)
-          .expect(200);
+        const response = await get(app, `/users/${createdId}?select=id,name`);
+        expect(response.status).toBe(200);
 
         expect(response.body.id).toBeDefined();
         expect(response.body.name).toBeDefined();
@@ -290,37 +265,38 @@ describe("useResource Integration Tests", () => {
       let createdId: number;
 
       beforeEach(async () => {
-        const response = await request(app)
-          .post("/users")
-          .send({ name: "Original Name", email: "original@test.com", age: 25 });
+        const response = await post(app, "/users", {
+          name: "Original Name",
+          email: "original@test.com",
+          age: 25,
+        });
         createdId = response.body.id;
       });
 
       it("should update a resource partially", async () => {
-        const response = await request(app)
-          .patch(`/users/${createdId}`)
-          .send({ name: "Updated Name" })
-          .expect(200);
+        const response = await patch(app, `/users/${createdId}`, {
+          name: "Updated Name",
+        });
+        expect(response.status).toBe(200);
 
         expect(response.body.name).toBe("Updated Name");
         expect(response.body.email).toBe("original@test.com");
       });
 
       it("should update multiple fields", async () => {
-        const response = await request(app)
-          .patch(`/users/${createdId}`)
-          .send({ name: "New Name", age: 30 })
-          .expect(200);
+        const response = await patch(app, `/users/${createdId}`, {
+          name: "New Name",
+          age: 30,
+        });
+        expect(response.status).toBe(200);
 
         expect(response.body.name).toBe("New Name");
         expect(response.body.age).toBe(30);
       });
 
       it("should return 404 for non-existent resource", async () => {
-        await request(app)
-          .patch("/users/99999")
-          .send({ name: "Updated" })
-          .expect(404);
+        const response = await patch(app, "/users/99999", { name: "Updated" });
+        expect(response.status).toBe(404);
       });
     });
 
@@ -328,17 +304,21 @@ describe("useResource Integration Tests", () => {
       let createdId: number;
 
       beforeEach(async () => {
-        const response = await request(app)
-          .post("/users")
-          .send({ name: "Original", email: "original@test.com", age: 25 });
+        const response = await post(app, "/users", {
+          name: "Original",
+          email: "original@test.com",
+          age: 25,
+        });
         createdId = response.body.id;
       });
 
       it("should replace a resource completely", async () => {
-        const response = await request(app)
-          .put(`/users/${createdId}`)
-          .send({ name: "Replaced", email: "replaced@test.com", age: 35 })
-          .expect(200);
+        const response = await put(app, `/users/${createdId}`, {
+          name: "Replaced",
+          email: "replaced@test.com",
+          age: 35,
+        });
+        expect(response.status).toBe(200);
 
         expect(response.body.name).toBe("Replaced");
         expect(response.body.email).toBe("replaced@test.com");
@@ -346,10 +326,12 @@ describe("useResource Integration Tests", () => {
       });
 
       it("should return 404 for non-existent resource", async () => {
-        await request(app)
-          .put("/users/99999")
-          .send({ name: "Test", email: "test@test.com", age: 30 })
-          .expect(404);
+        const response = await put(app, "/users/99999", {
+          name: "Test",
+          email: "test@test.com",
+          age: 30,
+        });
+        expect(response.status).toBe(404);
       });
     });
 
@@ -357,20 +339,25 @@ describe("useResource Integration Tests", () => {
       let createdId: number;
 
       beforeEach(async () => {
-        const response = await request(app)
-          .post("/users")
-          .send({ name: "To Delete", email: "delete@test.com", age: 25 });
+        const response = await post(app, "/users", {
+          name: "To Delete",
+          email: "delete@test.com",
+          age: 25,
+        });
         createdId = response.body.id;
       });
 
       it("should delete a resource", async () => {
-        await request(app).delete(`/users/${createdId}`).expect(204);
+        const deleteResponse = await del(app, `/users/${createdId}`);
+        expect(deleteResponse.status).toBe(204);
 
-        await request(app).get(`/users/${createdId}`).expect(404);
+        const getResponse = await get(app, `/users/${createdId}`);
+        expect(getResponse.status).toBe(404);
       });
 
       it("should return 404 for non-existent resource", async () => {
-        await request(app).delete("/users/99999").expect(404);
+        const response = await del(app, "/users/99999");
+        expect(response.status).toBe(404);
       });
     });
 
@@ -383,20 +370,20 @@ describe("useResource Integration Tests", () => {
         ];
 
         for (const user of users) {
-          await request(app).post("/users").send(user);
+          await post(app, "/users", user);
         }
       });
 
       it("should return total count", async () => {
-        const response = await request(app).get("/users/count").expect(200);
+        const response = await get(app, "/users/count");
+        expect(response.status).toBe(200);
 
         expect(response.body.count).toBe(3);
       });
 
       it("should return filtered count", async () => {
-        const response = await request(app)
-          .get('/users/count?filter=status=="active"')
-          .expect(200);
+        const response = await get(app, '/users/count?filter=status=="active"');
+        expect(response.status).toBe(200);
 
         expect(response.body.count).toBe(2);
       });
@@ -413,56 +400,53 @@ describe("useResource Integration Tests", () => {
         ];
 
         for (const user of users) {
-          await request(app).post("/users").send(user);
+          await post(app, "/users", user);
         }
       });
 
       it("should return count aggregation", async () => {
-        const response = await request(app)
-          .get("/users/aggregate?count=true")
-          .expect(200);
+        const response = await get(app, "/users/aggregate?count=true");
+        expect(response.status).toBe(200);
 
         expect(response.body.groups).toHaveLength(1);
         expect(response.body.groups[0].count).toBe(5);
       });
 
       it("should return grouped count", async () => {
-        const response = await request(app)
-          .get("/users/aggregate?groupBy=role&count=true")
-          .expect(200);
+        const response = await get(app, "/users/aggregate?groupBy=role&count=true");
+        expect(response.status).toBe(200);
 
         expect(response.body.groups).toHaveLength(2);
       });
 
       it("should return sum aggregation", async () => {
-        const response = await request(app)
-          .get("/users/aggregate?sum=age")
-          .expect(200);
+        const response = await get(app, "/users/aggregate?sum=age");
+        expect(response.status).toBe(200);
 
         expect(response.body.groups[0].sum.age).toBe(150);
       });
 
       it("should return avg aggregation", async () => {
-        const response = await request(app)
-          .get("/users/aggregate?avg=age")
-          .expect(200);
+        const response = await get(app, "/users/aggregate?avg=age");
+        expect(response.status).toBe(200);
 
         expect(response.body.groups[0].avg.age).toBe(30);
       });
 
       it("should return min/max aggregation", async () => {
-        const response = await request(app)
-          .get("/users/aggregate?min=age&max=age")
-          .expect(200);
+        const response = await get(app, "/users/aggregate?min=age&max=age");
+        expect(response.status).toBe(200);
 
         expect(response.body.groups[0].min.age).toBe(25);
         expect(response.body.groups[0].max.age).toBe(35);
       });
 
       it("should combine multiple aggregations", async () => {
-        const response = await request(app)
-          .get("/users/aggregate?groupBy=role&count=true&avg=age&sum=age")
-          .expect(200);
+        const response = await get(
+          app,
+          "/users/aggregate?groupBy=role&count=true&avg=age&sum=age"
+        );
+        expect(response.status).toBe(200);
 
         expect(response.body.groups).toHaveLength(2);
         for (const group of response.body.groups) {
@@ -476,7 +460,7 @@ describe("useResource Integration Tests", () => {
 
   describe("Batch Operations", () => {
     beforeEach(() => {
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -488,7 +472,6 @@ describe("useResource Integration Tests", () => {
           },
         })
       );
-      app.use(errorHandler);
     });
 
     describe("POST /batch - Batch Create", () => {
@@ -499,10 +482,8 @@ describe("useResource Integration Tests", () => {
           { name: "User 3", email: "u3@test.com", age: 35 },
         ];
 
-        const response = await request(app)
-          .post("/users/batch")
-          .send({ items: users })
-          .expect(200);
+        const response = await post(app, "/users/batch", { items: users });
+        expect(response.status).toBe(200);
 
         expect(response.body.items).toHaveLength(3);
       });
@@ -514,10 +495,8 @@ describe("useResource Integration Tests", () => {
           age: 20 + i,
         }));
 
-        await request(app)
-          .post("/users/batch")
-          .send({ items: users })
-          .expect(400);
+        const response = await post(app, "/users/batch", { items: users });
+        expect(response.status).toBe(400);
       });
     });
 
@@ -530,15 +509,15 @@ describe("useResource Integration Tests", () => {
         ];
 
         for (const user of users) {
-          await request(app).post("/users").send(user);
+          await post(app, "/users", user);
         }
       });
 
       it("should update multiple resources", async () => {
-        const response = await request(app)
-          .patch('/users/batch?filter=status=="active"')
-          .send({ status: "updated" })
-          .expect(200);
+        const response = await patch(app, '/users/batch?filter=status=="active"', {
+          status: "updated",
+        });
+        expect(response.status).toBe(200);
 
         expect(response.body.count).toBe(2);
       });
@@ -553,18 +532,17 @@ describe("useResource Integration Tests", () => {
         ];
 
         for (const user of users) {
-          await request(app).post("/users").send(user);
+          await post(app, "/users", user);
         }
       });
 
       it("should delete multiple resources", async () => {
-        const response = await request(app)
-          .delete('/users/batch?filter=status=="active"')
-          .expect(200);
+        const response = await del(app, '/users/batch?filter=status=="active"');
+        expect(response.status).toBe(200);
 
         expect(response.body.count).toBe(2);
 
-        const remaining = await request(app).get("/users");
+        const remaining = await get(app, "/users");
         expect(remaining.body.items).toHaveLength(1);
       });
     });
@@ -586,7 +564,7 @@ describe("useResource Integration Tests", () => {
       beforeDeleteCalled = false;
       afterDeleteCalled = false;
 
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -615,13 +593,14 @@ describe("useResource Integration Tests", () => {
           },
         })
       );
-      app.use(errorHandler);
     });
 
     it("should call create hooks", async () => {
-      const response = await request(app)
-        .post("/users")
-        .send({ name: "Test", email: "test@test.com", age: 25 });
+      const response = await post(app, "/users", {
+        name: "Test",
+        email: "test@test.com",
+        age: 25,
+      });
 
       expect(beforeCreateCalled).toBe(true);
       expect(afterCreateCalled).toBe(true);
@@ -629,16 +608,18 @@ describe("useResource Integration Tests", () => {
     });
 
     it("should call update hooks", async () => {
-      const created = await request(app)
-        .post("/users")
-        .send({ name: "Test", email: "test@test.com", age: 25 });
+      const created = await post(app, "/users", {
+        name: "Test",
+        email: "test@test.com",
+        age: 25,
+      });
 
       beforeCreateCalled = false;
       afterCreateCalled = false;
 
-      const response = await request(app)
-        .patch(`/users/${created.body.id}`)
-        .send({ name: "Updated" });
+      const response = await patch(app, `/users/${created.body.id}`, {
+        name: "Updated",
+      });
 
       expect(beforeUpdateCalled).toBe(true);
       expect(afterUpdateCalled).toBe(true);
@@ -646,11 +627,13 @@ describe("useResource Integration Tests", () => {
     });
 
     it("should call delete hooks", async () => {
-      const created = await request(app)
-        .post("/users")
-        .send({ name: "Test", email: "test@test.com", age: 25 });
+      const created = await post(app, "/users", {
+        name: "Test",
+        email: "test@test.com",
+        age: 25,
+      });
 
-      await request(app).delete(`/users/${created.body.id}`);
+      await del(app, `/users/${created.body.id}`);
 
       expect(beforeDeleteCalled).toBe(true);
       expect(afterDeleteCalled).toBe(true);
@@ -659,7 +642,7 @@ describe("useResource Integration Tests", () => {
 
   describe("Pagination Configuration", () => {
     beforeEach(async () => {
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -670,33 +653,33 @@ describe("useResource Integration Tests", () => {
           },
         })
       );
-      app.use(errorHandler);
 
       for (let i = 0; i < 20; i++) {
-        await request(app)
-          .post("/users")
-          .send({ name: `User ${i}`, email: `u${i}@test.com`, age: 20 + i });
+        await post(app, "/users", {
+          name: `User ${i}`,
+          email: `u${i}@test.com`,
+          age: 20 + i,
+        });
       }
     });
 
     it("should use default limit", async () => {
-      const response = await request(app).get("/users").expect(200);
+      const response = await get(app, "/users");
+      expect(response.status).toBe(200);
 
       expect(response.body.items).toHaveLength(5);
     });
 
     it("should respect max limit", async () => {
-      const response = await request(app)
-        .get("/users?limit=100")
-        .expect(200);
+      const response = await get(app, "/users?limit=100");
+      expect(response.status).toBe(200);
 
       expect(response.body.items).toHaveLength(10);
     });
 
     it("should allow limit within bounds", async () => {
-      const response = await request(app)
-        .get("/users?limit=8")
-        .expect(200);
+      const response = await get(app, "/users?limit=8");
+      expect(response.status).toBe(200);
 
       expect(response.body.items).toHaveLength(8);
     });
@@ -704,47 +687,43 @@ describe("useResource Integration Tests", () => {
 
   describe("Error Handling", () => {
     beforeEach(() => {
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
           db,
         })
       );
-      app.use(errorHandler);
     });
 
     it("should return proper error format for validation errors", async () => {
-      const response = await request(app)
-        .post("/users")
-        .send({ invalid: "data" })
-        .expect(400);
+      const response = await post(app, "/users", { invalid: "data" });
+      expect(response.status).toBe(400);
 
-      expect(response.body.error).toBeDefined();
-      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+      expect(response.body.detail).toBeDefined();
+      expect(response.body.code).toBe("VALIDATION_ERROR");
     });
 
     it("should return proper error format for not found", async () => {
-      const response = await request(app)
-        .get("/users/99999")
-        .expect(404);
+      const response = await get(app, "/users/99999");
+      expect(response.status).toBe(404);
 
-      expect(response.body.error).toBeDefined();
-      expect(response.body.error.code).toBe("NOT_FOUND");
+      expect(response.body.detail).toBeDefined();
+      expect(response.body.code).toBe("NOT_FOUND");
     });
 
     it("should handle invalid filter expressions", async () => {
-      const response = await request(app)
-        .get('/users?filter=invalid===syntax')
-        .expect(400);
+      const response = await get(app, "/users?filter=invalid===syntax");
+      expect(response.status).toBe(400);
 
-      expect(response.body.error).toBeDefined();
+      expect(response.body.code).toBeDefined();
+      expect(response.body.detail).toBeDefined();
     });
   });
 
   describe("Custom Operators", () => {
     beforeEach(async () => {
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -757,20 +736,22 @@ describe("useResource Integration Tests", () => {
           },
         })
       );
-      app.use(errorHandler);
 
-      await request(app)
-        .post("/users")
-        .send({ name: "John Doe", email: "john@test.com", age: 30 });
-      await request(app)
-        .post("/users")
-        .send({ name: "Jane Smith", email: "jane@test.com", age: 25 });
+      await post(app, "/users", {
+        name: "John Doe",
+        email: "john@test.com",
+        age: 30,
+      });
+      await post(app, "/users", {
+        name: "Jane Smith",
+        email: "jane@test.com",
+        age: 25,
+      });
     });
 
     it("should use custom operator in filter", async () => {
-      const response = await request(app)
-        .get('/users?filter=name=contains="Doe"')
-        .expect(200);
+      const response = await get(app, '/users?filter=name=contains="Doe"');
+      expect(response.status).toBe(200);
 
       expect(response.body.items).toHaveLength(1);
       expect(response.body.items[0].name).toBe("John Doe");

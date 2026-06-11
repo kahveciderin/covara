@@ -6,7 +6,6 @@ import {
   count,
   getTableColumns,
   InferSelectModel,
-  AnyColumn,
 } from "drizzle-orm";
 import { Operation, ScopeResolver, combineScopes } from "@/auth/scope";
 import { Filter } from "./filter";

@@ -1,4 +1,6 @@
-import { Request, Response, NextFunction } from "express";
+import type { Context, ErrorHandler, NotFoundHandler } from "hono";
+import { HTTPException } from "hono/http-exception";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ZodError } from "zod";
 import {
   ResourceError,
@@ -7,69 +9,63 @@ import {
   ERROR_TYPES,
   ProblemDetail,
 } from "@/resource/error";
+import { isDebugEnabled } from "@/server/env";
+import { getLogger } from "@/server/logger";
 
-export interface RequestWithId extends Request {
-  requestId?: string;
-}
+const problemResponse = (c: Context, problem: ProblemDetail, status: number): Response => {
+  c.header("Content-Type", "application/problem+json");
+  return c.body(JSON.stringify(problem), status as ContentfulStatusCode);
+};
 
-export const errorMiddleware = (
-  error: unknown,
-  req: Request,
-  res: Response,
-  _next: NextFunction
-): void => {
-  const requestId = (req as RequestWithId).requestId;
-
-  console.error(
-    JSON.stringify({
-      level: "error",
-      requestId,
-      method: req.method,
-      path: req.path,
-      error: error instanceof Error ? error.message : String(error),
-      stack: process.env.CONCAVE_DEBUG === "1" && error instanceof Error ? error.stack : undefined,
-    })
-  );
+export const errorHandler: ErrorHandler = (error, c) => {
+  const requestId = c.get("requestId");
 
   let statusCode = 500;
   if (error instanceof ResourceError) {
     statusCode = error.statusCode;
   } else if (error instanceof ZodError) {
     statusCode = 400;
+  } else if (error instanceof HTTPException) {
+    statusCode = error.status;
+  }
+
+  // 4xx are expected client errors (validation, not-found, precondition,
+  // rate-limit, auth) — log at warn so they don't drown real 5xx server errors.
+  const logger = getLogger();
+  const fields = {
+    requestId,
+    method: c.req.method,
+    path: c.req.path,
+    status: statusCode,
+    error: error instanceof Error ? error.message : String(error),
+    stack: isDebugEnabled() && error instanceof Error ? error.stack : undefined,
+  };
+  if (statusCode >= 500) {
+    logger.error("Request error", fields);
+  } else {
+    logger.warn("Request error", fields);
+  }
+
+  if (error instanceof HTTPException) {
+    return error.getResponse();
+  }
+
+  if (error instanceof RateLimitError) {
+    c.header("Retry-After", String(Math.ceil(error.retryAfter / 1000)));
   }
 
   const problem = formatRFC7807Error(error, requestId);
-
-  if (error instanceof RateLimitError) {
-    res.set("Retry-After", String(Math.ceil(error.retryAfter / 1000)));
-  }
-
-  res
-    .status(statusCode)
-    .set("Content-Type", "application/problem+json")
-    .json(problem);
+  return problemResponse(c, problem, statusCode);
 };
 
-export const asyncHandler = <T>(
-  fn: (req: Request, res: Response, next: NextFunction) => Promise<T>
-) => {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-};
-
-export const notFoundHandler = (
-  req: Request,
-  res: Response,
-  _next: NextFunction
-): void => {
-  const requestId = (req as RequestWithId).requestId;
+export const notFoundHandler: NotFoundHandler = (c) => {
+  const requestId = c.get("requestId");
 
   const problem: ProblemDetail = {
     type: ERROR_TYPES.NOT_FOUND,
     title: "Not found",
     status: 404,
-    detail: `Route ${req.method} ${req.path} not found`,
+    detail: `Route ${c.req.method} ${c.req.path} not found`,
     code: "NOT_FOUND",
   };
 
@@ -78,5 +74,5 @@ export const notFoundHandler = (
     problem.requestId = requestId;
   }
 
-  res.status(404).set("Content-Type", "application/problem+json").json(problem);
+  return problemResponse(c, problem, 404);
 };

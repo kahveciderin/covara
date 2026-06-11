@@ -1,8 +1,19 @@
-import { Request, Response, NextFunction } from "express";
-import { randomUUID } from "crypto";
+import type { Context, MiddlewareHandler } from "hono";
+import { randomUUID } from "node:crypto";
+import { getLogger } from "@/server/logger";
+
+declare module "hono" {
+  interface ContextVariableMap {
+    requestStartTime?: number;
+    resource?: string;
+    operation?: string;
+    traceId?: string;
+  }
+}
 
 export interface RequestMetrics {
   requestId: string;
+  traceId?: string;
   method: string;
   path: string;
   resource?: string;
@@ -12,6 +23,15 @@ export interface RequestMetrics {
   timestamp: number;
   query?: Record<string, unknown>;
   error?: string;
+}
+
+export interface SpanInfo {
+  requestId: string;
+  traceId: string;
+  method: string;
+  path: string;
+  resource?: string;
+  operation?: string;
 }
 
 export interface SubscriptionMetrics {
@@ -45,8 +65,10 @@ export interface ObservabilityConfig {
   enableSlowQueryLog?: boolean;
   slowQueryThresholdMs?: number;
   requestIdHeader?: string;
+  traceIdHeader?: string;
   metrics?: MetricsConfig;
   onMetrics?: (metrics: RequestMetrics) => void;
+  onSpan?: (span: SpanInfo) => void;
   logger?: Logger;
 }
 
@@ -56,31 +78,53 @@ export interface Logger {
   error: (msg: string | object) => void;
 }
 
-const defaultLogger: Logger = {
-  info: (msg) => console.log(typeof msg === "string" ? msg : JSON.stringify(msg)),
-  warn: (msg) => console.warn(typeof msg === "string" ? msg : JSON.stringify(msg)),
-  error: (msg) => console.error(typeof msg === "string" ? msg : JSON.stringify(msg)),
+const toStructured = (
+  level: "info" | "warn" | "error",
+  msg: string | object
+): void => {
+  const log = getLogger();
+  if (typeof msg === "string") {
+    log[level](msg);
+    return;
+  }
+  const { message, level: _level, ...fields } = msg as Record<string, unknown>;
+  log[level](typeof message === "string" ? message : "log", fields);
 };
 
-const DEFAULT_CONFIG: Required<Omit<ObservabilityConfig, "onMetrics">> & { onMetrics?: (metrics: RequestMetrics) => void } = {
+const defaultLogger: Logger = {
+  info: (msg) => toStructured("info", msg),
+  warn: (msg) => toStructured("warn", msg),
+  error: (msg) => toStructured("error", msg),
+};
+
+const DEFAULT_CONFIG: Required<
+  Omit<ObservabilityConfig, "onMetrics" | "onSpan">
+> & {
+  onMetrics?: (metrics: RequestMetrics) => void;
+  onSpan?: (span: SpanInfo) => void;
+} = {
   enableRequestId: true,
   enableTiming: true,
   enableSlowQueryLog: true,
   slowQueryThresholdMs: 1000,
   requestIdHeader: "x-request-id",
+  traceIdHeader: "traceparent",
   metrics: {},
   onMetrics: undefined,
+  onSpan: undefined,
   logger: defaultLogger,
 };
 
-export interface ObservableRequest extends Request {
-  requestId?: string;
-  startTime?: bigint;
-  resource?: string;
-  operation?: string;
-}
+const parseTraceId = (header: string | undefined): string | undefined => {
+  if (!header) return undefined;
+  const parts = header.split("-");
+  if (parts.length >= 3 && parts[1] && parts[1].length === 32) {
+    return parts[1];
+  }
+  return header;
+};
 
-export const observabilityMiddleware = (config: ObservabilityConfig = {}) => {
+export const observabilityMiddleware = (config: ObservabilityConfig = {}): MiddlewareHandler => {
   const mergedConfig = { ...DEFAULT_CONFIG, ...config };
   const {
     enableRequestId,
@@ -88,129 +132,141 @@ export const observabilityMiddleware = (config: ObservabilityConfig = {}) => {
     enableSlowQueryLog,
     slowQueryThresholdMs,
     requestIdHeader,
+    traceIdHeader,
     metrics,
     onMetrics,
+    onSpan,
     logger,
   } = mergedConfig;
 
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const observableReq = req as ObservableRequest;
-
+  return async (c, next) => {
+    let requestId: string | undefined;
     if (enableRequestId) {
-      const requestId =
-        (req.headers[requestIdHeader] as string) || randomUUID();
-      observableReq.requestId = requestId;
-      res.set("X-Request-Id", requestId);
+      requestId = c.req.header(requestIdHeader) || randomUUID();
+      c.set("requestId", requestId);
+      c.header("X-Request-Id", requestId);
     }
 
-    let startTime: bigint | undefined;
+    const traceId =
+      parseTraceId(c.req.header(traceIdHeader)) ?? c.get("requestId");
+    if (traceId) {
+      c.set("traceId", traceId);
+    }
+
+    if (onSpan && traceId) {
+      onSpan({
+        requestId: c.get("requestId") ?? traceId,
+        traceId,
+        method: c.req.method,
+        path: c.req.path,
+        resource: c.get("resource"),
+        operation: c.get("operation"),
+      });
+    }
+
+    let startTime: number | undefined;
     if (enableTiming) {
-      startTime = process.hrtime.bigint();
-      observableReq.startTime = startTime;
+      startTime = performance.now();
+      c.set("requestStartTime", startTime);
     }
 
-    res.on("finish", () => {
-      if (!enableTiming || !startTime) return;
+    await next();
 
-      const duration = Number(process.hrtime.bigint() - startTime) / 1e6;
+    if (!enableTiming || startTime === undefined) return;
 
-      const requestMetrics: RequestMetrics = {
-        requestId: observableReq.requestId ?? "unknown",
-        method: req.method,
-        path: req.path,
-        resource: observableReq.resource,
-        operation: observableReq.operation,
-        status: res.statusCode,
-        duration,
-        timestamp: Date.now(),
-      };
+    const duration = performance.now() - startTime;
 
-      if (enableSlowQueryLog && duration > slowQueryThresholdMs) {
-        logger.warn({
-          level: "warn",
-          message: "Slow request",
-          ...requestMetrics,
-        });
-      }
+    const requestMetrics: RequestMetrics = {
+      requestId: c.get("requestId") ?? "unknown",
+      traceId: c.get("traceId"),
+      method: c.req.method,
+      path: c.req.path,
+      resource: c.get("resource"),
+      operation: c.get("operation"),
+      status: c.res.status,
+      duration,
+      timestamp: Date.now(),
+    };
 
-      if (req.method !== "GET" || res.statusCode >= 400) {
-        logger.info({
-          level: "info",
-          message: "Request completed",
-          ...requestMetrics,
-        });
-      }
+    if (enableSlowQueryLog && duration > slowQueryThresholdMs) {
+      logger.warn({
+        level: "warn",
+        message: "Slow request",
+        durationMs: duration,
+        ...requestMetrics,
+      });
+    }
 
-      metrics.onRequest?.(requestMetrics);
-      onMetrics?.(requestMetrics);
-    });
+    if (c.req.method !== "GET" || c.res.status >= 400) {
+      logger.info({
+        level: "info",
+        message: "Request completed",
+        durationMs: duration,
+        ...requestMetrics,
+      });
+    }
 
-    next();
+    metrics.onRequest?.(requestMetrics);
+    onMetrics?.(requestMetrics);
   };
 };
 
-export const requestIdMiddleware = (headerName: string = "x-request-id") => {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const requestId = (req.headers[headerName] as string) || randomUUID();
-    (req as ObservableRequest).requestId = requestId;
-    res.set("X-Request-Id", requestId);
-    next();
+export const requestIdMiddleware = (headerName: string = "x-request-id"): MiddlewareHandler => {
+  return async (c, next) => {
+    const requestId = c.req.header(headerName) || randomUUID();
+    c.set("requestId", requestId);
+    c.header("X-Request-Id", requestId);
+    return next();
   };
 };
 
-export const timingMiddleware = (config?: { slowQueryThresholdMs?: number }) => {
+export const timingMiddleware = (config?: { slowQueryThresholdMs?: number }): MiddlewareHandler => {
   const slowQueryThresholdMs = config?.slowQueryThresholdMs ?? 1000;
 
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const startTime = process.hrtime.bigint();
-    (req as ObservableRequest).startTime = startTime;
+  return async (c, next) => {
+    const startTime = performance.now();
+    c.set("requestStartTime", startTime);
 
-    res.on("finish", () => {
-      const duration = Number(process.hrtime.bigint() - startTime) / 1e6;
+    await next();
 
-      res.set("X-Response-Time", `${duration.toFixed(2)}ms`);
+    const duration = performance.now() - startTime;
 
-      if (duration > slowQueryThresholdMs) {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            message: "Slow request",
-            method: req.method,
-            path: req.path,
-            duration,
-            status: res.statusCode,
-            requestId: (req as ObservableRequest).requestId,
-          })
-        );
-      }
-    });
+    c.res.headers.set("X-Response-Time", `${duration.toFixed(2)}ms`);
 
-    next();
+    if (duration > slowQueryThresholdMs) {
+      getLogger().warn("Slow request", {
+        method: c.req.method,
+        path: c.req.path,
+        durationMs: duration,
+        status: c.res.status,
+        requestId: c.get("requestId"),
+      });
+    }
   };
 };
 
 export const resourceContextMiddleware = (
   resource: string,
   operation?: string
-) => {
-  return (req: Request, _res: Response, next: NextFunction): void => {
-    (req as ObservableRequest).resource = resource;
+): MiddlewareHandler => {
+  return async (c, next) => {
+    c.set("resource", resource);
     if (operation) {
-      (req as ObservableRequest).operation = operation;
+      c.set("operation", operation);
     }
-    next();
+    return next();
   };
 };
 
-export const getRequestId = (req: Request): string | undefined => {
-  return (req as ObservableRequest).requestId;
+export const getRequestId = (c: Context): string | undefined => {
+  return c.get("requestId");
 };
 
-export const getRequestDuration = (req: Request): number => {
-  const observableReq = req as ObservableRequest;
-  if (!observableReq.startTime) return 0;
+export const getRequestDuration = (c: Context): number => {
+  const startTime = c.get("requestStartTime");
+  if (startTime === undefined) return 0;
 
-  return Number(process.hrtime.bigint() - observableReq.startTime) / 1e6;
+  return performance.now() - startTime;
 };
 
 export interface MetricsCollectorConfig {

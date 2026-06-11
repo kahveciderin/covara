@@ -13,7 +13,20 @@ export interface SubscriptionManagerConfig<T> {
   idField: keyof T;
   options?: SubscribeOptions;
   callbacks?: SubscriptionCallbacks<T>;
+  rng?: () => number;
 }
+
+export const computeBackoffDelay = (
+  attempt: number,
+  base: number,
+  cap: number,
+  rng: () => number = Math.random
+): number => {
+  const exponential = base * Math.pow(2, attempt);
+  const bounded = Math.min(cap, Number.isFinite(exponential) ? exponential : cap);
+  const jittered = rng() * bounded;
+  return Math.max(0, Math.min(cap, jittered));
+};
 
 export class SubscriptionManager<T extends { id: string }> implements Subscription<T> {
   private eventSource: EventSource | null = null;
@@ -21,12 +34,15 @@ export class SubscriptionManager<T extends { id: string }> implements Subscripti
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 10;
   private baseReconnectDelay = 1000;
+  private maxReconnectDelay = 30000;
+  private rng: () => number;
   private _state: SubscriptionState<T>;
   private config: SubscriptionManagerConfig<T>;
   private isUnsubscribed = false;
 
   constructor(config: SubscriptionManagerConfig<T>) {
     this.config = config;
+    this.rng = config.rng ?? Math.random;
     this._state = {
       items: new Map(),
       isConnected: false,
@@ -162,9 +178,11 @@ export class SubscriptionManager<T extends { id: string }> implements Subscripti
       return;
     }
 
-    const delay = Math.min(
-      this.baseReconnectDelay * Math.pow(2, this.reconnectAttempts),
-      30000
+    const delay = computeBackoffDelay(
+      this.reconnectAttempts,
+      this.baseReconnectDelay,
+      this.maxReconnectDelay,
+      this.rng
     );
 
     this.reconnectTimeout = setTimeout(() => {

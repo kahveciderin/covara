@@ -1,5 +1,5 @@
 import { html, escapeHtml, formatRelativeTime } from '../utils';
-import { card, badge, button, emptyState, input, select } from '../components';
+import { card, badge, button, emptyState, select } from '../components';
 
 export interface SessionInfo {
   id: string;

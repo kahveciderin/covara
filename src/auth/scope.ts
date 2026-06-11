@@ -1,5 +1,5 @@
 import { ScopeConfig, ScopeFunction, CompiledScope, UserContext } from "@/resource/types";
-import { emptyScope, allScope } from "./rsql";
+import { allScope } from "./rsql";
 import { UnauthorizedError, ForbiddenError } from "@/resource/error";
 
 export type Operation = "read" | "create" | "update" | "delete" | "subscribe";

@@ -1,5 +1,4 @@
 import {
-  eq,
   InferInsertModel,
   Table,
   TableConfig,
@@ -8,12 +7,13 @@ import {
   getTableName,
   SQL,
   and,
+  eq,
+  isNull,
   getTableColumns,
   inArray,
 } from "drizzle-orm";
-import { Request, Response, Router, type IRouter } from "express";
+import { Hono, type Context } from "hono";
 import { createInsertSchema, createUpdateSchema } from "drizzle-zod";
-import { AnyColumn } from "drizzle-orm";
 import z, { ZodError } from "zod";
 import { v4 as uuidv4 } from "uuid";
 
@@ -29,23 +29,21 @@ import {
   pushDeletesToSubscriptions,
   sendExistingItems,
   sendInvalidateEvent,
-  isHandlerConnected,
-  getHandlerSubscriptions,
   registerKnownIds,
+  registerResourceMask,
 } from "./subscription";
 import {
   createPagination,
   decodeCursorLegacy,
   parseOrderBy,
-  OrderByField,
 } from "./pagination";
 import {
   parseSelect,
   applyProjection,
   parseAggregationParams,
   buildAggregationSelections,
+  buildHavingCondition,
   transformAggregationResults,
-  createQueryHelper,
 } from "./query";
 import {
   executeProcedure,
@@ -62,31 +60,33 @@ import {
   CustomOperator,
   ProcedureDefinition,
   LifecycleHooks,
-  UserContext,
   ProcedureContext,
   DrizzleTransaction,
-  ResourceSearchConfig,
 } from "./types";
 import { createSearchHandler } from "./search";
 import { hasGlobalSearch, getGlobalSearch } from "@/search";
+import { hasGlobalKV } from "@/kv";
+import { enqueueSearchOp, startSearchOutboxDrainer } from "./search-outbox";
 import {
   NotFoundError,
   ValidationError,
   BatchLimitError,
-  ResourceError,
   formatZodError,
 } from "./error";
 import { createScopeResolver, combineScopes, Operation } from "@/auth/scope";
-import { AuthenticatedRequest } from "@/auth/types";
-import { createRateLimiter, createOperationRateLimiter } from "@/middleware/rateLimit";
-import { asyncHandler } from "@/middleware/error";
+import { createRateLimiter } from "@/middleware/rateLimit";
 import {
   parseInclude,
   RelationLoader,
   RelationsConfig,
-  IncludeConfig,
 } from "./relations";
 import { registerResourceSchema, setResourceMountPath } from "@/ui/schema-registry";
+import { getUser } from "@/server/context";
+import { getClientIP, readJsonBody } from "@/server/request";
+import { createSSEStream } from "@/server/sse";
+import { getLogger } from "@/server/logger";
+import { setETagHeader, validateIfMatch, handleConditionalGet, generateETag } from "./etag";
+import { PreconditionFailedError } from "./error";
 
 const DEFAULT_BATCH_LIMITS = {
   create: 100,
@@ -110,7 +110,7 @@ export const getResourceRegistry = () => resourceRegistry;
 export const useResource = <TConfig extends TableConfig>(
   schema: Table<TConfig>,
   config: ResourceConfig<TConfig, Table<TConfig>>
-): IRouter => {
+): Hono => {
   const db = config.db;
   const resourceName = getTableName(schema);
   const idColumnName = config.id.name;
@@ -160,16 +160,31 @@ export const useResource = <TConfig extends TableConfig>(
       }
     : undefined;
 
-  const router = Router();
+  // Merge relations marked `strategy: "eager"` with the client's explicit
+  // ?include= specs. Explicitly-requested specs win (so their filter/limit/
+  // nested overrides the bare eager spec); lazy/unset relations only load when
+  // explicitly included.
+  const resolveIncludeSpecs = (includeQuery: string | undefined) => {
+    const requested = parseInclude(includeQuery);
+    if (!relationLoader) return requested;
+    const eager = relationLoader.getEagerIncludes();
+    if (eager.length === 0) return requested;
+    const byName = new Map<string, (typeof requested)[number]>();
+    for (const spec of eager) byName.set(spec.relation, spec);
+    for (const spec of requested) byName.set(spec.relation, spec);
+    return Array.from(byName.values());
+  };
+
+  const router = new Hono();
 
   // Capture mount path on first request for OpenAPI auto-discovery
   let mountPathCaptured = false;
-  router.use((req, _res, next) => {
+  router.use("*", async (c, next) => {
     if (!mountPathCaptured) {
-      setResourceMountPath(resourceName, req.baseUrl);
+      setResourceMountPath(resourceName, c.req.routePath.replace(/\/\*$/, ""));
       mountPathCaptured = true;
     }
-    next();
+    await next();
   });
 
   const filterer = createResourceFilter(schema, config.customOperators ?? {});
@@ -180,8 +195,6 @@ export const useResource = <TConfig extends TableConfig>(
     config.pagination ?? DEFAULT_PAGINATION
   );
 
-  const queryHelper = createQueryHelper(schema);
-
   const scopeResolver = createScopeResolver(config.auth, resourceName);
 
   const baseInsertSchema = createInsertSchema(schema);
@@ -191,9 +204,13 @@ export const useResource = <TConfig extends TableConfig>(
     ? Object.fromEntries(config.generatedFields.map((f) => [f, true] as const))
     : null;
 
-  const insertSchema = generatedFieldsPartial
+  const insertSchemaBase = generatedFieldsPartial
     ? (baseInsertSchema.partial as any)(generatedFieldsPartial)
     : baseInsertSchema;
+
+  // Strict mode rejects unknown fields instead of silently dropping them.
+  const insertSchema = config.strictInput ? (insertSchemaBase as any).strict() : insertSchemaBase;
+  const strictUpdateSchema = config.strictInput ? (updateSchema as any).strict() : updateSchema;
 
   const parseInsert = (data: unknown) => {
     try {
@@ -221,7 +238,7 @@ export const useResource = <TConfig extends TableConfig>(
 
   const parseUpdate = (data: unknown) => {
     try {
-      return updateSchema.parse(data) as Partial<InferSelectModel<Table<TConfig>>>;
+      return strictUpdateSchema.parse(data) as Partial<InferSelectModel<Table<TConfig>>>;
     } catch (error) {
       if (error instanceof ZodError) {
         throw new ValidationError("Validation failed", formatZodError(error));
@@ -241,10 +258,6 @@ export const useResource = <TConfig extends TableConfig>(
       })
     : null;
 
-  const getUser = (req: Request): UserContext | null => {
-    return (req as AuthenticatedRequest).user ?? null;
-  };
-
   // Create a tracked db for procedures if not already tracked
   // This ensures mutations in procedures are automatically recorded to changelog
   const trackedDb = isTrackedDb(db)
@@ -253,185 +266,378 @@ export const useResource = <TConfig extends TableConfig>(
         [resourceName]: { table: schema, id: config.id },
       });
 
-  const createProcedureContext = (req: Request): ProcedureContext<TConfig> => ({
+  const etagConfig = config.etag;
+
+  // Field-level read masking: if `fields.readable` is configured, it is an
+  // allowlist of TABLE COLUMNS that may be returned. Non-readable columns are
+  // stripped from every response (REST + subscription events + initial
+  // snapshot). Non-column keys (relations, computed fields, _etag) always pass
+  // through so includes keep working.
+  const readableSet = config.fields?.readable
+    ? new Set(config.fields.readable)
+    : null;
+  const computedFields = config.computed
+    ? Object.entries(config.computed)
+    : null;
+  const tableColumnNames = new Set(Object.keys(getTableColumns(schema)));
+  // Serializer applied to every read response + subscription event: first adds
+  // computed/virtual fields (from the full row), then strips non-readable table
+  // columns. Computed fields and relation/computed keys survive masking.
+  const maskReadable = <T extends Record<string, unknown>>(item: T): T => {
+    if (item === null || typeof item !== "object") return item;
+    if (!readableSet && !computedFields) return item;
+
+    let result: Record<string, unknown> = item;
+    if (computedFields) {
+      result = { ...item };
+      for (const [key, fn] of computedFields) {
+        result[key] = fn(item);
+      }
+    }
+    if (!readableSet) return result as T;
+
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(result)) {
+      if (tableColumnNames.has(key) && !readableSet.has(key)) continue;
+      out[key] = value;
+    }
+    return out as T;
+  };
+  const maskReadableList = <T extends Record<string, unknown>>(items: T[]): T[] =>
+    readableSet || computedFields ? items.map((i) => maskReadable(i)) : items;
+
+  if (readableSet || computedFields) {
+    registerResourceMask(resourceName, (item) => maskReadable(item));
+  }
+
+  // Mass-assignment protection: if `fields.writable` is configured, strip any
+  // table columns the client tries to set that aren't in the allowlist. Applied
+  // to client input BEFORE lifecycle hooks, so server-side hooks can still set
+  // protected fields. Non-column keys (relation payloads) pass through.
+  const writableSet = config.fields?.writable ? new Set(config.fields.writable) : null;
+  // The primary key and generated fields are managed by the framework/DB, not
+  // by mass-assignment policy — never strip them even if absent from `writable`.
+  const writableExempt = new Set<string>([idColumnName, ...(config.generatedFields ?? [])]);
+  const applyWritable = <T extends Record<string, unknown>>(data: T): T => {
+    if (!writableSet || data === null || typeof data !== "object") return data;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (tableColumnNames.has(key) && !writableSet.has(key) && !writableExempt.has(key)) continue;
+      out[key] = value;
+    }
+    return out as T;
+  };
+
+  const applyVersionBump = (
+    existing: Record<string, unknown>,
+    data: Record<string, unknown>
+  ): Record<string, unknown> => {
+    const versionField = etagConfig?.versionField;
+    if (!versionField || data[versionField] !== undefined) return data;
+    const current = Number(existing[versionField] ?? 0);
+    if (Number.isNaN(current)) return data;
+    return { ...data, [versionField]: current + 1 };
+  };
+
+  // Build a compare-and-swap predicate so the UPDATE only matches the exact row
+  // version we validated If-Match against. This closes the read-validate-write
+  // TOCTOU race: if a concurrent writer changed the row between our SELECT and
+  // our UPDATE, zero rows match and we surface a 412 instead of a lost update.
+  const buildCasPredicate = (
+    existing: Record<string, unknown>
+  ): SQL<unknown> | undefined => {
+    if (!etagConfig) return undefined;
+    const columns = getTableColumns(schema) as Record<string, any>;
+    const field = etagConfig.versionField ?? etagConfig.updatedAtField;
+    if (!field) return undefined;
+    const column = columns[field];
+    if (!column) return undefined;
+    return eq(column, existing[field] as any);
+  };
+
+  const createProcedureContext = (c: Context): ProcedureContext<TConfig> => ({
     db: trackedDb,
     schema,
-    user: getUser(req),
-    req,
+    user: getUser(c),
+    req: c.req.raw,
+    context: c,
   });
 
+  const softDeleteConfig = config.softDelete;
+  const softDeleteColumn = softDeleteConfig
+    ? (getTableColumns(schema) as Record<string, any>)[softDeleteConfig.field]
+    : undefined;
+  const softDeleteValue = (): unknown =>
+    softDeleteConfig?.deletedValue ? softDeleteConfig.deletedValue() : new Date().toISOString();
+
+  const excludeSoftDeleted = (base: SQL<unknown> | undefined): SQL<unknown> | undefined => {
+    if (!softDeleteColumn) return base;
+    const notDeleted = isNull(softDeleteColumn);
+    return base ? and(base, notDeleted) : notDeleted;
+  };
+
   const applyFilters = async (
-    req: Request,
+    c: Context,
     operation: Operation,
     additionalFilter?: string
   ): Promise<SQL<unknown> | undefined> => {
-    const user = getUser(req);
+    const user = getUser(c);
     const scope = await scopeResolver.resolve(operation, user);
 
-    const filterQuery = additionalFilter ?? req.query.filter?.toString() ?? "";
+    const filterQuery = additionalFilter ?? c.req.query("filter") ?? "";
     const combinedFilter = combineScopes(scope, filterQuery);
 
+    let base: SQL<unknown> | undefined;
     if (combinedFilter === "" || combinedFilter === "*") {
-      return filterQuery ? (filterer.convert(filterQuery) as SQL<unknown>) : undefined;
+      base = filterQuery ? (filterer.convert(filterQuery) as SQL<unknown>) : undefined;
+    } else {
+      base = filterer.convert(combinedFilter) as SQL<unknown>;
     }
 
-    return filterer.convert(combinedFilter) as SQL<unknown>;
+    // Exclude soft-deleted rows from every operation unless the caller opts in
+    // with ?withDeleted=true. This keeps deleted rows invisible to reads,
+    // updates, and (re-)deletes alike.
+    if (softDeleteColumn && c.req.query("withDeleted") !== "true") {
+      const notDeleted = isNull(softDeleteColumn);
+      return base ? and(base, notDeleted) : notDeleted;
+    }
+
+    return base;
   };
 
   if (rateLimitMiddleware) {
-    router.use(rateLimitMiddleware);
+    router.use("*", rateLimitMiddleware);
   }
 
   if (batchConfig.create && batchConfig.create > 0) {
-    router.post(
-      "/batch",
-      asyncHandler(async (req, res) => {
-        await scopeResolver.requirePermission("create", getUser(req));
+    router.post("/batch", async (c) => {
+      await scopeResolver.requirePermission("create", getUser(c));
 
-        const data = parseMultiInsert(req.body);
-        if (data.items.length > batchConfig.create!) {
-          throw new BatchLimitError("create", batchConfig.create!, data.items.length);
+      const data = parseMultiInsert(await readJsonBody(c));
+      if (data.items.length > batchConfig.create!) {
+        throw new BatchLimitError("create", batchConfig.create!, data.items.length);
+      }
+
+      const ctx = createProcedureContext(c);
+
+      const processedItems = await Promise.all(
+        data.items.map(async (item) => {
+          const processed = await executeBeforeCreate(
+            hooks,
+            ctx,
+            applyWritable(item as Record<string, unknown>) as typeof item
+          );
+          return processed;
+        })
+      );
+
+      const created = await db.insert(schema).values(processedItems).returning();
+      const createdArray = created as unknown as Record<string, unknown>[];
+
+      for (const item of createdArray) {
+        await executeAfterCreate(hooks, ctx, item as any);
+        recordCreate(resourceName, String(item[idColumnName]), item);
+        await indexDocument(String(item[idColumnName]), item);
+      }
+
+      await pushInsertsToSubscriptions(
+        resourceName,
+        filterer as any,
+        createdArray,
+        idColumnName,
+        undefined,
+        subscriptionRelationLoader
+      );
+
+      return c.json({ items: maskReadableList(created as Record<string, unknown>[]) });
+    });
+
+    // Bulk upsert: insert-or-update by primary key. New rows run create hooks +
+    // emit added events; existing rows run update hooks + emit changed events.
+    router.post("/batch/upsert", async (c) => {
+      await scopeResolver.requirePermission("create", getUser(c));
+      await scopeResolver.requirePermission("update", getUser(c));
+
+      const data = parseMultiInsert(await readJsonBody(c));
+      if (data.items.length > batchConfig.create!) {
+        throw new BatchLimitError("create", batchConfig.create!, data.items.length);
+      }
+
+      const ctx = createProcedureContext(c);
+
+      const { upserted, previousMap } = await db.transaction(async (tx: DrizzleTransaction) => {
+        const ids = data.items
+          .map((i) => (i as Record<string, unknown>)[idColumnName])
+          .filter((v) => v !== undefined && v !== null);
+        const existing = ids.length
+          ? ((await tx.select().from(schema).where(inArray(config.id, ids as any))) as unknown as Record<string, unknown>[])
+          : [];
+        const prev = new Map(existing.map((e) => [String(e[idColumnName]), e]));
+
+        const out: Record<string, unknown>[] = [];
+        for (const rawItem of data.items) {
+          const item = applyWritable(rawItem as Record<string, unknown>);
+          const id = String(item[idColumnName]);
+          const isExisting = prev.has(id);
+          const hookData = isExisting
+            ? await executeBeforeUpdate(hooks, ctx, id, item as any)
+            : await executeBeforeCreate(hooks, ctx, item as any);
+
+          const setObj: Record<string, unknown> = { ...(hookData as Record<string, unknown>) };
+          delete setObj[idColumnName];
+
+          const row = ((await tx
+            .insert(schema)
+            .values(hookData as any)
+            .onConflictDoUpdate({ target: config.id, set: setObj as any })
+            .returning()) as any[])[0];
+          out.push(row as Record<string, unknown>);
         }
+        return { upserted: out, previousMap: prev };
+      });
 
-        const ctx = createProcedureContext(req);
-
-        const processedItems = await Promise.all(
-          data.items.map(async (item) => {
-            const processed = await executeBeforeCreate(hooks, ctx, item);
-            return processed;
-          })
-        );
-
-        const created = await db.insert(schema).values(processedItems).returning();
-        const createdArray = created as unknown as Record<string, unknown>[];
-
-        for (const item of createdArray) {
+      for (const item of upserted) {
+        const id = String(item[idColumnName]);
+        const previous = previousMap.get(id);
+        if (previous) {
+          await executeAfterUpdate(hooks, ctx, item as any);
+          recordUpdate(resourceName, id, item, previous);
+        } else {
           await executeAfterCreate(hooks, ctx, item as any);
-          recordCreate(resourceName, String(item[idColumnName]), item);
-          await indexDocument(String(item[idColumnName]), item);
+          recordCreate(resourceName, id, item);
         }
+        await indexDocument(id, item);
+      }
 
-        await pushInsertsToSubscriptions(
-          resourceName,
-          filterer as any,
-          createdArray,
-          idColumnName,
-          undefined,
-          subscriptionRelationLoader
-        );
+      await pushUpdatesToSubscriptions(
+        resourceName,
+        filterer as any,
+        upserted,
+        idColumnName,
+        previousMap,
+        subscriptionRelationLoader
+      );
 
-        res.json({ items: created });
-      })
-    );
+      return c.json({ items: maskReadableList(upserted) });
+    });
   }
 
   if (batchConfig.update && batchConfig.update > 0) {
-    router.patch(
-      "/batch",
-      asyncHandler(async (req, res) => {
-        const filter = await applyFilters(req, "update");
-        const data = parseUpdate(req.body);
+    router.patch("/batch", async (c) => {
+      const filter = await applyFilters(c, "update");
+      const data = parseUpdate(await readJsonBody(c));
 
-        const result = await db.transaction(async (tx: DrizzleTransaction) => {
-          const beforeItems = (await tx.select().from(schema).where(filter)) as unknown as Record<string, unknown>[];
+      const result = await db.transaction(async (tx: DrizzleTransaction) => {
+        const beforeItems = (await tx.select().from(schema).where(filter)) as unknown as Record<string, unknown>[];
 
-          if (beforeItems.length > batchConfig.update!) {
-            throw new BatchLimitError("update", batchConfig.update!, beforeItems.length);
-          }
-
-          const ctx = createProcedureContext(req);
-
-          let processedData = data;
-          for (const item of beforeItems) {
-            processedData = await executeBeforeUpdate(
-              hooks,
-              ctx,
-              String(item[idColumnName]),
-              processedData
-            );
-          }
-
-          await tx.update(schema).set(processedData).where(filter);
-
-          // Select by IDs, not by original filter, since the update may have changed fields used in the filter
-          const ids = beforeItems.map((item) => item[idColumnName]);
-          const afterItems = (await tx.select().from(schema).where(inArray(config.id, ids as any))) as unknown as Record<string, unknown>[];
-
-          const previousMap = new Map<string, Record<string, unknown>>();
-          for (let i = 0; i < beforeItems.length; i++) {
-            const before = beforeItems[i]!;
-            const after = afterItems[i]!;
-            const id = String(before[idColumnName]);
-            previousMap.set(id, before);
-            recordUpdate(resourceName, id, after, before);
-            await executeAfterUpdate(hooks, ctx, after as any);
-          }
-
-          return { count: afterItems.length, items: afterItems, previousMap };
-        });
-
-        for (const item of result.items) {
-          await indexDocument(String(item[idColumnName]), item);
+        if (beforeItems.length > batchConfig.update!) {
+          throw new BatchLimitError("update", batchConfig.update!, beforeItems.length);
         }
 
-        await pushUpdatesToSubscriptions(
-          resourceName,
-          filterer as any,
-          result.items,
-          idColumnName,
-          result.previousMap,
-          subscriptionRelationLoader
-        );
+        const ctx = createProcedureContext(c);
 
-        res.json({ count: result.count });
-      })
-    );
+        let processedData = data;
+        for (const item of beforeItems) {
+          processedData = await executeBeforeUpdate(
+            hooks,
+            ctx,
+            String(item[idColumnName]),
+            processedData
+          );
+        }
+
+        await tx.update(schema).set(processedData).where(filter);
+
+        // Select by IDs, not by original filter, since the update may have changed fields used in the filter
+        const ids = beforeItems.map((item) => item[idColumnName]);
+        const afterItems = (await tx.select().from(schema).where(inArray(config.id, ids as any))) as unknown as Record<string, unknown>[];
+
+        const previousMap = new Map<string, Record<string, unknown>>();
+        for (let i = 0; i < beforeItems.length; i++) {
+          const before = beforeItems[i]!;
+          const after = afterItems[i]!;
+          const id = String(before[idColumnName]);
+          previousMap.set(id, before);
+          await executeAfterUpdate(hooks, ctx, after as any);
+        }
+
+        return { count: afterItems.length, items: afterItems, previousMap };
+      });
+
+      // Record to changelog only after the transaction has committed, so a
+      // rolled-back update never leaves a phantom entry.
+      for (const item of result.items) {
+        const id = String(item[idColumnName]);
+        await recordUpdate(resourceName, id, item, result.previousMap.get(id));
+        await indexDocument(id, item);
+      }
+
+      await pushUpdatesToSubscriptions(
+        resourceName,
+        filterer as any,
+        result.items,
+        idColumnName,
+        result.previousMap,
+        subscriptionRelationLoader
+      );
+
+      return c.json({ count: result.count });
+    });
   }
 
   if (batchConfig.delete && batchConfig.delete > 0) {
-    router.delete(
-      "/batch",
-      asyncHandler(async (req, res) => {
-        const filter = await applyFilters(req, "delete");
+    router.delete("/batch", async (c) => {
+      const filter = await applyFilters(c, "delete");
 
-        const result = await db.transaction(async (tx: DrizzleTransaction) => {
-          const items = (await tx.select().from(schema).where(filter)) as unknown as Record<string, unknown>[];
+      const result = await db.transaction(async (tx: DrizzleTransaction) => {
+        const items = (await tx.select().from(schema).where(filter)) as unknown as Record<string, unknown>[];
 
-          if (items.length > batchConfig.delete!) {
-            throw new BatchLimitError("delete", batchConfig.delete!, items.length);
-          }
-
-          const ctx = createProcedureContext(req);
-
-          for (const item of items) {
-            await executeBeforeDelete(hooks, ctx, String(item[idColumnName]));
-          }
-
-          await tx.delete(schema).where(filter);
-
-          const deletedIds: string[] = [];
-          for (const item of items) {
-            const id = String(item[idColumnName]);
-            deletedIds.push(id);
-            recordDelete(resourceName, id, item);
-            await executeAfterDelete(hooks, ctx, item as any);
-          }
-
-          return { count: items.length, deletedIds };
-        });
-
-        for (const id of result.deletedIds) {
-          await deleteFromIndex(id);
+        if (items.length > batchConfig.delete!) {
+          throw new BatchLimitError("delete", batchConfig.delete!, items.length);
         }
 
-        await pushDeletesToSubscriptions(resourceName, result.deletedIds);
+        const ctx = createProcedureContext(c);
 
-        res.json({ count: result.count });
-      })
-    );
+        for (const item of items) {
+          await executeBeforeDelete(hooks, ctx, String(item[idColumnName]));
+        }
+
+        if (softDeleteConfig) {
+          await tx
+            .update(schema)
+            .set({ [softDeleteConfig.field]: softDeleteValue() } as any)
+            .where(filter);
+        } else {
+          await tx.delete(schema).where(filter);
+        }
+
+        const deletedIds: string[] = [];
+        for (const item of items) {
+          const id = String(item[idColumnName]);
+          deletedIds.push(id);
+          await executeAfterDelete(hooks, ctx, item as any);
+        }
+
+        return { count: items.length, deletedIds, items };
+      });
+
+      // Record to changelog only after the transaction has committed, so a
+      // rolled-back delete never leaves a phantom entry.
+      for (const item of result.items) {
+        await recordDelete(resourceName, String(item[idColumnName]), item);
+      }
+
+      for (const id of result.deletedIds) {
+        await deleteFromIndex(id);
+      }
+
+      await pushDeletesToSubscriptions(resourceName, result.deletedIds);
+
+      return c.json({ count: result.count });
+    });
   }
 
-  let eventPollInterval: NodeJS.Timeout | null = null;
+  let eventPollInterval: ReturnType<typeof setInterval> | null = null;
   let activeClients = 0;
 
   const startEventPolling = () => {
@@ -462,226 +668,223 @@ export const useResource = <TConfig extends TableConfig>(
   const userSubscriptionCounts = new Map<string, number>();
   const ipSubscriptionCounts = new Map<string, number>();
 
-  router.get(
-    "/subscribe",
-    asyncHandler(async (req, res) => {
-      const user = getUser(req);
-      const scope = await scopeResolver.resolve("subscribe", user);
-      const filterQuery = req.query.filter?.toString() ?? "";
-      const includeQuery = req.query.include?.toString();
-      const handlerId = uuidv4();
+  router.get("/subscribe", async (c) => {
+    const user = getUser(c);
+    const scope = await scopeResolver.resolve("subscribe", user);
+    const filterQuery = c.req.query("filter") ?? "";
+    const includeQuery = c.req.query("include");
+    const handlerId = uuidv4();
 
-      const resumeFrom = req.headers["last-event-id"]
-        ? parseInt(req.headers["last-event-id"] as string, 10)
-        : req.query.resumeFrom
-          ? parseInt(req.query.resumeFrom.toString(), 10)
-          : undefined;
+    const lastEventId = c.req.header("last-event-id");
+    const resumeFromQuery = c.req.query("resumeFrom");
+    const resumeFrom = lastEventId
+      ? parseInt(lastEventId, 10)
+      : resumeFromQuery
+        ? parseInt(resumeFromQuery, 10)
+        : undefined;
 
-      const skipExisting = req.query.skipExisting === "true";
-      const knownIdsParam = req.query.knownIds?.toString();
-      const knownIds = knownIdsParam ? knownIdsParam.split(",").filter(id => id.length > 0) : [];
+    const skipExisting = c.req.query("skipExisting") === "true";
+    const knownIdsParam = c.req.query("knownIds");
+    const knownIds = knownIdsParam ? knownIdsParam.split(",").filter(id => id.length > 0) : [];
 
-      const userId = user?.id ?? "anonymous";
-      const clientIP = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    const userId = user?.id ?? "anonymous";
+    const clientIP = getClientIP(c);
 
-      const userCount = userSubscriptionCounts.get(userId) ?? 0;
-      if (userCount >= sseConfig.maxSubscriptionsPerUser) {
-        res.status(429).json({
+    const userCount = userSubscriptionCounts.get(userId) ?? 0;
+    if (userCount >= sseConfig.maxSubscriptionsPerUser) {
+      return c.json(
+        {
           type: "/__concave/problems/rate-limit-exceeded",
           title: "Too many subscriptions",
           status: 429,
           detail: `Maximum ${sseConfig.maxSubscriptionsPerUser} subscriptions per user`,
-        });
-        return;
-      }
+        },
+        429
+      );
+    }
 
-      const ipCount = ipSubscriptionCounts.get(clientIP) ?? 0;
-      if (ipCount >= sseConfig.maxSubscriptionsPerIP) {
-        res.status(429).json({
+    const ipCount = ipSubscriptionCounts.get(clientIP) ?? 0;
+    if (ipCount >= sseConfig.maxSubscriptionsPerIP) {
+      return c.json(
+        {
           type: "/__concave/problems/rate-limit-exceeded",
           title: "Too many subscriptions",
           status: 429,
           detail: `Maximum ${sseConfig.maxSubscriptionsPerIP} subscriptions per IP`,
-        });
+        },
+        429
+      );
+    }
+
+    const { writer, response } = createSSEStream({
+      signal: c.req.raw.signal,
+      maxQueueBytes: sseConfig.maxQueueBytes,
+    });
+
+    userSubscriptionCounts.set(userId, userCount + 1);
+    ipSubscriptionCounts.set(clientIP, ipCount + 1);
+
+    registerHandler(handlerId, writer, sseConfig.onBackpressure);
+    activeClients++;
+    startEventPolling();
+
+    const currentSeq = await changelog.getCurrentSequence();
+    writer.write(`id: ${currentSeq}\nevent: connected\ndata: ${JSON.stringify({ seq: currentSeq })}\n\n`);
+
+    const heartbeat = setInterval(() => {
+      if (writer.closed) {
+        clearInterval(heartbeat);
         return;
       }
+      writer.write(`: ping ${Date.now()}\n\n`);
+    }, sseConfig.heartbeatMs);
 
-      res.set({
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-        "X-Content-Type-Options": "nosniff",
-      });
-      res.flushHeaders?.();
+    const subscriptionId = await createSubscription({
+      resource: resourceName,
+      filter: filterQuery,
+      handlerId,
+      authId: user?.id ?? null,
+      scopeFilter: scope.toString() !== "*" ? scope.toString() : undefined,
+      authExpiresAt: user?.sessionExpiresAt,
+      include: includeQuery,
+    });
 
-      userSubscriptionCounts.set(userId, userCount + 1);
-      ipSubscriptionCounts.set(clientIP, ipCount + 1);
+    const cleanup = async () => {
+      clearInterval(heartbeat);
+      activeClients--;
 
-      registerHandler(handlerId, res);
-      activeClients++;
-      startEventPolling();
+      userSubscriptionCounts.set(
+        userId,
+        Math.max(0, (userSubscriptionCounts.get(userId) ?? 1) - 1)
+      );
+      ipSubscriptionCounts.set(
+        clientIP,
+        Math.max(0, (ipSubscriptionCounts.get(clientIP) ?? 1) - 1)
+      );
 
-      const currentSeq = await changelog.getCurrentSequence();
-      res.write(`id: ${currentSeq}\nevent: connected\ndata: ${JSON.stringify({ seq: currentSeq })}\n\n`);
+      if (activeClients === 0) {
+        stopEventPolling();
+      }
 
-      let queuedBytes = 0;
+      await unregisterHandler(handlerId);
+      await removeSubscription(subscriptionId);
+    };
 
-      const heartbeat = setInterval(() => {
-        if (res.writableEnded) {
-          clearInterval(heartbeat);
-          return;
+    writer.onClose(() => {
+      void cleanup();
+    });
+
+    try {
+      if (resumeFrom !== undefined) {
+        if (await changelog.needsInvalidation(resumeFrom)) {
+          await sendInvalidateEvent(subscriptionId, "Sequence gap - please refetch");
         }
-        res.write(`: ping ${Date.now()}\n\n`);
-      }, sseConfig.heartbeatMs);
-
-      const subscriptionId = await createSubscription({
-        resource: resourceName,
-        filter: filterQuery,
-        handlerId,
-        authId: user?.id ?? null,
-        scopeFilter: scope.toString() !== "*" ? scope.toString() : undefined,
-        authExpiresAt: user?.sessionExpiresAt,
-        include: includeQuery,
-      });
-
-      res.on("drain", () => {
-        queuedBytes = 0;
-      });
-
-      try {
-        if (resumeFrom !== undefined) {
-          if (await changelog.needsInvalidation(resumeFrom)) {
-            await sendInvalidateEvent(subscriptionId, "Sequence gap - please refetch");
-          }
-        } else if (skipExisting) {
-          // Client already has data from paginated GET, just register known IDs
-          if (knownIds.length > 0) {
-            await registerKnownIds(subscriptionId, knownIds);
-          }
-          // If no knownIds provided but skipExisting is true, we need to query
-          // matching items to populate relevantObjectIds for proper change tracking
-          // This ensures removed events work correctly when items leave the filter scope
-          else {
-            const combinedFilter = combineScopes(scope, filterQuery);
-            const filter = combinedFilter && combinedFilter !== "*"
-              ? (filterer.convert(combinedFilter) as SQL<unknown>)
-              : undefined;
-
-            const items = await db.select().from(schema).where(filter);
-            const ids = (items as Record<string, unknown>[]).map(item => String(item[idColumnName]));
-            await registerKnownIds(subscriptionId, ids);
-          }
-        } else {
+      } else if (skipExisting) {
+        // Client already has data from paginated GET, just register known IDs
+        if (knownIds.length > 0) {
+          await registerKnownIds(subscriptionId, knownIds);
+        }
+        // If no knownIds provided but skipExisting is true, we need to query
+        // matching items to populate relevantObjectIds for proper change tracking
+        // This ensures removed events work correctly when items leave the filter scope
+        else {
           const combinedFilter = combineScopes(scope, filterQuery);
-          const filter = combinedFilter && combinedFilter !== "*"
+          const baseFilter = combinedFilter && combinedFilter !== "*"
             ? (filterer.convert(combinedFilter) as SQL<unknown>)
             : undefined;
+          const filter = excludeSoftDeleted(baseFilter);
 
           const items = await db.select().from(schema).where(filter);
-          await sendExistingItems(
-            subscriptionId,
-            items as Record<string, unknown>[],
-            idColumnName
-          );
+          const ids = (items as Record<string, unknown>[]).map(item => String(item[idColumnName]));
+          await registerKnownIds(subscriptionId, ids);
         }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : "Unknown error";
-        res.write(`event: error\ndata: ${JSON.stringify({ error: errorMessage })}\n\n`);
-        res.end();
-        return;
-      }
+      } else {
+        const combinedFilter = combineScopes(scope, filterQuery);
+        const baseFilter = combinedFilter && combinedFilter !== "*"
+          ? (filterer.convert(combinedFilter) as SQL<unknown>)
+          : undefined;
+        const filter = excludeSoftDeleted(baseFilter);
 
-      const cleanup = async () => {
-        clearInterval(heartbeat);
-        activeClients--;
-
-        userSubscriptionCounts.set(
-          userId,
-          Math.max(0, (userSubscriptionCounts.get(userId) ?? 1) - 1)
+        const items = await db.select().from(schema).where(filter);
+        await sendExistingItems(
+          subscriptionId,
+          items as Record<string, unknown>[],
+          idColumnName
         );
-        ipSubscriptionCounts.set(
-          clientIP,
-          Math.max(0, (ipSubscriptionCounts.get(clientIP) ?? 1) - 1)
-        );
-
-        unregisterHandler(handlerId);
-
-        if (activeClients === 0) {
-          stopEventPolling();
-        }
-
-        await removeSubscription(subscriptionId);
-      };
-
-      req.on("close", cleanup);
-      req.on("error", () => {
-        clearInterval(heartbeat);
-      });
-    })
-  );
-
-  router.get(
-    "/aggregate",
-    asyncHandler(async (req, res) => {
-      const filter = await applyFilters(req, "read");
-      const params = parseAggregationParams(req.query as Record<string, unknown>);
-
-      const { groupByColumns, aggregateColumns } = buildAggregationSelections(
-        schema,
-        params
-      );
-
-      const columns = getTableColumns(schema);
-      const selectObj: Record<string, unknown> = {
-        ...groupByColumns,
-        ...aggregateColumns,
-      };
-
-      let query = db.select(selectObj as any).from(schema);
-
-      if (filter) {
-        query = query.where(filter) as any;
       }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      writer.write(`event: error\ndata: ${JSON.stringify({ error: errorMessage })}\n\n`);
+      writer.close();
+      return response;
+    }
 
-      if (params.groupBy.length > 0) {
-        const groupByCols = params.groupBy.map((f) => columns[f]).filter(Boolean);
-        query = (query as any).groupBy(...groupByCols);
-      }
+    return response;
+  });
 
-      const results = await query;
-      const transformed = transformAggregationResults(
-        results as Record<string, unknown>[],
-        params
+  router.get("/aggregate", async (c) => {
+    const filter = await applyFilters(c, "read");
+    const params = parseAggregationParams(c.req.query() as Record<string, unknown>);
+
+    const { groupByColumns, aggregateColumns } = buildAggregationSelections(
+      schema,
+      params
+    );
+
+    const columns = getTableColumns(schema);
+    const selectObj: Record<string, unknown> = {
+      ...groupByColumns,
+      ...aggregateColumns,
+    };
+
+    let query = db.select(selectObj as any).from(schema);
+
+    if (filter) {
+      query = query.where(filter) as any;
+    }
+
+    if (params.groupBy.length > 0) {
+      const groupByCols = params.groupBy.map((f) => columns[f]).filter(Boolean);
+      query = (query as any).groupBy(...groupByCols);
+    }
+
+    if (params.having) {
+      const havingCondition = buildHavingCondition(
+        params.having,
+        aggregateColumns,
+        groupByColumns
       );
+      if (havingCondition) {
+        query = (query as any).having(havingCondition);
+      }
+    }
 
-      res.json(transformed);
-    })
-  );
+    const results = await query;
+    const transformed = transformAggregationResults(
+      results as Record<string, unknown>[],
+      params
+    );
 
-  router.get(
-    "/count",
-    asyncHandler(async (req, res) => {
-      const filter = await applyFilters(req, "read");
+    return c.json(transformed);
+  });
 
-      const [countData] = await db
-        .select({ count: count() })
-        .from(schema)
-        .where(filter);
+  router.get("/count", async (c) => {
+    const filter = await applyFilters(c, "read");
 
-      res.json({ count: countData?.count ?? 0 });
-    })
-  );
+    const [countData] = await db
+      .select({ count: count() })
+      .from(schema)
+      .where(filter);
+
+    return c.json({ count: countData?.count ?? 0 });
+  });
 
   for (const [name, procedure] of Object.entries(procedures)) {
-    router.post(
-      `/rpc/${name}`,
-      asyncHandler(async (req, res) => {
-        const ctx = createProcedureContext(req);
-        const result = await executeProcedure(procedure, ctx, req.body);
-        res.json({ data: result });
-      })
-    );
+    router.post(`/rpc/${name}`, async (c) => {
+      const ctx = createProcedureContext(c);
+      const result = await executeProcedure(procedure, ctx, await readJsonBody(c));
+      return c.json({ data: result });
+    });
   }
 
   // Search endpoint and auto-indexing
@@ -689,24 +892,62 @@ export const useResource = <TConfig extends TableConfig>(
   const autoIndexEnabled = searchEnabled && config.search?.autoIndex !== false;
   const searchIndexName = config.search?.indexName ?? resourceName;
 
+  const outboxEnabled = !!config.search?.outbox && hasGlobalKV();
+  if (outboxEnabled) {
+    startSearchOutboxDrainer();
+  }
+
+  const onIndexError = config.search?.onIndexError;
+  const runIndexOp = async (
+    op: "index" | "delete",
+    id: string,
+    fn: () => Promise<void>
+  ): Promise<void> => {
+    // One immediate retry, then surface the failure: structured-log it (so it's
+    // observable/alertable instead of swallowed) and call the optional
+    // onIndexError hook so apps can enqueue a re-index. The index can still lag
+    // the DB on repeated failure — call recordExternalMutation / re-index to
+    // reconcile.
+    try {
+      await fn();
+    } catch {
+      try {
+        await fn();
+      } catch (err) {
+        getLogger().error("Search index operation failed", {
+          resource: resourceName,
+          index: searchIndexName,
+          operation: op,
+          id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        if (onIndexError) {
+          try {
+            await onIndexError({ operation: op, id, index: searchIndexName, error: err });
+          } catch {
+            // a failing error hook must not break the request
+          }
+        }
+      }
+    }
+  };
+
   const indexDocument = async (id: string, document: Record<string, unknown>) => {
     if (!autoIndexEnabled) return;
-    try {
-      const search = getGlobalSearch();
-      await search.index(searchIndexName, id, document);
-    } catch (err) {
-      console.error(`Failed to index document ${id} in ${searchIndexName}:`, err);
+    if (outboxEnabled) {
+      await enqueueSearchOp({ index: searchIndexName, type: "index", docId: id, document });
+      return;
     }
+    await runIndexOp("index", id, () => getGlobalSearch().index(searchIndexName, id, document));
   };
 
   const deleteFromIndex = async (id: string) => {
     if (!autoIndexEnabled) return;
-    try {
-      const search = getGlobalSearch();
-      await search.delete(searchIndexName, id);
-    } catch (err) {
-      console.error(`Failed to delete document ${id} from ${searchIndexName}:`, err);
+    if (outboxEnabled) {
+      await enqueueSearchOp({ index: searchIndexName, type: "delete", docId: id });
+      return;
     }
+    await runIndexOp("delete", id, () => getGlobalSearch().delete(searchIndexName, id));
   };
 
   if (searchEnabled) {
@@ -719,276 +960,392 @@ export const useResource = <TConfig extends TableConfig>(
         scopeResolver,
         getUser,
         filterer: filterer as { execute: (expr: string, obj: unknown) => boolean },
+        maskItem: readableSet || computedFields ? (item) => maskReadable(item) : undefined,
       }
     );
 
-    router.get("/search", asyncHandler(searchHandler));
+    router.get("/search", searchHandler);
   }
 
-  router.post(
-    "/",
-    asyncHandler(async (req, res) => {
-      await scopeResolver.requirePermission("create", getUser(req));
+  const relationsConfig = config.relations as RelationsConfig | undefined;
+  const nestedWritesEnabled = config.nestedWrites === true && !!relationsConfig;
 
-      const ctx = createProcedureContext(req);
-      let data = parseInsert(req.body);
+  router.post("/", async (c) => {
+    await scopeResolver.requirePermission("create", getUser(c));
 
-      data = await executeBeforeCreate(hooks, ctx, data);
+    const ctx = createProcedureContext(c);
+    const rawBody = (await readJsonBody(c)) as Record<string, unknown>;
 
-      const insertResult = await db.insert(schema).values(data).returning();
-      const created = (insertResult as any[])[0];
-      const createdObj = created as Record<string, unknown>;
-
-      await executeAfterCreate(hooks, ctx, created);
-
-      recordCreate(resourceName, String(createdObj[idColumnName]), createdObj);
-      await indexDocument(String(createdObj[idColumnName]), createdObj);
-
-      const optimisticId = req.headers["x-concave-optimistic-id"] as string | undefined;
-      const optimisticIds = optimisticId
-        ? new Map([[String(createdObj[idColumnName]), optimisticId]])
-        : undefined;
-
-      await pushInsertsToSubscriptions(
-        resourceName,
-        filterer as any,
-        [createdObj],
-        idColumnName,
-        optimisticIds,
-        subscriptionRelationLoader
-      );
-
-      const response = optimisticId
-        ? { ...created, _optimisticId: optimisticId }
-        : created;
-
-      res.status(201).json(response);
-    })
-  );
-
-  router.get(
-    "/",
-    asyncHandler(async (req, res) => {
-      const filter = await applyFilters(req, "read");
-      const paginationParams = pagination.parseParams(req.query as Record<string, unknown>);
-      const selectFields = parseSelect(req.query.select?.toString());
-      const includeTotalCount = req.query.totalCount === "true";
-      const includeSpecs = parseInclude(req.query.include?.toString());
-
-      const orderByFields = parseOrderBy(paginationParams.orderBy);
-
-      let query = db.select().from(schema);
-
-      if (filter) {
-        query = query.where(filter) as any;
-      }
-
-      if (paginationParams.cursor) {
-        const cursorData = decodeCursorLegacy(paginationParams.cursor);
-        if (cursorData) {
-          const cursorCondition = pagination.buildCursorCondition(
-            cursorData,
-            orderByFields
-          );
-          if (cursorCondition) {
-            query = query.where(
-              filter ? and(filter, cursorCondition) : cursorCondition
-            ) as any;
-          }
+    // Split out embedded relation objects when nested writes are enabled.
+    const nestedEntries: { name: string; relation: any; value: unknown }[] = [];
+    const mainBody: Record<string, unknown> = { ...rawBody };
+    if (nestedWritesEnabled) {
+      for (const [name, relation] of Object.entries(relationsConfig!)) {
+        if (name in mainBody) {
+          nestedEntries.push({ name, relation, value: mainBody[name] });
+          delete mainBody[name];
         }
       }
+    }
 
-      const orderByClauses = pagination.buildOrderBy(orderByFields);
-      if (orderByClauses.length > 0) {
-        query = (query as any).orderBy(...orderByClauses);
-      }
+    let created: any;
+    if (nestedEntries.length > 0) {
+      // Atomic: belongsTo parents first (to wire local FKs), then the main row,
+      // then hasMany/hasOne children (wired to the new row's referenced key).
+      created = await db.transaction(async (tx: DrizzleTransaction) => {
+        for (const { relation, value } of nestedEntries) {
+          if (
+            relation.type === "belongsTo" &&
+            value &&
+            typeof value === "object" &&
+            !Array.isArray(value)
+          ) {
+            const parent = (
+              (await tx.insert(relation.schema).values(value as any).returning()) as any[]
+            )[0];
+            mainBody[relation.foreignKey.name] = parent[relation.references.name];
+          }
+        }
 
-      query = query.limit(paginationParams.limit + 1) as any;
+        let data = applyWritable(parseInsert(mainBody) as Record<string, unknown>) as typeof mainBody;
+        data = await executeBeforeCreate(hooks, ctx, data as any) as typeof data;
+        const row = ((await tx.insert(schema).values(data).returning()) as any[])[0];
 
-      let items = await query;
+        for (const { relation, value } of nestedEntries) {
+          if (relation.type === "hasMany" || relation.type === "hasOne") {
+            const parentRef = (row as Record<string, unknown>)[relation.references.name];
+            const children = Array.isArray(value) ? value : value != null ? [value] : [];
+            for (const child of children) {
+              await tx
+                .insert(relation.schema)
+                .values({ ...(child as object), [relation.foreignKey.name]: parentRef } as any)
+                .returning();
+            }
+          }
+        }
 
-      let totalCount: number | undefined;
-      if (includeTotalCount) {
-        const [countResult] = await db
-          .select({ count: count() })
-          .from(schema)
-          .where(filter);
-        totalCount = countResult?.count ?? 0;
-      }
+        return row;
+      });
+    } else {
+      let data = applyWritable(parseInsert(mainBody) as Record<string, unknown>) as any;
+      data = await executeBeforeCreate(hooks, ctx, data);
+      const insertResult = await db.insert(schema).values(data).returning();
+      created = (insertResult as any[])[0];
+    }
 
-      const result = pagination.processResults(
-        items as Record<string, unknown>[],
-        paginationParams.limit,
-        idColumnName,
-        orderByFields,
-        totalCount
-      );
+    const createdObj = created as Record<string, unknown>;
 
-      if (relationLoader && includeSpecs.length > 0) {
-        result.items = await relationLoader.loadRelationsForItems(
-          result.items,
-          includeSpecs,
-          idColumnName
+    await executeAfterCreate(hooks, ctx, created);
+
+    recordCreate(resourceName, String(createdObj[idColumnName]), createdObj);
+    await indexDocument(String(createdObj[idColumnName]), createdObj);
+
+    const optimisticId = c.req.header("x-concave-optimistic-id");
+    const optimisticIds = optimisticId
+      ? new Map([[String(createdObj[idColumnName]), optimisticId]])
+      : undefined;
+
+    await pushInsertsToSubscriptions(
+      resourceName,
+      filterer as any,
+      [createdObj],
+      idColumnName,
+      optimisticIds,
+      subscriptionRelationLoader
+    );
+
+    const maskedCreated = maskReadable(created as Record<string, unknown>);
+    const response = optimisticId
+      ? { ...maskedCreated, _optimisticId: optimisticId }
+      : maskedCreated;
+
+    if (etagConfig) {
+      setETagHeader(c, createdObj, etagConfig);
+    }
+
+    return c.json(response, 201);
+  });
+
+  router.get("/", async (c) => {
+    const filter = await applyFilters(c, "read");
+    const paginationParams = pagination.parseParams(c.req.query() as Record<string, unknown>);
+    const selectFields = parseSelect(c.req.query("select"));
+    const includeTotalCount = c.req.query("totalCount") === "true";
+    const includeSpecs = resolveIncludeSpecs(c.req.query("include"));
+
+    const orderByFields = parseOrderBy(paginationParams.orderBy);
+
+    let query = db.select().from(schema);
+
+    if (filter) {
+      query = query.where(filter) as any;
+    }
+
+    if (paginationParams.cursor) {
+      const cursorData = decodeCursorLegacy(paginationParams.cursor);
+      if (cursorData) {
+        const cursorCondition = pagination.buildCursorCondition(
+          cursorData,
+          orderByFields
         );
+        if (cursorCondition) {
+          query = query.where(
+            filter ? and(filter, cursorCondition) : cursorCondition
+          ) as any;
+        }
       }
+    }
 
-      if (selectFields) {
-        result.items = applyProjection(result.items, selectFields) as any;
-      }
+    const orderByClauses = pagination.buildOrderBy(orderByFields);
+    if (orderByClauses.length > 0) {
+      query = (query as any).orderBy(...orderByClauses);
+    }
 
-      res.json(result);
-    })
-  );
+    query = query.limit(paginationParams.limit + 1) as any;
 
-  router.get(
-    "/:id",
-    asyncHandler(async (req, res) => {
-      const id = req.params.id as string;
-      const filter = await applyFilters(req, "read", `${idColumnName}=="${id}"`);
-      const selectFields = parseSelect(req.query.select?.toString());
-      const includeSpecs = parseInclude(req.query.include?.toString());
+    const items = await query;
 
-      const selectResult = await db.select().from(schema).where(filter);
-      const item = (selectResult as any[])[0];
+    let totalCount: number | undefined;
+    if (includeTotalCount) {
+      const [countResult] = await db
+        .select({ count: count() })
+        .from(schema)
+        .where(filter);
+      totalCount = countResult?.count ?? 0;
+    }
 
-      if (!item) {
-        throw new NotFoundError(resourceName, id);
-      }
+    const result = pagination.processResults(
+      items as Record<string, unknown>[],
+      paginationParams.limit,
+      idColumnName,
+      orderByFields,
+      totalCount
+    );
 
-      let result = item;
-
-      if (relationLoader && includeSpecs.length > 0) {
-        result = await relationLoader.loadRelationsForItem(
-          result as Record<string, unknown>,
-          includeSpecs,
-          idColumnName
-        );
-      }
-
-      if (selectFields) {
-        result = applyProjection([result], selectFields)[0] as typeof item;
-      }
-
-      res.json(result);
-    })
-  );
-
-  router.put(
-    "/:id",
-    asyncHandler(async (req, res) => {
-      const id = req.params.id as string;
-      const filter = await applyFilters(req, "update", `${idColumnName}=="${id}"`);
-
-      const existingResult = await db.select().from(schema).where(filter);
-      const existing = (existingResult as any[])[0];
-      if (!existing) {
-        throw new NotFoundError(resourceName, id);
-      }
-
-      const ctx = createProcedureContext(req);
-      let data = parseInsert(req.body);
-
-      const updateData = await executeBeforeUpdate(hooks, ctx, id, data as any);
-
-      const updateResult = await db
-        .update(schema)
-        .set(updateData as any)
-        .where(filter)
-        .returning();
-      const updated = (updateResult as any[])[0];
-
-      await executeAfterUpdate(hooks, ctx, updated);
-
-      recordUpdate(resourceName, id, updated, existing);
-      await indexDocument(id, updated);
-
-      const previousMap = new Map<string, Record<string, unknown>>();
-      previousMap.set(id, existing);
-      await pushUpdatesToSubscriptions(
-        resourceName,
-        filterer as any,
-        [updated],
-        idColumnName,
-        previousMap,
-        subscriptionRelationLoader
+    if (relationLoader && includeSpecs.length > 0) {
+      result.items = await relationLoader.loadRelationsForItems(
+        result.items,
+        includeSpecs,
+        idColumnName
       );
+    }
 
-      res.json(updated);
-    })
-  );
+    result.items = maskReadableList(result.items as Record<string, unknown>[]) as any;
 
-  router.patch(
-    "/:id",
-    asyncHandler(async (req, res) => {
-      const id = req.params.id as string;
-      const filter = await applyFilters(req, "update", `${idColumnName}=="${id}"`);
+    if (selectFields) {
+      result.items = applyProjection(result.items, selectFields) as any;
+    }
 
-      const existingResult = await db.select().from(schema).where(filter);
-      const existing = (existingResult as any[])[0];
-      if (!existing) {
-        throw new NotFoundError(resourceName, id);
-      }
+    return c.json(result);
+  });
 
-      const ctx = createProcedureContext(req);
-      let data = parseUpdate(req.body);
+  router.get("/:id", async (c) => {
+    const id = c.req.param("id");
+    const filter = await applyFilters(c, "read", `${idColumnName}=="${id}"`);
+    const selectFields = parseSelect(c.req.query("select"));
+    const includeSpecs = resolveIncludeSpecs(c.req.query("include"));
 
-      data = await executeBeforeUpdate(hooks, ctx, id, data);
+    const selectResult = await db.select().from(schema).where(filter);
+    const item = (selectResult as any[])[0];
 
-      const updateResult = await db
-        .update(schema)
-        .set(data as any)
-        .where(filter)
-        .returning();
-      const updated = (updateResult as any[])[0];
+    if (!item) {
+      throw new NotFoundError(resourceName, id);
+    }
 
-      await executeAfterUpdate(hooks, ctx, updated);
-
-      recordUpdate(resourceName, id, updated, existing);
-      await indexDocument(id, updated);
-
-      const previousMap = new Map<string, Record<string, unknown>>();
-      previousMap.set(id, existing);
-      await pushUpdatesToSubscriptions(
-        resourceName,
-        filterer as any,
-        [updated],
-        idColumnName,
-        previousMap,
-        subscriptionRelationLoader
+    if (etagConfig) {
+      const notModified = handleConditionalGet(
+        c,
+        c.req.header("if-none-match"),
+        item as Record<string, unknown>,
+        etagConfig
       );
+      if (notModified) return notModified;
+    }
 
-      res.json(updated);
-    })
-  );
+    let result = item;
 
-  router.delete(
-    "/:id",
-    asyncHandler(async (req, res) => {
-      const id = req.params.id as string;
-      const filter = await applyFilters(req, "delete", `${idColumnName}=="${id}"`);
+    if (relationLoader && includeSpecs.length > 0) {
+      result = await relationLoader.loadRelationsForItem(
+        result as Record<string, unknown>,
+        includeSpecs,
+        idColumnName
+      );
+    }
 
-      const existingResult = await db.select().from(schema).where(filter);
-      const existing = (existingResult as any[])[0];
-      if (!existing) {
+    result = maskReadable(result as Record<string, unknown>) as typeof item;
+
+    if (selectFields) {
+      result = applyProjection([result], selectFields)[0] as typeof item;
+    }
+
+    return c.json(result);
+  });
+
+  router.put("/:id", async (c) => {
+    const id = c.req.param("id");
+    const filter = await applyFilters(c, "update", `${idColumnName}=="${id}"`);
+
+    const existingResult = await db.select().from(schema).where(filter);
+    const existing = (existingResult as any[])[0];
+    if (!existing) {
+      throw new NotFoundError(resourceName, id);
+    }
+
+    if (etagConfig) {
+      validateIfMatch(c.req.header("if-match"), existing, etagConfig);
+    }
+
+    const ctx = createProcedureContext(c);
+    const data = applyWritable(parseInsert(await readJsonBody(c)) as Record<string, unknown>);
+
+    let updateData = await executeBeforeUpdate(hooks, ctx, id, data as any);
+    updateData = applyVersionBump(existing, updateData as Record<string, unknown>) as typeof updateData;
+
+    const casPredicate = c.req.header("if-match") ? buildCasPredicate(existing) : undefined;
+    const updateResult = await db
+      .update(schema)
+      .set(updateData as any)
+      .where(casPredicate ? and(filter, casPredicate) : filter)
+      .returning();
+    const updated = (updateResult as any[])[0];
+    if (!updated) {
+      throw new PreconditionFailedError(generateETag(existing, etagConfig));
+    }
+
+    await executeAfterUpdate(hooks, ctx, updated);
+
+    recordUpdate(resourceName, id, updated, existing);
+    await indexDocument(id, updated);
+
+    const previousMap = new Map<string, Record<string, unknown>>();
+    previousMap.set(id, existing);
+    await pushUpdatesToSubscriptions(
+      resourceName,
+      filterer as any,
+      [updated],
+      idColumnName,
+      previousMap,
+      subscriptionRelationLoader
+    );
+
+    if (etagConfig) {
+      setETagHeader(c, updated, etagConfig);
+    }
+
+    return c.json(maskReadable(updated as Record<string, unknown>));
+  });
+
+  router.patch("/:id", async (c) => {
+    const id = c.req.param("id");
+    const filter = await applyFilters(c, "update", `${idColumnName}=="${id}"`);
+
+    const existingResult = await db.select().from(schema).where(filter);
+    const existing = (existingResult as any[])[0];
+    if (!existing) {
+      throw new NotFoundError(resourceName, id);
+    }
+
+    if (etagConfig) {
+      validateIfMatch(c.req.header("if-match"), existing, etagConfig);
+    }
+
+    const ctx = createProcedureContext(c);
+    let data = applyWritable(parseUpdate(await readJsonBody(c)) as Record<string, unknown>) as any;
+
+    data = await executeBeforeUpdate(hooks, ctx, id, data);
+    data = applyVersionBump(existing, data as Record<string, unknown>) as typeof data;
+
+    const casPredicate = c.req.header("if-match") ? buildCasPredicate(existing) : undefined;
+    const updateResult = await db
+      .update(schema)
+      .set(data as any)
+      .where(casPredicate ? and(filter, casPredicate) : filter)
+      .returning();
+    const updated = (updateResult as any[])[0];
+    if (!updated) {
+      throw new PreconditionFailedError(generateETag(existing, etagConfig));
+    }
+
+    await executeAfterUpdate(hooks, ctx, updated);
+
+    recordUpdate(resourceName, id, updated, existing);
+    await indexDocument(id, updated);
+
+    const previousMap = new Map<string, Record<string, unknown>>();
+    previousMap.set(id, existing);
+    await pushUpdatesToSubscriptions(
+      resourceName,
+      filterer as any,
+      [updated],
+      idColumnName,
+      previousMap,
+      subscriptionRelationLoader
+    );
+
+    if (etagConfig) {
+      setETagHeader(c, updated, etagConfig);
+    }
+
+    return c.json(maskReadable(updated as Record<string, unknown>));
+  });
+
+  router.delete("/:id", async (c) => {
+    const id = c.req.param("id");
+    const filter = await applyFilters(c, "delete", `${idColumnName}=="${id}"`);
+
+    const existingResult = await db.select().from(schema).where(filter);
+    const existing = (existingResult as any[])[0];
+    if (!existing) {
+      throw new NotFoundError(resourceName, id);
+    }
+
+    if (etagConfig) {
+      validateIfMatch(c.req.header("if-match"), existing, etagConfig);
+    }
+
+    const ctx = createProcedureContext(c);
+
+    await executeBeforeDelete(hooks, ctx, id);
+
+    const casPredicate = c.req.header("if-match") ? buildCasPredicate(existing) : undefined;
+    const where = casPredicate ? and(filter, casPredicate) : filter;
+
+    if (softDeleteConfig) {
+      // Soft delete: mark the row deleted instead of removing it. Subscribers
+      // still receive a "removed" event because the row leaves the (not-deleted)
+      // read scope.
+      const updated = await db
+        .update(schema)
+        .set({ [softDeleteConfig.field]: softDeleteValue() } as any)
+        .where(where)
+        .returning();
+      if ((updated as any[]).length === 0) {
+        if (casPredicate) {
+          throw new PreconditionFailedError(generateETag(existing, etagConfig));
+        }
         throw new NotFoundError(resourceName, id);
       }
-
-      const ctx = createProcedureContext(req);
-
-      await executeBeforeDelete(hooks, ctx, id);
-
+    } else if (casPredicate) {
+      const deleted = await db
+        .delete(schema)
+        .where(where)
+        .returning();
+      if ((deleted as any[]).length === 0) {
+        throw new PreconditionFailedError(generateETag(existing, etagConfig));
+      }
+    } else {
       await db.delete(schema).where(filter);
+    }
 
-      await executeAfterDelete(hooks, ctx, existing);
+    await executeAfterDelete(hooks, ctx, existing);
 
-      recordDelete(resourceName, id, existing);
-      await deleteFromIndex(id);
+    recordDelete(resourceName, id, existing);
+    await deleteFromIndex(id);
 
-      await pushDeletesToSubscriptions(resourceName, [id]);
+    await pushDeletesToSubscriptions(resourceName, [id]);
 
-      res.status(204).send();
-    })
-  );
+    return c.body(null, 204);
+  });
 
   return router;
 };

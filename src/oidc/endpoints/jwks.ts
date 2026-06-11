@@ -1,14 +1,14 @@
-import { Router, Request, Response } from "express";
+import { Hono } from "hono";
 import { KeyManager } from "../types";
 
-export const createJWKSEndpoint = (keyManager: KeyManager): Router => {
-  const router = Router();
+export const createJWKSEndpoint = (keyManager: KeyManager): Hono => {
+  const router = new Hono();
 
-  router.get("/", async (_req: Request, res: Response) => {
+  router.get("/", async (c) => {
     const keys = await keyManager.getPublicKeys();
 
-    res.set("Cache-Control", "public, max-age=3600");
-    res.json({ keys });
+    c.header("Cache-Control", "public, max-age=3600");
+    return c.json({ keys });
   });
 
   return router;

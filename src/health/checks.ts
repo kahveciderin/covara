@@ -36,9 +36,11 @@ const DEFAULT_THRESHOLDS: Required<HealthThresholds> = {
 export const checkEventLoop = async (
   threshold: number
 ): Promise<HealthCheckResult> => {
+  const schedule: (fn: () => void) => void =
+    typeof setImmediate === "function" ? setImmediate : (fn) => setTimeout(fn, 0);
   const start = Date.now();
   return new Promise((resolve) => {
-    setImmediate(() => {
+    schedule(() => {
       const lag = Date.now() - start;
       resolve({
         healthy: lag < threshold,
@@ -53,7 +55,20 @@ export const checkEventLoop = async (
 export const checkMemory = async (
   threshold: number
 ): Promise<HealthCheckResult> => {
-  const usage = process.memoryUsage();
+  const proc = (globalThis as {
+    process?: { memoryUsage?: () => { heapUsed: number; heapTotal: number } };
+  }).process;
+
+  if (typeof proc?.memoryUsage !== "function") {
+    return {
+      healthy: true,
+      name: "memory",
+      message: "Skipped: memory usage not available in this runtime",
+      latencyMs: 0,
+    };
+  }
+
+  const usage = proc.memoryUsage();
   const heapPercent = (usage.heapUsed / usage.heapTotal) * 100;
 
   return {

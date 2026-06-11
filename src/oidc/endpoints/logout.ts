@@ -1,10 +1,12 @@
-import { Router, Request, Response } from "express";
+import { Hono } from "hono";
+import { getCookie, deleteCookie } from "hono/cookie";
 import {
   OIDCProviderConfig,
   OIDCProviderStores,
   TokenService,
 } from "../types";
 import { SessionStore } from "@/auth/types";
+import { redirectUriAllowed } from "../util";
 
 interface LogoutEndpointConfig {
   config: OIDCProviderConfig;
@@ -39,16 +41,14 @@ export const createLogoutEndpoint = ({
   stores,
   tokenService,
   sessionStore,
-}: LogoutEndpointConfig): Router => {
-  const router = Router();
+}: LogoutEndpointConfig): Hono => {
+  const router = new Hono();
 
-  router.get("/", async (req: Request, res: Response) => {
-    const {
-      id_token_hint,
-      post_logout_redirect_uri,
-      state,
-      client_id,
-    } = req.query as Record<string, string | undefined>;
+  router.get("/", async (c) => {
+    const id_token_hint = c.req.query("id_token_hint");
+    const post_logout_redirect_uri = c.req.query("post_logout_redirect_uri");
+    const state = c.req.query("state");
+    const client_id = c.req.query("client_id");
 
     let userId: string | undefined;
 
@@ -61,7 +61,7 @@ export const createLogoutEndpoint = ({
       }
     }
 
-    const sessionId = req.cookies?.oidc_session;
+    const sessionId = getCookie(c, "oidc_session");
     if (sessionId && sessionStore) {
       const session = await sessionStore.get(sessionId);
       if (session) {
@@ -78,15 +78,16 @@ export const createLogoutEndpoint = ({
       }
     }
 
-    res.clearCookie("oidc_session", { path: "/" });
+    deleteCookie(c, "oidc_session", { path: "/" });
 
     if (post_logout_redirect_uri) {
       let isValidRedirect = false;
 
       if (client_id) {
         const client = await stores.clients.get(client_id);
-        isValidRedirect =
-          client?.postLogoutRedirectUris?.includes(post_logout_redirect_uri) ?? false;
+        isValidRedirect = client?.postLogoutRedirectUris
+          ? redirectUriAllowed(client.postLogoutRedirectUris, post_logout_redirect_uri)
+          : false;
       }
 
       if (isValidRedirect) {
@@ -94,16 +95,16 @@ export const createLogoutEndpoint = ({
         if (state) {
           redirectUrl.searchParams.set("state", state);
         }
-        return res.redirect(redirectUrl.toString());
+        return c.redirect(redirectUrl.toString(), 302);
       }
     }
 
     const template = config.ui?.templates?.loggedOut ?? defaultLoggedOutTemplate();
-    res.send(template);
+    return c.html(template);
   });
 
-  router.post("/", async (req: Request, res: Response) => {
-    const sessionId = req.cookies?.oidc_session;
+  router.post("/", async (c) => {
+    const sessionId = getCookie(c, "oidc_session");
     if (sessionId && sessionStore) {
       const session = await sessionStore.get(sessionId);
       if (session) {
@@ -116,8 +117,8 @@ export const createLogoutEndpoint = ({
       }
     }
 
-    res.clearCookie("oidc_session", { path: "/" });
-    res.json({ success: true });
+    deleteCookie(c, "oidc_session", { path: "/" });
+    return c.json({ success: true });
   });
 
   return router;

@@ -19,10 +19,10 @@ interface OpenSearchClient {
     id: string;
     refresh?: boolean | "wait_for";
   }): Promise<unknown>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   search(params: { index: string; body: Record<string, unknown> }): Promise<any>;
   indices: {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     exists(params: { index: string }): Promise<any>;
     create(params: {
       index: string;

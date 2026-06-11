@@ -15,7 +15,7 @@ import {
   AnyColumn,
   getTableColumns,
 } from "drizzle-orm";
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 import { PaginationParams, PaginatedResult } from "./types";
 import { ValidationError, CursorInvalidError, CursorExpiredError } from "./error";
 
@@ -173,35 +173,6 @@ const buildNullAwareEquality = (
     return isNull(column);
   }
   return eq(column, value);
-};
-
-const buildNullAwareComparison = (
-  column: AnyColumn,
-  cursorValue: unknown,
-  compare: typeof gt | typeof lt,
-  nullsPosition: "first" | "last" = "last"
-): SQL => {
-  const cursorIsNull = cursorValue === null || cursorValue === undefined;
-
-  if (cursorIsNull) {
-    if (nullsPosition === "last") {
-      return sql`0 = 1`;
-    } else {
-      return isNotNull(column);
-    }
-  }
-
-  if (nullsPosition === "last") {
-    return or(
-      compare(column, cursorValue),
-      isNull(column)
-    )!;
-  } else {
-    return and(
-      isNotNull(column),
-      compare(column, cursorValue)
-    )!;
-  }
 };
 
 export const buildCursorCondition = <TConfig extends TableConfig>(

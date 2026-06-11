@@ -12,7 +12,6 @@ import {
   DrizzleTransaction,
   ProcedureContext,
   LifecycleHooks,
-  ResourceConfig,
 } from "./types";
 import {
   executeBeforeCreate,

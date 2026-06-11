@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import { Server } from "http";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import type { ServerType } from "@hono/node-server";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
@@ -9,11 +10,14 @@ import { createClient, ConcaveClient } from "../../src/client";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { createTestApp } from "../helpers/hono";
 
-const injectTestUser = (req: Request, res: Response, next: NextFunction) => {
-  (req as any).user = { id: "test-user", email: "test@test.com", roles: ["admin"] };
-  next();
-};
+const startServer = (app: Hono): Promise<{ server: ServerType; baseUrl: string }> =>
+  new Promise((resolve) => {
+    const server = serve({ fetch: app.fetch, port: 0 }, (info) => {
+      resolve({ server, baseUrl: `http://localhost:${info.port}` });
+    });
+  });
 
 const itemsTable = sqliteTable("items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -22,8 +26,8 @@ const itemsTable = sqliteTable("items", {
 });
 
 describe("Performance: Load Testing", () => {
-  let app: Express;
-  let server: Server;
+  let app: Hono;
+  let server: ServerType;
   let client: ConcaveClient;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
@@ -42,24 +46,17 @@ describe("Performance: Load Testing", () => {
       )
     `);
 
-    app = express();
-    app.use(express.json());
-    app.use(injectTestUser);
-    app.use("/items", useResource(itemsTable, {
+    app = createTestApp({ user: { id: "test-user", email: "test@test.com" } });
+    app.route("/items", useResource(itemsTable, {
       id: itemsTable.id,
       db,
       batch: { create: 1000, update: 1000, delete: 1000 },
       pagination: { defaultLimit: 100, maxLimit: 1000 },
     }));
 
-    await new Promise<void>((resolve) => {
-      server = app.listen(0, () => {
-        const addr = server.address();
-        const port = typeof addr === "object" && addr ? addr.port : 0;
-        client = createClient({ baseUrl: `http://localhost:${port}` });
-        resolve();
-      });
-    });
+    const started = await startServer(app);
+    server = started.server;
+    client = createClient({ baseUrl: started.baseUrl });
   });
 
   afterAll(async () => {

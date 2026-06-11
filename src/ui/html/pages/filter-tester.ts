@@ -1,5 +1,5 @@
 import { html, escapeHtml, formatJson } from '../utils';
-import { card, badge, button, input, select, alert, emptyState } from '../components';
+import { card, badge, button, select, alert, emptyState } from '../components';
 
 export interface FilterTesterPageData {
   resources: string[];

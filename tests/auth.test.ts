@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { Request, Response, NextFunction } from "express";
+import { Hono, type Context } from "hono";
 import {
   BaseAuthAdapter,
   CompositeAuthAdapter,
@@ -35,11 +35,11 @@ import {
   inList,
   notIn,
   like,
+  notLike,
   isNull,
   isNotNull,
   and,
   or,
-  not,
   ownerScope,
   publicScope,
   ownerOrPublic,
@@ -51,13 +51,27 @@ import {
 import { AuthCredentials, AuthResult, SessionData } from "@/auth/types";
 import { UserContext } from "@/resource/types";
 
+const makeContext = async (
+  headers: Record<string, string> = {}
+): Promise<Context> => {
+  let captured: Context | undefined;
+  const probe = new Hono();
+  probe.get("*", (c) => {
+    captured = c;
+    return c.text("ok");
+  });
+  await probe.request("/", { headers });
+  if (!captured) throw new Error("Failed to capture context");
+  return captured;
+};
+
 describe("Authentication System", () => {
   describe("BaseAuthAdapter", () => {
     class TestAdapter extends BaseAuthAdapter {
       name = "test";
 
-      extractCredentials(req: Request): AuthCredentials | null {
-        const token = req.headers.authorization?.replace("Bearer ", "");
+      extractCredentials(c: Context): AuthCredentials | null {
+        const token = c.req.header("authorization")?.replace("Bearer ", "");
         if (token) return { type: "bearer", token };
         return null;
       }
@@ -82,6 +96,10 @@ describe("Authentication System", () => {
         }
         return { success: false, error: "Invalid token" };
       }
+
+      getRoutes(): Hono {
+        return new Hono();
+      }
     }
 
     let adapter: TestAdapter;
@@ -90,19 +108,17 @@ describe("Authentication System", () => {
       adapter = new TestAdapter({});
     });
 
-    it("should extract credentials from request", () => {
-      const req = {
-        headers: { authorization: "Bearer valid-token" },
-      } as Request;
+    it("should extract credentials from request", async () => {
+      const c = await makeContext({ authorization: "Bearer valid-token" });
 
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
       expect(credentials?.type).toBe("bearer");
       expect(credentials?.token).toBe("valid-token");
     });
 
-    it("should return null when no credentials", () => {
-      const req = { headers: {} } as Request;
-      const credentials = adapter.extractCredentials(req);
+    it("should return null when no credentials", async () => {
+      const c = await makeContext();
+      const credentials = adapter.extractCredentials(c);
       expect(credentials).toBeNull();
     });
 
@@ -160,8 +176,8 @@ describe("Authentication System", () => {
   describe("CompositeAuthAdapter", () => {
     class Adapter1 extends BaseAuthAdapter {
       name = "adapter1";
-      extractCredentials(req: Request): AuthCredentials | null {
-        if (req.headers["x-api-key"] === "key1") {
+      extractCredentials(c: Context): AuthCredentials | null {
+        if (c.req.header("x-api-key") === "key1") {
           return { type: "apiKey", apiKey: "key1" };
         }
         return null;
@@ -185,12 +201,15 @@ describe("Authentication System", () => {
         }
         return { success: false, error: "Invalid" };
       }
+      getRoutes(): Hono {
+        return new Hono();
+      }
     }
 
     class Adapter2 extends BaseAuthAdapter {
       name = "adapter2";
-      extractCredentials(req: Request): AuthCredentials | null {
-        const token = req.headers.authorization?.replace("Bearer ", "");
+      extractCredentials(c: Context): AuthCredentials | null {
+        const token = c.req.header("authorization")?.replace("Bearer ", "");
         if (token) return { type: "bearer", token };
         return null;
       }
@@ -213,16 +232,19 @@ describe("Authentication System", () => {
         }
         return { success: false, error: "Invalid" };
       }
+      getRoutes(): Hono {
+        return new Hono();
+      }
     }
 
-    it("should try adapters in order", () => {
+    it("should try adapters in order", async () => {
       const composite = new CompositeAuthAdapter([new Adapter1(), new Adapter2()]);
 
-      const req1 = { headers: { "x-api-key": "key1" } } as Request;
-      expect(composite.extractCredentials(req1)?.type).toBe("apiKey");
+      const c1 = await makeContext({ "x-api-key": "key1" });
+      expect(composite.extractCredentials(c1)?.type).toBe("apiKey");
 
-      const req2 = { headers: { authorization: "Bearer token2" } } as Request;
-      expect(composite.extractCredentials(req2)?.type).toBe("bearer");
+      const c2 = await makeContext({ authorization: "Bearer token2" });
+      expect(composite.extractCredentials(c2)?.type).toBe("bearer");
     });
 
     it("should validate using matching adapter", async () => {
@@ -245,11 +267,11 @@ describe("Authentication System", () => {
   });
 
   describe("NullAuthAdapter", () => {
-    it("should always return null credentials", () => {
+    it("should always return null credentials", async () => {
       const adapter = new NullAuthAdapter();
-      const req = { headers: { authorization: "Bearer token" } } as Request;
+      const c = await makeContext({ authorization: "Bearer token" });
 
-      expect(adapter.extractCredentials(req)).toBeNull();
+      expect(adapter.extractCredentials(c)).toBeNull();
     });
 
     it("should always fail validation", async () => {
@@ -294,29 +316,18 @@ describe("Authentication System", () => {
 });
 
 describe("Auth Middleware", () => {
-  const createMockRequest = (
+  const createMockContext = async (
     user?: UserContext,
     session?: SessionData
-  ): Request => {
-    const req = {
-      headers: {},
-      cookies: {},
-      user,
-      session,
-    } as unknown as Request;
-    return req;
-  };
-
-  const createMockResponse = () => {
-    const res = {
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn().mockReturnThis(),
-    } as unknown as Response;
-    return res;
+  ): Promise<Context> => {
+    const c = await makeContext();
+    if (user) c.set("user", user);
+    if (session) c.set("session", session);
+    return c;
   };
 
   describe("getUser", () => {
-    it("should return user from request", () => {
+    it("should return user from request", async () => {
       const mockUser: UserContext = {
         id: "user-123",
         email: "test@test.com",
@@ -327,18 +338,18 @@ describe("Auth Middleware", () => {
         sessionExpiresAt: new Date(),
       };
 
-      const req = createMockRequest(mockUser);
-      expect(getUser(req)).toEqual(mockUser);
+      const c = await createMockContext(mockUser);
+      expect(getUser(c)).toEqual(mockUser);
     });
 
-    it("should return undefined when no user", () => {
-      const req = createMockRequest();
-      expect(getUser(req)).toBeUndefined();
+    it("should return undefined when no user", async () => {
+      const c = await createMockContext();
+      expect(getUser(c)).toBeUndefined();
     });
   });
 
   describe("requireAuth", () => {
-    it("should call next when user exists", () => {
+    it("should call next when user exists", async () => {
       const mockUser: UserContext = {
         id: "user-123",
         email: "test@test.com",
@@ -349,30 +360,27 @@ describe("Auth Middleware", () => {
         sessionExpiresAt: new Date(),
       };
 
-      const req = createMockRequest(mockUser);
-      const res = createMockResponse();
+      const c = await createMockContext(mockUser);
       const next = vi.fn();
 
-      requireAuth()(req, res, next);
+      await requireAuth()(c, next);
 
       expect(next).toHaveBeenCalled();
-      expect(res.status).not.toHaveBeenCalled();
     });
 
-    it("should pass error to next when no user", () => {
-      const req = createMockRequest();
-      const res = createMockResponse();
+    it("should throw error when no user", async () => {
+      const c = await createMockContext();
       const next = vi.fn();
 
-      requireAuth()(req, res, next);
-
-      expect(next).toHaveBeenCalledWith(expect.any(Error));
-      expect(next.mock.calls[0][0].message).toContain("Authentication required");
+      await expect(requireAuth()(c, next)).rejects.toThrow(
+        /Authentication required/
+      );
+      expect(next).not.toHaveBeenCalled();
     });
   });
 
   describe("requireRole", () => {
-    it("should allow user with matching role", () => {
+    it("should allow user with matching role", async () => {
       const mockUser: UserContext = {
         id: "user-123",
         email: "test@test.com",
@@ -384,16 +392,15 @@ describe("Auth Middleware", () => {
         metadata: { role: "admin" },
       };
 
-      const req = createMockRequest(mockUser);
-      const res = createMockResponse();
+      const c = await createMockContext(mockUser);
       const next = vi.fn();
 
-      requireRole("admin")(req, res, next);
+      await requireRole("admin")(c, next);
 
       expect(next).toHaveBeenCalled();
     });
 
-    it("should pass error to next when user lacks role", () => {
+    it("should throw error when user lacks role", async () => {
       const mockUser: UserContext = {
         id: "user-123",
         email: "test@test.com",
@@ -405,19 +412,16 @@ describe("Auth Middleware", () => {
         metadata: { role: "user" },
       };
 
-      const req = createMockRequest(mockUser);
-      const res = createMockResponse();
+      const c = await createMockContext(mockUser);
       const next = vi.fn();
 
-      requireRole("admin")(req, res, next);
-
-      expect(next).toHaveBeenCalledWith(expect.any(Error));
-      expect(next.mock.calls[0][0].message).toContain("admin");
+      await expect(requireRole("admin")(c, next)).rejects.toThrow(/admin/);
+      expect(next).not.toHaveBeenCalled();
     });
   });
 
   describe("rateByUser", () => {
-    it("should return user id for authenticated requests", () => {
+    it("should return user id for authenticated requests", async () => {
       const mockUser: UserContext = {
         id: "user-123",
         email: "test@test.com",
@@ -428,17 +432,14 @@ describe("Auth Middleware", () => {
         sessionExpiresAt: new Date(),
       };
 
-      const req = createMockRequest(mockUser);
-      expect(rateByUser(req)).toBe("user-123");
+      const c = await createMockContext(mockUser);
+      expect(rateByUser(c)).toBe("user-123");
     });
 
-    it("should return ip for unauthenticated requests", () => {
-      const req = {
-        headers: {},
-        ip: "127.0.0.1",
-      } as unknown as Request;
+    it("should return ip for unauthenticated requests", async () => {
+      const c = await makeContext({ "x-forwarded-for": "127.0.0.1" });
 
-      expect(rateByUser(req)).toBe("127.0.0.1");
+      expect(rateByUser(c)).toBe("127.0.0.1");
     });
   });
 });
@@ -628,7 +629,11 @@ describe("RSQL Builder", () => {
     });
 
     it("should build like expression", () => {
-      expect(like("name", "%john%").toString()).toBe('name=like="%john%"');
+      expect(like("name", "%john%").toString()).toBe('name%="%john%"');
+    });
+
+    it("should build not-like expression", () => {
+      expect(notLike("name", "%john%").toString()).toBe('name!%="%john%"');
     });
 
     it("should build null check expressions", () => {
@@ -650,11 +655,6 @@ describe("RSQL Builder", () => {
       expect(scope.toString()).toContain("active");
       expect(scope.toString()).toContain("pending");
       expect(scope.toString()).toContain(",");
-    });
-
-    it("should build NOT expression", () => {
-      const scope = not(eq("status", "deleted"));
-      expect(scope.toString()).toContain("!not=");
     });
 
     it("should handle empty scopes in logical ops", () => {

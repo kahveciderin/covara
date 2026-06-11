@@ -1,14 +1,16 @@
 import {
   Table,
   TableConfig,
+  and,
   eq,
-  sql,
   SQL,
+  SQLWrapper,
   AnyColumn,
   getTableColumns,
   inArray,
 } from "drizzle-orm";
-import { DrizzleDatabase } from "./types";
+import { DrizzleDatabase, CustomOperator } from "./types";
+import { createResourceFilter } from "./filter";
 
 export type RelationType = "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
 
@@ -45,6 +47,7 @@ export interface IncludeSpec {
   select?: string[];
   filter?: string;
   limit?: number;
+  offset?: number;
   nested?: IncludeSpec[];
 }
 
@@ -52,6 +55,7 @@ export interface IncludeConfig {
   maxDepth?: number;
   defaultLimit?: number;
   allowNestedFilters?: boolean;
+  customOperators?: Record<string, CustomOperator>;
 }
 
 const splitTopLevel = (str: string, delimiter: string): string[] => {
@@ -95,6 +99,9 @@ const parseIncludeOptions = (optionsStr: string): Partial<IncludeSpec> => {
         break;
       case "limit":
         result.limit = parseInt(value, 10);
+        break;
+      case "offset":
+        result.offset = parseInt(value, 10);
         break;
     }
   }
@@ -188,6 +195,37 @@ export class RelationLoader<TConfig extends TableConfig> {
     >,
     private config: IncludeConfig = {}
   ) {}
+
+  private filterCache = new Map<string, ReturnType<typeof createResourceFilter>>();
+
+  getEagerIncludes(): IncludeSpec[] {
+    const specs: IncludeSpec[] = [];
+    for (const [name, relation] of Object.entries(this.relations)) {
+      if (relation.strategy === "eager") {
+        specs.push({ relation: name });
+      }
+    }
+    return specs;
+  }
+
+  private buildRelationWhere(
+    targetSchema: Table<TableConfig>,
+    filterExpr: string | undefined,
+    baseCondition: SQLWrapper
+  ): SQLWrapper {
+    if (!filterExpr) return baseCondition;
+
+    let filter = this.filterCache.get(filterExpr);
+    if (!filter) {
+      filter = createResourceFilter(
+        targetSchema,
+        this.config.customOperators ?? {}
+      );
+      this.filterCache.set(filterExpr, filter);
+    }
+
+    return and(baseCondition, filter.convert(filterExpr)) as SQLWrapper;
+  }
 
   async loadRelationsForItem<T extends Record<string, unknown>>(
     item: T,
@@ -286,13 +324,25 @@ export class RelationLoader<TConfig extends TableConfig> {
           (relation.foreignKey as AnyColumn & { name: string }).name
         ];
         if (fkValue == null) return null;
-        query = query.where(eq(relation.references, fkValue as never)) as never;
+        query = query.where(
+          this.buildRelationWhere(
+            targetSchema,
+            include.filter,
+            eq(relation.references, fkValue as never)
+          )
+        ) as never;
         break;
       }
       case "hasOne":
       case "hasMany": {
         const sourceId = item[idColumn];
-        query = query.where(eq(relation.foreignKey, sourceId as never)) as never;
+        query = query.where(
+          this.buildRelationWhere(
+            targetSchema,
+            include.filter,
+            eq(relation.foreignKey, sourceId as never)
+          )
+        ) as never;
         break;
       }
       case "manyToMany": {
@@ -307,18 +357,29 @@ export class RelationLoader<TConfig extends TableConfig> {
             relation.through.schema,
             eq(relation.through.targetKey, relation.references)
           )
-          .where(eq(relation.through.sourceKey, sourceId as never)) as never;
+          .where(
+            this.buildRelationWhere(
+              targetSchema,
+              include.filter,
+              eq(relation.through.sourceKey, sourceId as never)
+            )
+          ) as never;
         break;
       }
     }
 
-    if (include.limit) {
-      query = query.limit(include.limit) as never;
-    } else if (
-      (relation.type === "hasMany" || relation.type === "manyToMany") &&
+    const effectiveLimit =
+      include.limit ??
+      ((relation.type === "hasMany" || relation.type === "manyToMany") &&
       this.config.defaultLimit
-    ) {
-      query = query.limit(this.config.defaultLimit) as never;
+        ? this.config.defaultLimit
+        : undefined);
+
+    if (effectiveLimit != null) {
+      query = query.limit(effectiveLimit) as never;
+    }
+    if (include.offset != null && include.offset > 0) {
+      query = query.offset(include.offset) as never;
     }
 
     const results = await query;
@@ -400,7 +461,13 @@ export class RelationLoader<TConfig extends TableConfig> {
         const query = this.db
           .select(selectColumns)
           .from(targetSchema)
-          .where(inArray(relation.references, fkValues as never[]));
+          .where(
+            this.buildRelationWhere(
+              targetSchema,
+              include.filter,
+              inArray(relation.references, fkValues as never[])
+            )
+          );
 
         const targetItems = await query;
 
@@ -423,14 +490,56 @@ export class RelationLoader<TConfig extends TableConfig> {
 
       case "hasOne":
       case "hasMany": {
-        const fkName = (relation.foreignKey as AnyColumn & { name: string }).name;
+        const perParentLimit =
+          relation.type === "hasMany"
+            ? include.limit ?? this.config.defaultLimit
+            : undefined;
+
+        if (perParentLimit != null || include.offset != null) {
+          for (const item of items) {
+            const sourceId = item[idColumn];
+            if (sourceId == null) continue;
+
+            let perQuery = this.db
+              .select(selectColumns)
+              .from(targetSchema)
+              .where(
+                this.buildRelationWhere(
+                  targetSchema,
+                  include.filter,
+                  eq(relation.foreignKey, sourceId as never)
+                )
+              );
+
+            if (perParentLimit != null) {
+              perQuery = perQuery.limit(perParentLimit);
+            }
+            if (include.offset != null && include.offset > 0) {
+              perQuery = perQuery.offset(include.offset);
+            }
+
+            const rows = (await perQuery) as Record<string, unknown>[];
+            result.set(
+              String(sourceId),
+              relation.type === "hasOne" ? rows[0] ?? null : rows
+            );
+          }
+          break;
+        }
+
         const query = this.db
           .select({
             ...selectColumns,
             _sourceId: relation.foreignKey,
           })
           .from(targetSchema)
-          .where(inArray(relation.foreignKey, sourceIds as never[]));
+          .where(
+            this.buildRelationWhere(
+              targetSchema,
+              include.filter,
+              inArray(relation.foreignKey, sourceIds as never[])
+            )
+          );
 
         const targetItems = await query;
 
@@ -457,6 +566,41 @@ export class RelationLoader<TConfig extends TableConfig> {
       case "manyToMany": {
         if (!relation.through) break;
 
+        const perParentLimit = include.limit ?? this.config.defaultLimit;
+
+        if (perParentLimit != null || include.offset != null) {
+          for (const item of items) {
+            const sourceId = item[idColumn];
+            if (sourceId == null) continue;
+
+            let perQuery = this.db
+              .select(selectColumns)
+              .from(targetSchema)
+              .innerJoin(
+                relation.through.schema,
+                eq(relation.through.targetKey, relation.references)
+              )
+              .where(
+                this.buildRelationWhere(
+                  targetSchema,
+                  include.filter,
+                  eq(relation.through.sourceKey, sourceId as never)
+                )
+              );
+
+            if (perParentLimit != null) {
+              perQuery = perQuery.limit(perParentLimit);
+            }
+            if (include.offset != null && include.offset > 0) {
+              perQuery = perQuery.offset(include.offset);
+            }
+
+            const rows = (await perQuery) as Record<string, unknown>[];
+            result.set(String(sourceId), rows);
+          }
+          break;
+        }
+
         const query = this.db
           .select({
             ...selectColumns,
@@ -467,7 +611,13 @@ export class RelationLoader<TConfig extends TableConfig> {
             relation.through.schema,
             eq(relation.through.targetKey, relation.references)
           )
-          .where(inArray(relation.through.sourceKey, sourceIds as never[]));
+          .where(
+            this.buildRelationWhere(
+              targetSchema,
+              include.filter,
+              inArray(relation.through.sourceKey, sourceIds as never[])
+            )
+          );
 
         const targetItems = await query;
 

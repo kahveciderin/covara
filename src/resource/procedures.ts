@@ -1,6 +1,7 @@
-import { Request, Response, Router } from "express";
+import { Hono, type Context } from "hono";
 import { Table, TableConfig, InferSelectModel, InferInsertModel } from "drizzle-orm";
-import { z, ZodError } from "zod";
+import { readJsonBody } from "@/server/request";
+import { ZodError } from "zod";
 import {
   ProcedureDefinition,
   ProcedureContext,
@@ -8,7 +9,7 @@ import {
   WriteEffect,
   UserContext,
 } from "./types";
-import { ValidationError, UnauthorizedError, ResourceError } from "./error";
+import { ValidationError, ResourceError } from "./error";
 
 export interface ProcedureRegistry<TConfig extends TableConfig = TableConfig> {
   procedures: Record<string, ProcedureDefinition>;
@@ -65,52 +66,23 @@ export const createProcedureRouter = <TConfig extends TableConfig>(
   schema: Table<TConfig>,
   procedures: Record<string, ProcedureDefinition>,
   getDb: () => unknown,
-  getUser: (req: Request) => UserContext | null
-): Router => {
-  const router = Router();
+  getUser: (c: Context) => UserContext | null
+): Hono => {
+  const router = new Hono();
 
   for (const [name, procedure] of Object.entries(procedures)) {
-    router.post(`/${name}`, async (req: Request, res: Response) => {
-      try {
-        const user = getUser(req);
-        const ctx: ProcedureContext<TConfig> = {
-          db: getDb(),
-          schema,
-          user,
-          req,
-        };
+    router.post(`/${name}`, async (c) => {
+      const user = getUser(c);
+      const ctx: ProcedureContext<TConfig> = {
+        db: getDb(),
+        schema,
+        user,
+        req: c.req.raw,
+        context: c,
+      };
 
-        const result = await executeProcedure(procedure, ctx, req.body);
-        res.json({ data: result });
-      } catch (error) {
-        if (error instanceof ResourceError) {
-          res.status(error.statusCode).json({
-            error: {
-              code: error.code,
-              message: error.message,
-              details: error.details,
-            },
-          });
-        } else if (error instanceof Error) {
-          console.error(`Procedure ${name} error:`, error);
-          res.status(500).json({
-            error: {
-              code: "INTERNAL_ERROR",
-              message:
-                process.env.NODE_ENV === "production"
-                  ? "Internal server error"
-                  : error.message,
-            },
-          });
-        } else {
-          res.status(500).json({
-            error: {
-              code: "UNKNOWN_ERROR",
-              message: "An unknown error occurred",
-            },
-          });
-        }
-      }
+      const result = await executeProcedure(procedure, ctx, await readJsonBody(c));
+      return c.json({ data: result });
     });
   }
 

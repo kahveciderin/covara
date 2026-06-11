@@ -1,12 +1,13 @@
 import { Table, getTableName, AnyColumn, SQL } from "drizzle-orm";
 import { changelog, recordCreate, recordUpdate, recordDelete } from "./changelog";
 import { ChangelogEntry, DrizzleDatabase } from "./types";
-import { getGlobalKV, hasGlobalKV, KVAdapter } from "../kv";
-import { createHash } from "crypto";
+import { getGlobalKV, hasGlobalKV } from "../kv";
+import { createHash } from "node:crypto";
 import {
   pushInsertsToSubscriptions,
   pushUpdatesToSubscriptions,
   pushDeletesToSubscriptions,
+  invalidateResourceSubscriptions,
 } from "./subscription";
 import { createResourceFilter, Filter } from "./filter";
 
@@ -52,6 +53,18 @@ interface TrackingContext {
   registryByName: Map<string, TableInfo>;
   config: TrackMutationsConfig;
   trackingEnabled: boolean;
+  pendingEvents?: Array<() => Promise<void>>;
+}
+
+async function runOrDefer(
+  context: TrackingContext,
+  thunk: () => Promise<void>
+): Promise<void> {
+  if (context.pendingEvents) {
+    context.pendingEvents.push(thunk);
+  } else {
+    await thunk();
+  }
 }
 
 export interface TrackedDatabase<TDb extends DrizzleDatabase> {
@@ -74,7 +87,7 @@ function generateCacheKey(tableName: string, sql: string, params: unknown[], pre
   return `${prefix}${tableName}:${hash}`;
 }
 
-async function invalidateTableCache(tableName: string, keyPrefix: string): Promise<void> {
+async function invalidateTableCache(tableName: string): Promise<void> {
   if (!hasGlobalKV()) return;
 
   const kv = getGlobalKV();
@@ -110,7 +123,7 @@ function detectMutation(sql: string): { type: "create" | "update" | "delete"; ta
   return null;
 }
 
-function wrapInsertBuilder<TTable extends Table<any>>(
+function wrapInsertBuilder(
   builder: any,
   tableInfo: TableInfo,
   context: TrackingContext
@@ -174,44 +187,43 @@ function wrapInsertBase(
             if (context.trackingEnabled) {
               const items = Array.isArray(result) ? result : (result ? [result] : []);
 
-              // Only record mutations if we got results or if there's no conflict handler
-              // With a conflict handler and no results, the insert was a no-op
-              if (items.length === 0 && state.hasReturning === false && !state.hasConflictHandler) {
-                const insertArray = Array.isArray(insertValues) ? insertValues : [insertValues];
-                for (const item of insertArray) {
-                  const id = item[tableInfo.idColumnName];
-                  if (id !== undefined) {
-                    const entry = await recordCreate(tableInfo.resourceName, String(id), item);
+              await runOrDefer(context, async () => {
+                // Only record mutations if we got results or if there's no conflict handler
+                // With a conflict handler and no results, the insert was a no-op
+                if (items.length === 0 && state.hasReturning === false && !state.hasConflictHandler) {
+                  const insertArray = Array.isArray(insertValues) ? insertValues : [insertValues];
+                  for (const item of insertArray) {
+                    const id = item[tableInfo.idColumnName];
+                    if (id !== undefined) {
+                      const entry = await recordCreate(tableInfo.resourceName, String(id), item);
+                      if (context.config.onMutation) {
+                        await context.config.onMutation(entry);
+                      }
+                    }
+                  }
+                } else if (items.length > 0) {
+                  for (const item of items) {
+                    const id = String(item[tableInfo.idColumnName]);
+                    const entry = await recordCreate(tableInfo.resourceName, id, item);
                     if (context.config.onMutation) {
                       await context.config.onMutation(entry);
                     }
                   }
-                }
-              } else if (items.length > 0) {
-                for (const item of items) {
-                  const id = String(item[tableInfo.idColumnName]);
-                  const entry = await recordCreate(tableInfo.resourceName, id, item);
-                  if (context.config.onMutation) {
-                    await context.config.onMutation(entry);
+
+                  if (context.config.pushToSubscriptions !== false) {
+                    await pushInsertsToSubscriptions(
+                      tableInfo.resourceName,
+                      tableInfo.filter,
+                      items,
+                      tableInfo.idColumnName
+                    );
                   }
                 }
 
-                if (context.config.pushToSubscriptions !== false) {
-                  await pushInsertsToSubscriptions(
-                    tableInfo.resourceName,
-                    tableInfo.filter,
-                    items,
-                    tableInfo.idColumnName
-                  );
+                if (context.config.cache?.enabled && items.length > 0) {
+                  await invalidateTableCache(tableInfo.resourceName);
                 }
-              }
-
-              if (context.config.cache?.enabled && items.length > 0) {
-                await invalidateTableCache(
-                  tableInfo.resourceName,
-                  context.config.cache.keyPrefix ?? CACHE_KEY_PREFIX
-                );
-              }
+              });
             }
 
             return resolve ? resolve(result) : result;
@@ -231,7 +243,7 @@ function wrapInsertBase(
   });
 }
 
-function wrapUpdateBuilder<TTable extends Table<any>>(
+function wrapUpdateBuilder(
   builder: any,
   tableInfo: TableInfo,
   context: TrackingContext
@@ -303,31 +315,30 @@ function wrapUpdateBase(
             if (context.trackingEnabled) {
               const items = Array.isArray(result) ? result : (result ? [result] : []);
 
-              for (const item of items) {
-                const id = String(item[tableInfo.idColumnName]);
-                const previousItem = previousMap.get(id);
-                const entry = await recordUpdate(tableInfo.resourceName, id, item, previousItem);
-                if (context.config.onMutation) {
-                  await context.config.onMutation(entry);
+              await runOrDefer(context, async () => {
+                for (const item of items) {
+                  const id = String(item[tableInfo.idColumnName]);
+                  const previousItem = previousMap.get(id);
+                  const entry = await recordUpdate(tableInfo.resourceName, id, item, previousItem);
+                  if (context.config.onMutation) {
+                    await context.config.onMutation(entry);
+                  }
                 }
-              }
 
-              if (context.config.pushToSubscriptions !== false && items.length > 0) {
-                await pushUpdatesToSubscriptions(
-                  tableInfo.resourceName,
-                  tableInfo.filter,
-                  items,
-                  tableInfo.idColumnName,
-                  previousMap
-                );
-              }
+                if (context.config.pushToSubscriptions !== false && items.length > 0) {
+                  await pushUpdatesToSubscriptions(
+                    tableInfo.resourceName,
+                    tableInfo.filter,
+                    items,
+                    tableInfo.idColumnName,
+                    previousMap
+                  );
+                }
 
-              if (context.config.cache?.enabled) {
-                await invalidateTableCache(
-                  tableInfo.resourceName,
-                  context.config.cache.keyPrefix ?? CACHE_KEY_PREFIX
-                );
-              }
+                if (context.config.cache?.enabled) {
+                  await invalidateTableCache(tableInfo.resourceName);
+                }
+              });
             }
 
             return resolve ? resolve(result) : result;
@@ -352,7 +363,7 @@ interface DeleteState {
   hasReturning: boolean;
 }
 
-function wrapDeleteBuilder<TTable extends Table<any>>(
+function wrapDeleteBuilder(
   builder: any,
   tableInfo: TableInfo,
   context: TrackingContext,
@@ -391,27 +402,26 @@ function wrapDeleteBuilder<TTable extends Table<any>>(
             const result = await target;
 
             if (context.trackingEnabled) {
-              const deletedIds: string[] = [];
+              await runOrDefer(context, async () => {
+                const deletedIds: string[] = [];
 
-              for (const item of itemsToDelete) {
-                const id = String(item[tableInfo.idColumnName]);
-                deletedIds.push(id);
-                const entry = await recordDelete(tableInfo.resourceName, id, item);
-                if (context.config.onMutation) {
-                  await context.config.onMutation(entry);
+                for (const item of itemsToDelete) {
+                  const id = String(item[tableInfo.idColumnName]);
+                  deletedIds.push(id);
+                  const entry = await recordDelete(tableInfo.resourceName, id, item);
+                  if (context.config.onMutation) {
+                    await context.config.onMutation(entry);
+                  }
                 }
-              }
 
-              if (context.config.pushToSubscriptions !== false && deletedIds.length > 0) {
-                await pushDeletesToSubscriptions(tableInfo.resourceName, deletedIds);
-              }
+                if (context.config.pushToSubscriptions !== false && deletedIds.length > 0) {
+                  await pushDeletesToSubscriptions(tableInfo.resourceName, deletedIds);
+                }
 
-              if (context.config.cache?.enabled) {
-                await invalidateTableCache(
-                  tableInfo.resourceName,
-                  context.config.cache.keyPrefix ?? CACHE_KEY_PREFIX
-                );
-              }
+                if (context.config.cache?.enabled) {
+                  await invalidateTableCache(tableInfo.resourceName);
+                }
+              });
             }
 
             return resolve ? resolve(result) : result;
@@ -431,10 +441,22 @@ function wrapDeleteBuilder<TTable extends Table<any>>(
   });
 }
 
+const JOIN_METHODS = ["leftJoin", "rightJoin", "innerJoin", "fullJoin"];
+const CHAIN_METHODS = ["where", "orderBy", "limit", "offset", "groupBy", "having"];
+
+function resolveResourceName(
+  table: Table<any>,
+  context: TrackingContext
+): string {
+  const name = getTableName(table);
+  return context.registryByName.get(name)?.resourceName ?? name;
+}
+
 function wrapSelectBuilder(
   builder: any,
   context: TrackingContext,
-  tableName: string | null = null
+  tableName: string | null = null,
+  referencedTables: Set<string> = new Set()
 ): any {
   let currentTableName = tableName;
 
@@ -442,11 +464,10 @@ function wrapSelectBuilder(
     get(target, prop) {
       if (prop === "from") {
         return (table: Table<any>) => {
-          const name = getTableName(table);
-          const tableInfo = context.registryByName.get(name);
-          currentTableName = tableInfo?.resourceName ?? name;
+          currentTableName = resolveResourceName(table, context);
+          referencedTables.add(currentTableName);
           const result = target.from(table);
-          return wrapSelectBuilder(result, context, currentTableName);
+          return wrapSelectBuilder(result, context, currentTableName, referencedTables);
         };
       }
 
@@ -485,7 +506,15 @@ function wrapSelectBuilder(
                 } else {
                   await kv.set(cacheKey, JSON.stringify(result));
                 }
-                await storeCacheKey(currentTableName, cacheKey);
+                // Register the cache key under EVERY table the query touches
+                // (including joined tables), so a mutation to any of them
+                // invalidates this cached result — not just the FROM table.
+                const tablesToTag = referencedTables.size > 0
+                  ? referencedTables
+                  : new Set([currentTableName]);
+                for (const table of tablesToTag) {
+                  await storeCacheKey(table, cacheKey);
+                }
 
                 return resolve ? resolve(result) : result;
               }
@@ -503,8 +532,21 @@ function wrapSelectBuilder(
       const value = Reflect.get(target, prop, target);
       if (typeof value === "function") {
         const result = value.bind(target);
-        if (["where", "orderBy", "limit", "offset", "groupBy", "having", "leftJoin", "rightJoin", "innerJoin", "fullJoin"].includes(prop as string)) {
-          return (...args: any[]) => wrapSelectBuilder(result(...args), context, currentTableName);
+        if (JOIN_METHODS.includes(prop as string)) {
+          return (...args: any[]) => {
+            const joinedTable = args[0];
+            if (joinedTable && typeof joinedTable === "object") {
+              try {
+                referencedTables.add(resolveResourceName(joinedTable as Table<any>, context));
+              } catch {
+                // not a table (e.g. a subquery) — nothing to tag
+              }
+            }
+            return wrapSelectBuilder(result(...args), context, currentTableName, referencedTables);
+          };
+        }
+        if (CHAIN_METHODS.includes(prop as string)) {
+          return (...args: any[]) => wrapSelectBuilder(result(...args), context, currentTableName, referencedTables);
         }
         return result;
       }
@@ -533,6 +575,89 @@ function extractSqlString(query: SQL | string): string {
   return "";
 }
 
+function recordDetectedMutation(
+  sqlString: string,
+  context: TrackingContext
+): Promise<void> | void {
+  const mutationInfo = detectMutation(sqlString);
+  if (!mutationInfo) return;
+  const tableInfo = context.registryByName.get(mutationInfo.tableName);
+  if (!tableInfo) return;
+
+  return runOrDefer(context, async () => {
+    await changelog.append({
+      resource: tableInfo.resourceName,
+      type: mutationInfo.type,
+      objectId: "*",
+      object: undefined,
+      previousObject: undefined,
+      timestamp: Date.now(),
+    });
+    if (context.config.onRawSqlMutation) {
+      await context.config.onRawSqlMutation(tableInfo.resourceName, mutationInfo.type);
+    }
+    if (context.config.cache?.enabled) {
+      await invalidateTableCache(tableInfo.resourceName);
+    }
+    // Row-level details are unknown for raw SQL, so notify subscribers to
+    // refetch rather than sending a precise added/changed/removed event.
+    if (context.config.pushToSubscriptions !== false) {
+      await invalidateResourceSubscriptions(tableInfo.resourceName, "raw-sql-mutation");
+    }
+  });
+}
+
+// Public entry point for writers OUTSIDE this process / outside trackMutations
+// (cron jobs, other services, manual DB edits). Records a changelog entry,
+// invalidates the query cache, and tells live subscribers to refetch. This is
+// the portable alternative to database-specific CDC.
+export async function recordExternalMutation(
+  resource: string,
+  type: "create" | "update" | "delete",
+  options: { objectId?: string } = {}
+): Promise<void> {
+  await changelog.append({
+    resource,
+    type,
+    objectId: options.objectId ?? "*",
+    object: undefined,
+    previousObject: undefined,
+    timestamp: Date.now(),
+  });
+  await invalidateTableCache(resource);
+  await invalidateResourceSubscriptions(resource, "external-mutation");
+}
+
+// drizzle's db.batch([...]) runs an array of query builders atomically without
+// awaiting them individually, so the per-builder `.then()` tracking never
+// fires. We extract each statement's SQL, detect the mutation, and record a
+// coarse `invalidate` (objectId "*") — the same contract as raw SQL — so
+// subscribers/caches stay correct even though we can't see individual rows.
+function wrapBatch(
+  target: any,
+  context: TrackingContext
+): (...args: any[]) => Promise<any> {
+  return async (statements: any[]) => {
+    const result = await target.batch(statements);
+
+    if (context.trackingEnabled && Array.isArray(statements)) {
+      for (const stmt of statements) {
+        try {
+          const compiled = stmt?.toSQL?.();
+          const sqlString = compiled?.sql ?? "";
+          if (sqlString) {
+            await recordDetectedMutation(sqlString, context);
+          }
+        } catch {
+          // a statement we can't introspect just isn't tracked
+        }
+      }
+    }
+
+    return result;
+  };
+}
+
 function wrapRawSql(
   method: "run" | "execute",
   target: any,
@@ -549,25 +674,24 @@ function wrapRawSql(
         const tableInfo = context.registryByName.get(mutationInfo.tableName);
 
         if (tableInfo) {
-          await changelog.append({
-            resource: tableInfo.resourceName,
-            type: mutationInfo.type,
-            objectId: "*",
-            object: undefined,
-            previousObject: undefined,
-            timestamp: Date.now(),
+          await runOrDefer(context, async () => {
+            await changelog.append({
+              resource: tableInfo.resourceName,
+              type: mutationInfo.type,
+              objectId: "*",
+              object: undefined,
+              previousObject: undefined,
+              timestamp: Date.now(),
+            });
+
+            if (context.config.onRawSqlMutation) {
+              await context.config.onRawSqlMutation(tableInfo.resourceName, mutationInfo.type);
+            }
+
+            if (context.config.cache?.enabled) {
+              await invalidateTableCache(tableInfo.resourceName);
+            }
           });
-
-          if (context.config.onRawSqlMutation) {
-            await context.config.onRawSqlMutation(tableInfo.resourceName, mutationInfo.type);
-          }
-
-          if (context.config.cache?.enabled) {
-            await invalidateTableCache(
-              tableInfo.resourceName,
-              context.config.cache.keyPrefix ?? CACHE_KEY_PREFIX
-            );
-          }
         }
       }
     }
@@ -580,7 +704,8 @@ function wrapTransaction(
   tx: any,
   registry: Map<Table<any>, TableInfo>,
   registryByName: Map<string, TableInfo>,
-  config: TrackMutationsConfig
+  config: TrackMutationsConfig,
+  pendingEvents: Array<() => Promise<void>>
 ): any {
   const txContext: TrackingContext = {
     db: tx,
@@ -588,10 +713,19 @@ function wrapTransaction(
     registryByName,
     config,
     trackingEnabled: true,
+    pendingEvents,
   };
 
   return new Proxy(tx, {
     get(target, prop) {
+      if (prop === "transaction" && config.trackTransactions !== false) {
+        return async <T>(fn: (nestedTx: any) => Promise<T>, txConfig?: any): Promise<T> => {
+          return target.transaction(async (nestedTx: any) => {
+            const wrappedNested = wrapTransaction(nestedTx, registry, registryByName, config, pendingEvents);
+            return fn(wrappedNested);
+          }, txConfig);
+        };
+      }
       if (prop === "insert") {
         return (table: Table<any>) => {
           const tableInfo = registry.get(table);
@@ -636,6 +770,10 @@ function wrapTransaction(
         return wrapRawSql(prop, target, txContext);
       }
 
+      if (prop === "batch") {
+        return wrapBatch(target, txContext);
+      }
+
       const value = Reflect.get(target, prop, target);
       if (typeof value === "function") {
         return value.bind(target);
@@ -665,7 +803,7 @@ export function trackMutations<TDb extends DrizzleDatabase>(
   const registry = new Map<Table<any>, TableInfo>();
   const registryByName = new Map<string, TableInfo>();
 
-  for (const [key, registration] of Object.entries(tables)) {
+  for (const registration of Object.values(tables)) {
     const tableName = getTableName(registration.table);
     const resourceName = registration.resourceName ?? tableName;
     const filter = createResourceFilter(registration.table, {});
@@ -757,12 +895,27 @@ export function trackMutations<TDb extends DrizzleDatabase>(
         return wrapRawSql(prop, target, context);
       }
 
+      if (prop === "batch") {
+        return wrapBatch(target, context);
+      }
+
       if (prop === "transaction" && config.trackTransactions !== false) {
         return async <T>(fn: (tx: any) => Promise<T>, txConfig?: any): Promise<T> => {
-          return target.transaction(async (tx: any) => {
-            const wrappedTx = wrapTransaction(tx, registry, registryByName, config);
+          const pendingEvents: Array<() => Promise<void>> = [];
+          const result = await target.transaction(async (tx: any) => {
+            const wrappedTx = wrapTransaction(tx, registry, registryByName, config, pendingEvents);
             return fn(wrappedTx);
           }, txConfig);
+
+          // The transaction committed successfully — only now emit changelog
+          // entries, subscription pushes, and cache invalidations. If the
+          // transaction had rolled back, `target.transaction` would have thrown
+          // and these buffered side effects would be discarded.
+          for (const emit of pendingEvents) {
+            await emit();
+          }
+
+          return result;
         };
       }
 
@@ -777,8 +930,8 @@ export function trackMutations<TDb extends DrizzleDatabase>(
   return proxy as TrackedDb<TDb>;
 }
 
-export async function invalidateCache(resourceName: string, keyPrefix?: string): Promise<void> {
-  await invalidateTableCache(resourceName, keyPrefix ?? CACHE_KEY_PREFIX);
+export async function invalidateCache(resourceName: string): Promise<void> {
+  await invalidateTableCache(resourceName);
 }
 
 export async function invalidateAllCache(): Promise<void> {

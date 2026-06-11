@@ -16,7 +16,18 @@
 - **Pattern matching**: INSERT, UPDATE, DELETE statements are detected via SQL string parsing
 - **Table extraction**: Table name is extracted from the SQL and matched to registered tables
 - **Partial tracking**: Raw SQL mutations record `objectId: "*"` (indicating unknown specific IDs)
-- **Invalidate semantics**: Raw SQL mutations trigger `invalidate` events for subscribers
+- **Invalidate semantics**: Raw SQL mutations trigger `invalidate` events for subscribers and invalidate the query cache
+
+### Batch Statements (`db.batch`)
+- **Per-statement detection**: Each statement passed to `db.batch([...])` has its compiled SQL inspected and detected as a mutation
+- **Coarse tracking**: Detected batch mutations record `objectId: "*"` and trigger `invalidate` (same contract as raw SQL); individual rows are not visible
+- **Best-effort**: A statement whose SQL cannot be introspected is silently not tracked
+
+### External-Writer Notification (`recordExternalMutation`)
+- **Public entry point**: `recordExternalMutation(resource, type, { objectId? })` is exported for writers outside the tracked db (cron jobs, other services, manual edits, CDC)
+- **Effects**: appends a changelog entry, invalidates the query cache, and sends subscribers an `invalidate` event
+- **Coarse by default**: `objectId` defaults to `"*"`; no `object`/`previousObject` is carried, so the event is always `invalidate`
+- **Portable alternative to CDC**: this is the supported mechanism for keeping Concave subscriptions/caches consistent when mutations bypass the tracked db
 
 ### Subscription Integration
 - **Automatic push**: Mutations automatically push events to active subscriptions (when `pushToSubscriptions` is true)
@@ -28,12 +39,13 @@
 
 ### Transaction Handling
 - **Transaction wrapping**: Wrapped transactions track all mutations within them
-- **Same semantics**: Mutations in transactions behave identically to non-transactional mutations
-- **No rollback tracking**: If a transaction rolls back, changelog entries are NOT removed (they were never written)
+- **Commit-gated side effects**: Inside a tracked `db.transaction(...)`, changelog entries, subscription pushes, and cache invalidations are buffered and only emitted *after* the transaction commits
+- **Rollback discards effects**: If a transaction rolls back (the callback throws), the buffered side effects are discarded — no changelog entry, subscription event, or cache invalidation is produced for uncommitted state
 
 ### Cache Invalidation
-- **Table-level invalidation**: Any mutation to a table invalidates ALL cached queries for that table
-- **Automatic clearing**: Cache invalidation happens after successful mutation, before returning
+- **Table-level invalidation**: Any mutation to a table invalidates ALL cached queries that reference that table
+- **Join-aware invalidation**: Cached queries are tagged with every table they reference, including joined tables; a mutation to ANY referenced table invalidates the cached result (not just the `FROM` table)
+- **Automatic clearing**: Cache invalidation happens after a successful mutation (and after commit for transactions), before returning
 - **TTL support**: Cached queries respect configured TTL independently of mutation-based invalidation
 
 ## Non-Guarantees
@@ -44,8 +56,8 @@
 - ❌ **Complex raw SQL parsing**: CTEs, subqueries, and complex SQL patterns may not have their mutation type or table correctly detected
 
 ### Cache Behavior
-- ❌ **Cross-table invalidation**: Mutations only invalidate caches for the mutated table, not related tables
-- ❌ **Query-level granularity**: We don't track which rows a query touches; entire table cache is invalidated
+- ❌ **Query-level granularity**: We don't track which rows a query touches; the entire cache for any referenced table is invalidated
+- ❌ **Unjoined related tables**: Invalidation only covers tables the cached query actually references (via `from`/`join`); a mutation to a logically-related but unreferenced table does not invalidate the cache
 - ❌ **Key set cleanup**: Cache key tracking sets may not be cleaned up when cached data expires via TTL
 
 ### Ordering

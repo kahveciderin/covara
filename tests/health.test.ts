@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import express, { Express } from "express";
-import request from "supertest";
+import { Hono } from "hono";
 import {
   createHealthEndpoints,
   runLivenessChecks,
@@ -10,62 +9,75 @@ import {
   checkKV,
 } from "../src/health";
 import { createMemoryKV } from "../src/kv";
+import { createTestApp, get, request } from "./helpers/hono";
 
 describe("Health Endpoints", () => {
-  let app: Express;
+  let app: Hono;
+  const originalMemoryUsage = process.memoryUsage;
 
   beforeEach(() => {
-    app = express();
+    app = createTestApp();
+    process.memoryUsage = vi.fn().mockReturnValue({
+      heapUsed: 50 * 1024 * 1024,
+      heapTotal: 100 * 1024 * 1024,
+      external: 0,
+      arrayBuffers: 0,
+      rss: 100 * 1024 * 1024,
+    }) as unknown as typeof process.memoryUsage;
+  });
+
+  afterEach(() => {
+    process.memoryUsage = originalMemoryUsage;
   });
 
   describe("createHealthEndpoints", () => {
     it("creates router with healthz and readyz endpoints", async () => {
       const router = createHealthEndpoints();
-      app.use(router);
+      app.route("/", router);
 
-      const healthzRes = await request(app).get("/healthz");
+      const healthzRes = await get(app, "/healthz");
       expect(healthzRes.status).toBe(200);
       expect(healthzRes.body.status).toBe("healthy");
       expect(healthzRes.body.timestamp).toBeDefined();
       expect(healthzRes.body.uptime).toBeGreaterThanOrEqual(0);
 
-      const readyzRes = await request(app).get("/readyz");
+      const readyzRes = await get(app, "/readyz");
       expect(readyzRes.status).toBe(200);
       expect(readyzRes.body.status).toBe("healthy");
     });
 
     it("supports custom base path", async () => {
       const router = createHealthEndpoints({ basePath: "/health" });
-      app.use(router);
+      app.route("/", router);
 
-      const res = await request(app).get("/health/healthz");
+      const res = await get(app, "/health/healthz");
       expect(res.status).toBe(200);
     });
 
     it("returns disabled when enabled is false", async () => {
       const router = createHealthEndpoints({ enabled: false });
-      app.use(router);
+      app.route("/", router);
 
-      const res = await request(app).get("/healthz");
+      const res = await get(app, "/healthz");
       expect(res.status).toBe(404);
     });
 
     it("includes version in response", async () => {
       const router = createHealthEndpoints({ version: "1.0.0" });
-      app.use(router);
+      app.route("/", router);
 
-      const res = await request(app).get("/healthz");
+      const res = await get(app, "/healthz");
       expect(res.body.version).toBe("1.0.0");
     });
 
     it("supports HEAD requests", async () => {
       const router = createHealthEndpoints();
-      app.use(router);
+      app.route("/", router);
 
-      const healthzHead = await request(app).head("/healthz");
+      const healthzHead = await request(app, "HEAD", "/healthz");
       expect(healthzHead.status).toBe(200);
 
-      const readyzHead = await request(app).head("/readyz");
+      const readyzHead = await request(app, "HEAD", "/readyz");
       expect(readyzHead.status).toBe(200);
     });
   });
@@ -78,10 +90,45 @@ describe("Health Endpoints", () => {
       expect(result.latencyMs).toBeDefined();
     });
 
-    it("checks memory usage", async () => {
-      const result = await checkMemory(90);
-      expect(result.name).toBe("memory");
-      expect(result.healthy).toBe(true);
+    it("checks memory usage - healthy", async () => {
+      // Mock process.memoryUsage to ensure deterministic test results
+      const originalMemoryUsage = process.memoryUsage;
+      process.memoryUsage = vi.fn().mockReturnValue({
+        heapUsed: 50 * 1024 * 1024, // 50MB
+        heapTotal: 100 * 1024 * 1024, // 100MB - 50% usage
+        external: 0,
+        arrayBuffers: 0,
+        rss: 100 * 1024 * 1024,
+      }) as unknown as typeof process.memoryUsage;
+
+      try {
+        const result = await checkMemory(90);
+        expect(result.name).toBe("memory");
+        expect(result.healthy).toBe(true);
+      } finally {
+        process.memoryUsage = originalMemoryUsage;
+      }
+    });
+
+    it("checks memory usage - unhealthy", async () => {
+      // Mock high memory usage
+      const originalMemoryUsage = process.memoryUsage;
+      process.memoryUsage = vi.fn().mockReturnValue({
+        heapUsed: 95 * 1024 * 1024, // 95MB
+        heapTotal: 100 * 1024 * 1024, // 100MB - 95% usage
+        external: 0,
+        arrayBuffers: 0,
+        rss: 100 * 1024 * 1024,
+      }) as unknown as typeof process.memoryUsage;
+
+      try {
+        const result = await checkMemory(90);
+        expect(result.name).toBe("memory");
+        expect(result.healthy).toBe(false);
+        expect(result.message).toMatch(/Memory usage/);
+      } finally {
+        process.memoryUsage = originalMemoryUsage;
+      }
     });
 
     it("runs all liveness checks", async () => {
@@ -130,11 +177,11 @@ describe("Health Endpoints", () => {
       const router = createHealthEndpoints({
         thresholds: { eventLoopLagMs: 0 },
       });
-      app.use(router);
+      app.route("/", router);
 
       await new Promise((resolve) => setTimeout(resolve, 10));
 
-      const res = await request(app).get("/healthz");
+      const res = await get(app, "/healthz");
       expect(res.status).toBe(503);
       expect(res.body.status).toBe("unhealthy");
     });
@@ -145,9 +192,9 @@ describe("Health Endpoints", () => {
       const router = createHealthEndpoints({
         checks: { kv },
       });
-      app.use(router);
+      app.route("/", router);
 
-      const res = await request(app).get("/readyz");
+      const res = await get(app, "/readyz");
       expect(res.status).toBe(200);
       expect(res.body.checks).toBeDefined();
       expect(res.body.checks.some((c: { name: string }) => c.name === "kv")).toBe(true);

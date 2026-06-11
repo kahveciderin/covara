@@ -4,6 +4,7 @@ import {
   TransportResponse,
   ErrorResponse,
 } from "./types";
+import { reviveDates } from "./dates";
 
 export interface Transport {
   request<T>(req: TransportRequest): Promise<TransportResponse<T>>;
@@ -48,27 +49,55 @@ export class FetchTransport implements Transport {
   }
 
   async request<T>(req: TransportRequest): Promise<TransportResponse<T>> {
+    try {
+      return await this.executeRequest<T>(req);
+    } catch (error) {
+      if (
+        error instanceof TransportError &&
+        error.status === 401 &&
+        this.config.refreshAuth &&
+        !req.headers?.["X-Concave-Retried"]
+      ) {
+        await this.config.refreshAuth();
+        return this.executeRequest<T>({
+          ...req,
+          headers: { ...req.headers, "X-Concave-Retried": "1" },
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async executeRequest<T>(req: TransportRequest): Promise<TransportResponse<T>> {
     const url = this.buildUrl(req.path, req.params);
 
     const controller = new AbortController();
-    const timeoutId = this.config.timeout
-      ? setTimeout(() => controller.abort(), this.config.timeout)
-      : null;
+    const timeout = req.timeoutMs ?? this.config.timeout;
+    const timeoutId =
+      timeout && timeout > 0
+        ? setTimeout(() => controller.abort(), timeout)
+        : null;
+
+    const signal = this.combineSignals(controller.signal, req.signal);
+
+    const headers = {
+      "Content-Type": "application/json",
+      ...this.headers,
+      ...req.headers,
+    };
+    delete (headers as Record<string, string>)["X-Concave-Retried"];
 
     try {
       const response = await fetch(url, {
         method: req.method,
-        headers: {
-          "Content-Type": "application/json",
-          ...this.headers,
-          ...req.headers,
-        },
+        headers,
         body: req.body ? JSON.stringify(req.body) : undefined,
         credentials: this.config.credentials,
-        signal: controller.signal,
+        signal,
       });
 
-      const data = await this.parseResponse<T>(response);
+      const parsed = await this.parseResponse<T>(response);
+      const data = response.ok ? this.maybeReviveDates(req, parsed) : parsed;
 
       if (!response.ok) {
         const errorData = data as unknown as ErrorResponse;
@@ -88,6 +117,51 @@ export class FetchTransport implements Transport {
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
     }
+  }
+
+  private combineSignals(
+    internal: AbortSignal,
+    external?: AbortSignal
+  ): AbortSignal {
+    if (!external) return internal;
+
+    const anyFn = (AbortSignal as unknown as {
+      any?: (signals: AbortSignal[]) => AbortSignal;
+    }).any;
+    if (typeof anyFn === "function") {
+      return anyFn([internal, external]);
+    }
+
+    const combined = new AbortController();
+    const onAbort = (source: AbortSignal) => () => {
+      combined.abort((source as { reason?: unknown }).reason);
+    };
+
+    if (external.aborted) {
+      combined.abort((external as { reason?: unknown }).reason);
+    } else if (internal.aborted) {
+      combined.abort((internal as { reason?: unknown }).reason);
+    } else {
+      external.addEventListener("abort", onAbort(external), { once: true });
+      internal.addEventListener("abort", onAbort(internal), { once: true });
+    }
+
+    return combined.signal;
+  }
+
+  private maybeReviveDates<T>(req: TransportRequest, data: T): T {
+    const setting = this.config.parseDates;
+    if (!setting || data == null || typeof data !== "object") {
+      return data;
+    }
+    if (setting === true) {
+      return reviveDates(data, req.dateFields);
+    }
+    const fields = req.dateFields ?? setting[req.path];
+    if (!fields) {
+      return data;
+    }
+    return reviveDates(data, fields);
   }
 
   private async parseResponse<T>(response: Response): Promise<T> {

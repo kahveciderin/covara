@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import express, { Express } from "express";
-import { Server } from "http";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import type { ServerType } from "@hono/node-server";
 import { z } from "zod";
 import {
   createEnvClient,
@@ -10,14 +11,25 @@ import {
 } from "../../src/client/env";
 import { createEnv, envVariable, usePublicEnv } from "../../src/env";
 
+const startServer = (app: Hono): Promise<{ server: ServerType; url: string }> =>
+  new Promise((resolve) => {
+    const server = serve({ fetch: app.fetch, port: 0 }, (info) => {
+      resolve({ server, url: `http://localhost:${info.port}` });
+    });
+  });
+
+const stopServer = (server: ServerType): Promise<void> =>
+  new Promise((resolve) => {
+    server.close(() => resolve());
+  });
+
 describe("Client Environment Variables", () => {
-  let app: Express;
-  let server: Server;
+  let app: Hono;
+  let server: ServerType;
   let baseUrl: string;
 
   beforeEach(async () => {
-    app = express();
-    app.use(express.json());
+    app = new Hono();
 
     const env = createEnv({
       PUBLIC_API_URL: envVariable("https://api.example.com", z.string(), {
@@ -31,23 +43,15 @@ describe("Client Environment Variables", () => {
       },
     });
 
-    app.use("/api/env", usePublicEnv(env));
+    app.route("/api/env", usePublicEnv(env));
 
-    await new Promise<void>((resolve) => {
-      server = app.listen(0, () => {
-        const addr = server.address();
-        if (addr && typeof addr === "object") {
-          baseUrl = `http://localhost:${addr.port}`;
-        }
-        resolve();
-      });
-    });
+    const started = await startServer(app);
+    server = started.server;
+    baseUrl = started.url;
   });
 
   afterEach(async () => {
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
+    await stopServer(server);
   });
 
   describe("createEnvClient", () => {
@@ -85,19 +89,13 @@ describe("Client Environment Variables", () => {
     });
 
     it("should use custom env path", async () => {
-      const customApp = express();
+      const customApp = new Hono();
       const customEnv = createEnv({
         PUBLIC_VALUE: envVariable("custom", z.string(), { public: true }),
       });
-      customApp.use("/custom/env", usePublicEnv(customEnv));
+      customApp.route("/custom/env", usePublicEnv(customEnv));
 
-      const customServer = await new Promise<Server>((resolve) => {
-        const s = customApp.listen(0, () => resolve(s));
-      });
-      const addr = customServer.address();
-      const customUrl = `http://localhost:${
-        addr && typeof addr === "object" ? addr.port : 0
-      }`;
+      const { server: customServer, url: customUrl } = await startServer(customApp);
 
       const client = createEnvClient({
         baseUrl: customUrl,
@@ -109,7 +107,7 @@ describe("Client Environment Variables", () => {
         PUBLIC_VALUE: "custom",
       });
 
-      await new Promise<void>((resolve) => customServer.close(() => resolve()));
+      await stopServer(customServer);
     });
 
     it("should subscribe to env changes", async () => {
@@ -247,24 +245,18 @@ describe("Client Environment Variables", () => {
     });
 
     it("should hide schema endpoint when exposeSchema is false", async () => {
-      const customApp = express();
+      const customApp = new Hono();
       const customEnv = createEnv({
         PUBLIC_VALUE: envVariable("test", z.string(), { public: true }),
       });
-      customApp.use("/env", usePublicEnv(customEnv, { exposeSchema: false }));
+      customApp.route("/env", usePublicEnv(customEnv, { exposeSchema: false }));
 
-      const customServer = await new Promise<Server>((resolve) => {
-        const s = customApp.listen(0, () => resolve(s));
-      });
-      const addr = customServer.address();
-      const customUrl = `http://localhost:${
-        addr && typeof addr === "object" ? addr.port : 0
-      }`;
+      const { server: customServer, url: customUrl } = await startServer(customApp);
 
       const response = await fetch(`${customUrl}/env/schema`);
       expect(response.status).toBe(404);
 
-      await new Promise<void>((resolve) => customServer.close(() => resolve()));
+      await stopServer(customServer);
     });
   });
 
@@ -278,7 +270,7 @@ describe("Client Environment Variables", () => {
     });
 
     it("should infer number type", async () => {
-      const customApp = express();
+      const customApp = new Hono();
       const customEnv = createEnv({
         PUBLIC_PORT: envVariable(
           "3000",
@@ -286,15 +278,9 @@ describe("Client Environment Variables", () => {
           { public: true }
         ),
       });
-      customApp.use("/env", usePublicEnv(customEnv));
+      customApp.route("/env", usePublicEnv(customEnv));
 
-      const customServer = await new Promise<Server>((resolve) => {
-        const s = customApp.listen(0, () => resolve(s));
-      });
-      const addr = customServer.address();
-      const customUrl = `http://localhost:${
-        addr && typeof addr === "object" ? addr.port : 0
-      }`;
+      const { server: customServer, url: customUrl } = await startServer(customApp);
 
       const schema = await fetchEnvSchema(customUrl, "/env");
       const portField = schema.fields.find(
@@ -302,11 +288,11 @@ describe("Client Environment Variables", () => {
       );
       expect(portField?.type).toBe("number");
 
-      await new Promise<void>((resolve) => customServer.close(() => resolve()));
+      await stopServer(customServer);
     });
 
     it("should infer boolean type", async () => {
-      const customApp = express();
+      const customApp = new Hono();
       const customEnv = createEnv({
         PUBLIC_DEBUG: envVariable(
           "true",
@@ -314,15 +300,9 @@ describe("Client Environment Variables", () => {
           { public: true }
         ),
       });
-      customApp.use("/env", usePublicEnv(customEnv));
+      customApp.route("/env", usePublicEnv(customEnv));
 
-      const customServer = await new Promise<Server>((resolve) => {
-        const s = customApp.listen(0, () => resolve(s));
-      });
-      const addr = customServer.address();
-      const customUrl = `http://localhost:${
-        addr && typeof addr === "object" ? addr.port : 0
-      }`;
+      const { server: customServer, url: customUrl } = await startServer(customApp);
 
       const schema = await fetchEnvSchema(customUrl, "/env");
       const debugField = schema.fields.find(
@@ -330,7 +310,7 @@ describe("Client Environment Variables", () => {
       );
       expect(debugField?.type).toBe("boolean");
 
-      await new Promise<void>((resolve) => customServer.close(() => resolve()));
+      await stopServer(customServer);
     });
   });
 });

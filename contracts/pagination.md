@@ -58,7 +58,7 @@
 
 For applications requiring consistency:
 1. **Timestamp filtering**: Add `createdAt < snapshot_time` filter
-2. **Optimistic locking**: Use ETags to detect concurrent modifications
+2. **Optimistic locking**: Use ETags to detect concurrent modifications (see [etag.md](./etag.md))
 3. **Sequence numbers**: Track changelog sequence for consistent views
 
 ## Test Coverage

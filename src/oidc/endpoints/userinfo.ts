@@ -1,4 +1,4 @@
-import { Router, Request, Response } from "express";
+import { Hono, type Context } from "hono";
 import {
   OIDCProviderConfig,
   OIDCUser,
@@ -15,37 +15,43 @@ export const createUserInfoEndpoint = ({
   config,
   tokenService,
   findUserById,
-}: UserInfoEndpointConfig): Router => {
-  const router = Router();
+}: UserInfoEndpointConfig): Hono => {
+  const router = new Hono();
 
-  const handler = async (req: Request, res: Response): Promise<void> => {
-    const authHeader = req.headers.authorization;
+  const handler = async (c: Context): Promise<Response> => {
+    const authHeader = c.req.header("authorization");
     if (!authHeader?.startsWith("Bearer ")) {
-      res.status(401).json({
-        error: "invalid_token",
-        error_description: "Bearer token required",
-      });
-      return;
+      return c.json(
+        {
+          error: "invalid_token",
+          error_description: "Bearer token required",
+        },
+        401
+      );
     }
 
     const accessToken = authHeader.slice(7);
     const validation = await tokenService.validateAccessToken(accessToken);
 
     if (!validation.valid || !validation.claims) {
-      res.status(401).json({
-        error: "invalid_token",
-        error_description: "Invalid or expired access token",
-      });
-      return;
+      return c.json(
+        {
+          error: "invalid_token",
+          error_description: "Invalid or expired access token",
+        },
+        401
+      );
     }
 
     const user = await findUserById(validation.claims.sub);
     if (!user) {
-      res.status(401).json({
-        error: "invalid_token",
-        error_description: "User not found",
-      });
-      return;
+      return c.json(
+        {
+          error: "invalid_token",
+          error_description: "User not found",
+        },
+        401
+      );
     }
 
     const scopes = validation.claims.scope.split(" ");
@@ -71,7 +77,7 @@ export const createUserInfoEndpoint = ({
       Object.assign(claims, customClaims);
     }
 
-    res.json(claims);
+    return c.json(claims);
   };
 
   router.get("/", handler);

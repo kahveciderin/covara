@@ -1,4 +1,7 @@
 import { ZodError } from "zod";
+import { HTTPException } from "hono/http-exception";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { isDebugEnabled, isProduction } from "@/server/env";
 
 const ERROR_TYPE_BASE = "/__concave/problems";
 
@@ -45,14 +48,14 @@ export interface ProblemDetail {
   [key: string]: unknown;
 }
 
-export class ResourceError extends Error {
+export class ResourceError extends HTTPException {
   constructor(
     message: string,
     public statusCode: number,
     public code: string,
     public details?: unknown
   ) {
-    super(message);
+    super(statusCode as ContentfulStatusCode, { message });
     this.name = "ResourceError";
   }
 
@@ -62,6 +65,20 @@ export class ResourceError extends Error {
 
   getTitle(): string {
     return this.code.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+  }
+
+  override getResponse(): Response {
+    const problem = formatRFC7807Error(this);
+    const headers: Record<string, string> = {
+      "Content-Type": "application/problem+json",
+    };
+    if (this instanceof RateLimitError) {
+      headers["Retry-After"] = String(Math.ceil(this.retryAfter / 1000));
+    }
+    return new Response(JSON.stringify(problem), {
+      status: this.statusCode,
+      headers,
+    });
   }
 }
 
@@ -148,7 +165,7 @@ export class FilterParseError extends ResourceError {
   ) {
     super(`Invalid filter expression: ${message}`, 400, "FILTER_PARSE_ERROR", {
       ...context,
-      ...(process.env.CONCAVE_DEBUG !== "1" && context?.parsedSoFar
+      ...(!isDebugEnabled() && context?.parsedSoFar
         ? { parsedSoFar: undefined }
         : {}),
     });
@@ -215,8 +232,8 @@ export const formatRFC7807Error = (
   error: unknown,
   requestId?: string
 ): ProblemDetail => {
-  const isDebug = process.env.CONCAVE_DEBUG === "1";
-  const isProd = process.env.NODE_ENV === "production";
+  const isDebug = isDebugEnabled();
+  const isProd = isProduction();
 
   if (error instanceof ResourceError) {
     const problem: ProblemDetail = {
@@ -337,10 +354,7 @@ export const formatErrorResponse = (
     return {
       error: {
         code: "INTERNAL_ERROR",
-        message:
-          process.env.NODE_ENV === "production"
-            ? "Internal server error"
-            : error.message,
+        message: isProduction() ? "Internal server error" : error.message,
       },
     };
   }

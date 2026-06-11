@@ -21,6 +21,12 @@ export interface DebounceConfig {
   key: (input: unknown) => string;
 }
 
+export interface TaskProgress {
+  percent: number;
+  message?: string;
+  updatedAt: number;
+}
+
 export interface TaskContext {
   taskId: string;
   attempt: number;
@@ -29,6 +35,7 @@ export interface TaskContext {
   workerId: string;
   signal: AbortSignal;
   db: unknown;
+  reportProgress: (percent: number, message?: string) => Promise<void>;
 }
 
 export interface TaskDefinition<TInput = unknown, TOutput = unknown> {
@@ -42,12 +49,17 @@ export interface TaskDefinition<TInput = unknown, TOutput = unknown> {
   maxConcurrency?: number;
   debounce?: DebounceConfig;
   idempotencyKey?: (input: TInput) => string;
+  idempotencyRetentionMs?: number;
+  resultTtlMs?: number;
 }
+
+export type CatchupPolicy = "skip" | "all" | "last";
 
 export interface RecurringConfig {
   cron?: string;
   interval?: number;
   timezone?: string;
+  catchup?: CatchupPolicy;
 }
 
 export interface Task<TInput = unknown> {
@@ -67,6 +79,13 @@ export interface Task<TInput = unknown> {
   result?: unknown;
   idempotencyKey?: string;
   recurring?: RecurringConfig;
+  progress?: TaskProgress;
+  lastHeartbeatAt?: number;
+  resultExpiresAt?: number;
+  originalTaskId?: string;
+  replayCount?: number;
+  replayedFromDlqAt?: number;
+  replayedBy?: string;
 }
 
 export interface ScheduleOptions {
@@ -91,6 +110,22 @@ export interface DeadLetterEntry {
   failedAt: number;
   reason: string;
   attempts: number;
+  originalTaskId?: string;
+  replayedFromDlqAt?: number;
+  replayedBy?: string;
+  replayCount?: number;
+}
+
+export interface DlqMetrics {
+  count: number;
+  oldestEntryAgeMs: number | null;
+}
+
+export interface RecurringConfigForCalc {
+  cron?: string;
+  interval?: number;
+  timezone?: string;
+  catchup?: CatchupPolicy;
 }
 
 export interface RecurringSchedule {
@@ -104,6 +139,7 @@ export interface RecurringSchedule {
   lastRunAt?: number;
   nextRunAt: number;
   createdAt: number;
+  catchup?: CatchupPolicy;
 }
 
 export interface WorkerStats {
@@ -122,4 +158,10 @@ export interface WorkerConfig {
   taskTypes?: string[];
   lockTtlMs?: number;
   heartbeatMs?: number;
+  onDlqEnqueue?: (entry: DeadLetterEntry) => void | Promise<void>;
+}
+
+export interface StopOptions {
+  drain?: boolean;
+  timeoutMs?: number;
 }

@@ -62,7 +62,7 @@ export const createTaskRegistry = (): TaskRegistry => {
 
 export const createTaskScheduler = (
   kv: KVAdapter,
-  registry: TaskRegistry
+  _registry: TaskRegistry
 ): TaskScheduler => {
   const storage = createTaskStorage(kv);
   const queue = createTaskQueue(kv);

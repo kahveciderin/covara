@@ -648,24 +648,6 @@ export const createResourceFilter = <TConfig extends TableConfig>(
     }
   }
 
-  class RangeFilterValue extends FilterValue {
-    constructor(private start: FilterValue, private end: FilterValue) {
-      super();
-    }
-
-    print(): string {
-      return `[${this.start.print()}, ${this.end.print()}]`;
-    }
-
-    convert(): SQLWrapper {
-      return sql`${this.start.convert()} AND ${this.end.convert()}`;
-    }
-
-    execute(object: SchemaType): unknown {
-      return [this.start.execute(object), this.end.execute(object)];
-    }
-  }
-
   class SetFilterValue extends FilterValue {
     constructor(private values: FilterValue[]) {
       super();

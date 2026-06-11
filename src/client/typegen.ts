@@ -175,6 +175,32 @@ const isComparableType = (typeInfo: TypeInfo): boolean => {
   return false;
 };
 
+const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+const isValidIdentifier = (name: string): boolean => IDENTIFIER_RE.test(name);
+
+const propertyName = (name: string): string =>
+  isValidIdentifier(name) ? name : JSON.stringify(name);
+
+const sanitizeTypeName = (name: string): string => {
+  const cleaned = name.replace(/[^A-Za-z0-9_$]+(.)?/g, (_match, next: string | undefined) =>
+    next ? next.toUpperCase() : ""
+  );
+  if (cleaned.length === 0) return "_Resource";
+  return /^[A-Za-z_$]/.test(cleaned) ? cleaned : `_${cleaned}`;
+};
+
+const resourceKeyName = (name: string): string => {
+  const sanitized = sanitizeTypeName(name);
+  return sanitized.charAt(0).toLowerCase() + sanitized.slice(1);
+};
+
+const isOptionalInputField = (field: FieldSchemaInfo): boolean =>
+  field.nullable === true ||
+  field.defaultValue !== undefined ||
+  field.primaryKey === true ||
+  field.autoIncrement === true;
+
 const generateTypeScript = (
   schema: ConcaveSchema,
   options: TypegenOptions,
@@ -196,95 +222,104 @@ const generateTypeScript = (
 
   const indent = ns ? "  " : "";
 
-  // Build a map of resource paths to names for relation type lookup
+  // Build a map of resource paths to (sanitized) type names for relation type lookup
   const resourceNameByPath = new Map<string, string>();
   for (const resource of schema.resources) {
+    const typeName = sanitizeTypeName(resource.name);
     // Map both the path (e.g., "/categories") and the resource name (e.g., "categories")
-    resourceNameByPath.set(resource.path, resource.name);
-    resourceNameByPath.set(resource.name.toLowerCase(), resource.name);
+    resourceNameByPath.set(resource.path, typeName);
+    resourceNameByPath.set(resource.name, typeName);
+    resourceNameByPath.set(resource.name.toLowerCase(), typeName);
     // Also map without leading slash
     if (resource.path.startsWith("/")) {
-      resourceNameByPath.set(resource.path.slice(1), resource.name);
+      resourceNameByPath.set(resource.path.slice(1), typeName);
     }
   }
 
+  const relatedTypeNameFor = (relationResource: string): string =>
+    resourceNameByPath.get(relationResource) ??
+    resourceNameByPath.get(relationResource.toLowerCase()) ??
+    sanitizeTypeName(relationResource);
+
   for (const resource of schema.resources) {
-    output += `${indent}export interface ${resource.name} {\n`;
+    const typeName = sanitizeTypeName(resource.name);
+    output += `${indent}export interface ${typeName} {\n`;
     for (const field of resource.fields) {
       const tsType = typeInfoToTS(field.type);
       const nullSuffix = field.nullable ? " | null" : "";
-      output += `${indent}  ${field.name}: ${tsType}${nullSuffix};\n`;
+      output += `${indent}  ${propertyName(field.name)}: ${tsType}${nullSuffix};\n`;
     }
     output += `${indent}}\n\n`;
 
-    const autoFields = resource.fields
-      .filter(f => f.primaryKey || f.autoIncrement)
-      .map(f => `"${f.name}"`)
-      .join(" | ");
-    const omitType = autoFields ? `Omit<${resource.name}, ${autoFields}>` : resource.name;
-    output += `${indent}export type ${resource.name}Input = ${omitType};\n`;
-    output += `${indent}export type ${resource.name}Update = Partial<${resource.name}Input>;\n\n`;
+    // Input type: auto-increment fields are server-generated (excluded);
+    // primary keys, nullable fields, and fields with defaults are optional.
+    const inputFields = resource.fields.filter(f => !f.autoIncrement);
+    output += `${indent}export type ${typeName}Input = {\n`;
+    for (const field of inputFields) {
+      const tsType = typeInfoToTS(field.type);
+      const nullSuffix = field.nullable ? " | null" : "";
+      const optional = isOptionalInputField(field) ? "?" : "";
+      output += `${indent}  ${propertyName(field.name)}${optional}: ${tsType}${nullSuffix};\n`;
+    }
+    output += `${indent}};\n`;
+    output += `${indent}export type ${typeName}Update = Partial<${typeName}Input>;\n\n`;
 
     // Generate field metadata types for type-safe queries
-    const allFields = resource.fields.map(f => `"${f.name}"`).join(" | ");
-    output += `${indent}export type ${resource.name}Fields = ${allFields || "never"};\n`;
+    const allFields = resource.fields.map(f => JSON.stringify(f.name)).join(" | ");
+    output += `${indent}export type ${typeName}Fields = ${allFields || "never"};\n`;
 
     const numericFields = resource.fields
       .filter(f => isNumericType(f.type))
-      .map(f => `"${f.name}"`)
+      .map(f => JSON.stringify(f.name))
       .join(" | ");
-    output += `${indent}export type ${resource.name}NumericFields = ${numericFields || "never"};\n`;
+    output += `${indent}export type ${typeName}NumericFields = ${numericFields || "never"};\n`;
 
     const comparableFields = resource.fields
       .filter(f => isComparableType(f.type))
-      .map(f => `"${f.name}"`)
+      .map(f => JSON.stringify(f.name))
       .join(" | ");
-    output += `${indent}export type ${resource.name}ComparableFields = ${comparableFields || "never"};\n`;
+    output += `${indent}export type ${typeName}ComparableFields = ${comparableFields || "never"};\n`;
 
     const stringFields = resource.fields
       .filter(f => isStringType(f.type))
-      .map(f => `"${f.name}"`)
+      .map(f => JSON.stringify(f.name))
       .join(" | ");
-    output += `${indent}export type ${resource.name}StringFields = ${stringFields || "never"};\n\n`;
+    output += `${indent}export type ${typeName}StringFields = ${stringFields || "never"};\n\n`;
 
     // Generate Relations type and WithRelations type if the resource has relations
     if (resource.relations && resource.relations.length > 0) {
       // Generate Relations interface - maps relation names to their types
-      output += `${indent}export interface ${resource.name}Relations {\n`;
+      output += `${indent}export interface ${typeName}Relations {\n`;
       for (const relation of resource.relations) {
-        const relatedTypeName = resourceNameByPath.get(relation.resource) ??
-          resourceNameByPath.get(relation.resource.toLowerCase()) ??
-          relation.resource;
+        const relatedTypeName = relatedTypeNameFor(relation.resource);
 
         if (relation.type === "hasMany" || relation.type === "manyToMany") {
-          output += `${indent}  ${relation.name}: ${relatedTypeName}[];\n`;
+          output += `${indent}  ${propertyName(relation.name)}: ${relatedTypeName}[];\n`;
         } else {
-          output += `${indent}  ${relation.name}: ${relatedTypeName} | null;\n`;
+          output += `${indent}  ${propertyName(relation.name)}: ${relatedTypeName} | null;\n`;
         }
       }
       output += `${indent}}\n\n`;
 
       // Generate relation names type for type-safe include()
-      const relationNames = resource.relations.map(r => `"${r.name}"`).join(" | ");
-      output += `${indent}export type ${resource.name}RelationNames = ${relationNames};\n\n`;
+      const relationNames = resource.relations.map(r => JSON.stringify(r.name)).join(" | ");
+      output += `${indent}export type ${typeName}RelationNames = ${relationNames};\n\n`;
 
       // Generate WithRelations type (all relations included)
-      output += `${indent}export interface ${resource.name}WithRelations extends ${resource.name} {\n`;
+      output += `${indent}export interface ${typeName}WithRelations extends ${typeName} {\n`;
       for (const relation of resource.relations) {
-        const relatedTypeName = resourceNameByPath.get(relation.resource) ??
-          resourceNameByPath.get(relation.resource.toLowerCase()) ??
-          relation.resource;
+        const relatedTypeName = relatedTypeNameFor(relation.resource);
 
         if (relation.type === "hasMany" || relation.type === "manyToMany") {
-          output += `${indent}  ${relation.name}?: ${relatedTypeName}[];\n`;
+          output += `${indent}  ${propertyName(relation.name)}?: ${relatedTypeName}[];\n`;
         } else {
-          output += `${indent}  ${relation.name}?: ${relatedTypeName} | null;\n`;
+          output += `${indent}  ${propertyName(relation.name)}?: ${relatedTypeName} | null;\n`;
         }
       }
       output += `${indent}}\n\n`;
 
       // Generate helper type to pick specific relations
-      output += `${indent}export type ${resource.name}With<K extends keyof ${resource.name}Relations> = ${resource.name} & { [P in K]?: ${resource.name}Relations[P] };\n\n`;
+      output += `${indent}export type ${typeName}With<K extends keyof ${typeName}Relations> = ${typeName} & { [P in K]?: ${typeName}Relations[P] };\n\n`;
     }
   }
 
@@ -317,11 +352,14 @@ const generateTSClientTypes = (schema: ConcaveSchema, indent: string): string =>
   let output = "";
 
   // Generate path constants
+  // Uses the path reported by the server schema as-is (the server reports the
+  // actual mount path when it is known).
   output += `${indent}// Resource path constants\n`;
   output += `${indent}export const ResourcePaths = {\n`;
   for (const resource of schema.resources) {
-    const lowerName = resource.name.charAt(0).toLowerCase() + resource.name.slice(1);
-    output += `${indent}  ${lowerName}: "/api${resource.path}" as const,\n`;
+    const lowerName = resourceKeyName(resource.name);
+    const path = resource.path.startsWith("/") ? resource.path : `/${resource.path}`;
+    output += `${indent}  ${lowerName}: "${path}" as const,\n`;
   }
   output += `${indent}} as const;\n\n`;
 
@@ -368,10 +406,11 @@ const generateTSClientTypes = (schema: ConcaveSchema, indent: string): string =>
   output += `${indent}// Each resource returns a LiveQuery that can be chained and passed to useLiveList\n`;
   output += `${indent}export interface TypedResources {\n`;
   for (const resource of schema.resources) {
-    const lowerName = resource.name.charAt(0).toLowerCase() + resource.name.slice(1);
+    const lowerName = resourceKeyName(resource.name);
+    const typeName = sanitizeTypeName(resource.name);
     const hasRelations = resource.relations && resource.relations.length > 0;
-    const relationsType = hasRelations ? `${resource.name}Relations` : "{}";
-    output += `${indent}  ${lowerName}: LiveQuery<${resource.name}, ${relationsType}>;\n`;
+    const relationsType = hasRelations ? `${typeName}Relations` : "{}";
+    output += `${indent}  ${lowerName}: LiveQuery<${typeName}, ${relationsType}>;\n`;
   }
   output += `${indent}}\n\n`;
 
@@ -395,8 +434,8 @@ const generateTSClientTypes = (schema: ConcaveSchema, indent: string): string =>
   output += `${indent}//   // Now use typed resources - types are inferred automatically:\n`;
 
   for (const resource of schema.resources) {
-    const lowerName = resource.name.charAt(0).toLowerCase() + resource.name.slice(1);
-    output += `${indent}//   const { items } = useLiveList(client.resources.${lowerName});  // items: ${resource.name}[]\n`;
+    const lowerName = resourceKeyName(resource.name);
+    output += `${indent}//   const { items } = useLiveList(client.resources.${lowerName});  // items: ${sanitizeTypeName(resource.name)}[]\n`;
   }
 
   output += `${indent}//\n`;
@@ -458,10 +497,11 @@ const generateTSClientTypes = (schema: ConcaveSchema, indent: string): string =>
   output += `${indent}    resources: {\n`;
 
   for (const resource of schema.resources) {
-    const lowerName = resource.name.charAt(0).toLowerCase() + resource.name.slice(1);
+    const lowerName = resourceKeyName(resource.name);
+    const typeName = sanitizeTypeName(resource.name);
     const hasRelations = resource.relations && resource.relations.length > 0;
-    const relationsType = hasRelations ? `${resource.name}Relations` : "{}";
-    output += `${indent}      ${lowerName}: createLiveQuery<${resource.name}, ${relationsType}>(baseClient, ResourcePaths.${lowerName}),\n`;
+    const relationsType = hasRelations ? `${typeName}Relations` : "{}";
+    output += `${indent}      ${lowerName}: createLiveQuery<${typeName}, ${relationsType}>(baseClient, ResourcePaths.${lowerName}),\n`;
   }
 
   output += `${indent}    },\n`;
@@ -482,14 +522,15 @@ const generateDart = (schema: ConcaveSchema, options: TypegenOptions): string =>
   }
 
   if (options.includeClient !== false) {
-    output += generateDartClientTypes(schema);
+    output += generateDartClientTypes();
   }
 
   return output;
 };
 
 const generateDartClass = (resource: ResourceSchemaInfo): string => {
-  let output = `class ${resource.name} {\n`;
+  const className = sanitizeTypeName(resource.name);
+  let output = `class ${className} {\n`;
 
   for (const field of resource.fields) {
     const dartType = typeInfoToDart(field.type);
@@ -498,15 +539,15 @@ const generateDartClass = (resource: ResourceSchemaInfo): string => {
   }
   output += `\n`;
 
-  output += `  ${resource.name}({\n`;
+  output += `  ${className}({\n`;
   for (const field of resource.fields) {
     const required = !field.nullable && !field.primaryKey && !field.autoIncrement;
     output += `    ${required ? "required " : ""}this.${field.name},\n`;
   }
   output += `  });\n\n`;
 
-  output += `  factory ${resource.name}.fromJson(Map<String, dynamic> json) {\n`;
-  output += `    return ${resource.name}(\n`;
+  output += `  factory ${className}.fromJson(Map<String, dynamic> json) {\n`;
+  output += `    return ${className}(\n`;
   for (const field of resource.fields) {
     const dartType = typeInfoToDart(field.type);
     let converter = `json['${field.name}']`;
@@ -542,7 +583,7 @@ const generateDartClass = (resource: ResourceSchemaInfo): string => {
   output += `}\n\n`;
 
   const inputFields = resource.fields.filter(f => !f.primaryKey && !f.autoIncrement);
-  output += `class ${resource.name}Input {\n`;
+  output += `class ${className}Input {\n`;
   for (const field of inputFields) {
     const dartType = typeInfoToDart(field.type);
     const nullSuffix = field.nullable ? "?" : "";
@@ -550,7 +591,7 @@ const generateDartClass = (resource: ResourceSchemaInfo): string => {
   }
   output += `\n`;
 
-  output += `  ${resource.name}Input({\n`;
+  output += `  ${className}Input({\n`;
   for (const field of inputFields) {
     const required = !field.nullable;
     output += `    ${required ? "required " : ""}this.${field.name},\n`;
@@ -574,7 +615,7 @@ const generateDartClass = (resource: ResourceSchemaInfo): string => {
   return output;
 };
 
-const generateDartClientTypes = (schema: ConcaveSchema): string => {
+const generateDartClientTypes = (): string => {
   let output = `// Client types\n\n`;
 
   output += `class ListOptions {\n`;

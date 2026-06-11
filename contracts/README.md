@@ -12,8 +12,14 @@ This folder contains the formal contracts (guarantees and non-guarantees) for th
 - [tasks.md](./tasks.md) - Task execution semantics, retry, and delivery guarantees
 - [pagination.md](./pagination.md) - Cursor integrity and consistency guarantees
 - [auth.md](./auth.md) - Authentication and authorization threat model
+- [billing.md](./billing.md) - Billing and metering guarantees
+- [email.md](./email.md) - Email delivery and formatting guarantees
+- [etag.md](./etag.md) - ETag emission, conditional requests, and optimistic locking guarantees
 - [offline-sync.md](./offline-sync.md) - Offline mutation and sync guarantees
 - [environment-variables.md](./environment-variables.md) - Environment variable parsing and public exposure guarantees
+- [search.md](./search.md) - Search endpoint and auto-indexing guarantees
+- [storage.md](./storage.md) - File upload and storage adapter guarantees
+- [track-mutations.md](./track-mutations.md) - Mutation tracking and changelog recording guarantees
 
 ## How to Read These Contracts
 

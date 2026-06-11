@@ -1,6 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import request from "supertest";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
@@ -9,6 +7,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { useResource } from "@/resource/hook";
 import { rsql } from "@/auth/rsql";
+import { createTestApp, get, post, patch, del } from "../helpers/hono";
 
 const testDocumentsTable = sqliteTable("test_documents", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -17,21 +16,6 @@ const testDocumentsTable = sqliteTable("test_documents", {
   userId: text("userId").notNull(),
   isPublic: integer("isPublic", { mode: "boolean" }).default(false),
 });
-
-const injectTestUser = (userId: string) => (req: Request, _res: Response, next: NextFunction) => {
-  (req as any).user = { id: userId, roles: ["user"] };
-  next();
-};
-
-const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err.statusCode || err.status || 500;
-  res.status(status).json({
-    type: err.type || "/__concave/problems/internal-error",
-    title: err.title || "Error",
-    status,
-    detail: err.message,
-  });
-};
 
 describe("Secure Query Scope Bypass Prevention Tests", () => {
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
@@ -82,11 +66,9 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
   });
 
   const createAppWithScope = (currentUserId: string) => {
-    const app = express();
-    app.use(express.json());
-    app.use(injectTestUser(currentUserId));
+    const app = createTestApp({ user: { id: currentUserId } });
 
-    app.use(
+    app.route(
       "/docs",
       useResource(testDocumentsTable, {
         id: testDocumentsTable.id,
@@ -100,7 +82,6 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
       })
     );
 
-    app.use(errorHandler);
     return app;
   };
 
@@ -108,7 +89,8 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
     it("should only return documents matching scope (own + public)", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app).get("/docs").expect(200);
+      const res = await get(app, "/docs");
+      expect(res.status).toBe(200);
 
       const docs = res.body.items;
 
@@ -125,7 +107,8 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
       const app = createAppWithScope("user1");
 
       const filter = encodeURIComponent('userId=="user2"');
-      const res = await request(app).get(`/docs?filter=${filter}`).expect(200);
+      const res = await get(app, `/docs?filter=${filter}`);
+      expect(res.status).toBe(200);
 
       const docs = res.body.items;
 
@@ -151,7 +134,8 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
       );
 
       if (user2PrivateDoc) {
-        await request(app).get(`/docs/${user2PrivateDoc.id}`).expect(404);
+        const res = await get(app, `/docs/${user2PrivateDoc.id}`);
+        expect(res.status).toBe(404);
       }
     });
 
@@ -162,7 +146,8 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
       const user1Doc = allDocs.rows.find((r: any) => r.title === "User1 Private");
 
       if (user1Doc) {
-        const res = await request(app).get(`/docs/${user1Doc.id}`).expect(200);
+        const res = await get(app, `/docs/${user1Doc.id}`);
+        expect(res.status).toBe(200);
         expect(res.body.title).toBe("User1 Private");
       }
     });
@@ -176,10 +161,8 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
       const user2Doc = allDocs.rows.find((r: any) => r.title === "User2 Private");
 
       if (user2Doc) {
-        await request(app)
-          .patch(`/docs/${user2Doc.id}`)
-          .send({ title: "Hacked Title" })
-          .expect(404);
+        const res = await patch(app, `/docs/${user2Doc.id}`, { title: "Hacked Title" });
+        expect(res.status).toBe(404);
 
         const afterUpdate = await libsqlClient.execute(
           `SELECT * FROM test_documents WHERE id = ${user2Doc.id}`
@@ -195,10 +178,8 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
       const user1Doc = allDocs.rows.find((r: any) => r.title === "User1 Private");
 
       if (user1Doc) {
-        await request(app)
-          .patch(`/docs/${user1Doc.id}`)
-          .send({ title: "Updated Title" })
-          .expect(200);
+        const res = await patch(app, `/docs/${user1Doc.id}`, { title: "Updated Title" });
+        expect(res.status).toBe(200);
 
         const afterUpdate = await libsqlClient.execute(
           `SELECT * FROM test_documents WHERE id = ${user1Doc.id}`
@@ -216,10 +197,8 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
       );
 
       if (user2PublicDoc) {
-        await request(app)
-          .patch(`/docs/${user2PublicDoc.id}`)
-          .send({ title: "Hijacked" })
-          .expect(404);
+        const res = await patch(app, `/docs/${user2PublicDoc.id}`, { title: "Hijacked" });
+        expect(res.status).toBe(404);
       }
     });
   });
@@ -232,7 +211,8 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
       const user2Doc = allDocs.rows.find((r: any) => r.title === "User2 Private");
 
       if (user2Doc) {
-        await request(app).delete(`/docs/${user2Doc.id}`).expect(404);
+        const res = await del(app, `/docs/${user2Doc.id}`);
+        expect(res.status).toBe(404);
 
         const afterDelete = await libsqlClient.execute(
           `SELECT * FROM test_documents WHERE id = ${user2Doc.id}`
@@ -248,7 +228,8 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
       const user1Doc = allDocs.rows.find((r: any) => r.title === "User1 Private");
 
       if (user1Doc) {
-        await request(app).delete(`/docs/${user1Doc.id}`).expect(204);
+        const res = await del(app, `/docs/${user1Doc.id}`);
+        expect(res.status).toBe(204);
 
         const afterDelete = await libsqlClient.execute(
           `SELECT * FROM test_documents WHERE id = ${user1Doc.id}`
@@ -262,7 +243,8 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
     it("should only count documents in scope", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app).get("/docs/count").expect(200);
+      const res = await get(app, "/docs/count");
+      expect(res.status).toBe(200);
 
       expect(res.body.count).toBe(3);
     });
@@ -271,7 +253,7 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
       const app = createAppWithScope("user1");
 
       const filter = encodeURIComponent('isPublic==1');
-      const res = await request(app).get(`/docs/count?filter=${filter}`);
+      const res = await get(app, `/docs/count?filter=${filter}`);
 
       expect([200, 400]).toContain(res.status);
       if (res.status === 200) {
@@ -284,7 +266,7 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
     it("should only aggregate documents in scope", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app).get("/docs/aggregate?count=true");
+      const res = await get(app, "/docs/aggregate?count=true");
 
       expect([200, 400]).toContain(res.status);
       if (res.status === 200 && res.body.groups) {
@@ -301,10 +283,8 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
     it("should auto-assign userId based on authenticated user", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app)
-        .post("/docs")
-        .send({ title: "New Doc", content: "Content", userId: "user1" })
-        .expect(201);
+      const res = await post(app, "/docs", { title: "New Doc", content: "Content", userId: "user1" });
+      expect(res.status).toBe(201);
 
       expect(res.body.userId).toBe("user1");
     });
@@ -312,9 +292,7 @@ describe("Secure Query Scope Bypass Prevention Tests", () => {
     it("should handle creating document with explicit userId", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app)
-        .post("/docs")
-        .send({ title: "Test", content: "Content", userId: "user2" });
+      const res = await post(app, "/docs", { title: "Test", content: "Content", userId: "user2" });
 
       expect([201, 400, 403]).toContain(res.status);
     });

@@ -4,32 +4,41 @@ Concave includes a comprehensive admin dashboard for development and debugging a
 
 ## Setup
 
+With `createConcave`, just enable it:
+
 ```typescript
-import express from "express";
+const app = createConcave({
+  adminUI: true,                       // or a full AdminUIConfig object
+});
+```
+
+Health endpoints are mounted by default and the admin UI is served at `/__concave`.
+
+For manual setup with a plain Hono app:
+
+```typescript
+import { Hono } from "hono";
 import { createAdminUI, registerResource } from "@kahveciderin/concave/ui";
-import { createHealthEndpoints } from "@kahveciderin/concave/health";
+import { createHealthEndpoints } from "@kahveciderin/concave";
 import { createMetricsCollector, observabilityMiddleware } from "@kahveciderin/concave/middleware/observability";
 
-const app = express();
+const app = new Hono();
 
 // Create metrics collector
-const metricsCollector = createMetricsCollector({
-  maxMetrics: 1000,
-  slowThresholdMs: 500,
-});
+const metricsCollector = createMetricsCollector({ maxMetrics: 1000 });
 
 // Add observability middleware to track requests
-app.use(observabilityMiddleware({ metrics: metricsCollector }));
+app.use("*", observabilityMiddleware({ metrics: metricsCollector }));
 
 // Mount health endpoints (no auth required for k8s probes)
-app.use(createHealthEndpoints({
+app.route("/", createHealthEndpoints({
   version: "1.0.0",
   checks: { kv: myKVStore },
   thresholds: { eventLoopLagMs: 100, memoryPercent: 90 },
 }));
 
 // Mount admin UI at /__concave
-app.use("/__concave", createAdminUI({
+app.route("/__concave", createAdminUI({
   title: "My API Admin",
   metricsCollector,
   // Security configuration for production
@@ -65,7 +74,7 @@ app.use("/__concave", createAdminUI({
 }));
 
 // Register resources for visibility in the admin panel
-app.use("/posts", useResource(postsTable, { ... }));
+app.route("/posts", useResource(postsTable, { ... }));
 registerResource({
   path: "/posts",
   fields: ["id", "title", "content", "authorId", "createdAt"],
@@ -79,9 +88,9 @@ registerResource({
 Kubernetes-compatible health probes for liveness and readiness checks:
 
 ```typescript
-import { createHealthEndpoints } from "@kahveciderin/concave/health";
+import { createHealthEndpoints } from "@kahveciderin/concave";
 
-app.use(createHealthEndpoints({
+app.route("/", createHealthEndpoints({
   enabled: true,           // Default: true
   basePath: "",            // Default: "" (root level)
   version: "1.0.0",        // Optional version in response
@@ -177,9 +186,9 @@ createAdminUI({
       // Option 2: Disable auth (development only)
       disabled: true,
 
-      // Option 3: Custom authentication
-      authenticate: async (req) => {
-        const session = await validateSession(req.cookies.session);
+      // Option 3: Custom authentication (c is the Hono Context)
+      authenticate: async (c) => {
+        const session = await validateSession(getCookie(c, "session"));
         if (!session) return null;
         return {
           id: session.userId,
@@ -196,6 +205,21 @@ createAdminUI({
       requiredPermission: "admin:access",
       // Or custom authorization
       authorize: async (user) => user.roles.includes("super-admin"),
+    },
+
+    // App-auth integration (preferred): authenticate the admin UI using the
+    // application's own logged-in user (resolved via getUser(c)).
+    // Configuring any of requireRole / authorize / can (or auth.useSessionAuth)
+    // switches the UI to session-based auth: anonymous requests get 401,
+    // unauthorized users get 403.
+    requireRole: "admin",                 // string or string[] (any match passes)
+    authorize: (user, c) => user.email.endsWith("@yourco.com"),
+    can: (user, action, resource) => user.roles.includes("admin"),
+
+    // Persistent / exportable audit: forward every admin action to your own
+    // sink (DB, log pipeline, etc) in addition to the in-memory ring buffer.
+    auditSink: async (entry) => {
+      await db.insert(adminAuditTable).values(entry);
     },
 
     // IP allowlist (enforced in production)
@@ -221,8 +245,27 @@ curl -H "X-Admin-API-Key: your-key" localhost:3000/__concave/api/data/users
 curl -H "Authorization: Bearer your-key" localhost:3000/__concave/api/data/users
 ```
 
-**Session Auth:**
-Uses existing session from your application's auth system.
+**Session Auth (app integration):**
+Uses the existing logged-in user from your application's auth system. When
+`requireRole`, `authorize`, or `can` is configured (or `auth.useSessionAuth: true`),
+the admin UI reads the user via `getUser(c)` and enforces the configured checks.
+
+Resolution order:
+1. `auth.disabled` — bypass (warns outside development).
+2. `auth.apiKey` — Bearer token or `X-Admin-API-Key` header.
+3. Session user (`getUser(c)`) when `requireRole` / `authorize` / `can` / `auth.useSessionAuth` is set.
+4. `auth.authenticate(c)` — custom resolver.
+5. Otherwise: 401. In development with no auth configured, access is allowed; in
+   staging/production with no auth configured, access is denied (fail-closed).
+
+**Role lookup contract:** `requireRole` checks the user's roles, gathered (and
+merged) from `user.roles` (string[]), `user.role` (string), `user.metadata.roles`
+(string[]), and `user.metadata.role` (string). `requireRole` accepts a single role
+or an array; the check passes if the user has any of the required roles.
+
+**Audit export:** `GET /__concave/admin/audit/export` returns the audit log as
+JSON (`{ entries, mode, exportedAt }`), gated by the same authorization. The
+legacy `GET /__concave/api/admin-audit/export?format=json|csv` is also available.
 
 ## Pages
 
@@ -571,14 +614,25 @@ interface AdminUIConfig {
     mode?: "development" | "staging" | "production";
     auth?: {
       disabled?: boolean;
+      useSessionAuth?: boolean;
       apiKey?: string;
-      authenticate?: (req: Request) => Promise<AdminUser | null>;
+      authenticate?: (c: Context) => Promise<AdminUser | null>;
     };
     authorization?: {
       requiredRole?: string;
       requiredPermission?: string;
       authorize?: (user: AdminUser) => Promise<boolean>;
     };
+
+    // App-auth integration (resolves the logged-in user via getUser(c)).
+    // Setting any of these enables session-based auth for the admin UI.
+    requireRole?: string | string[];
+    authorize?: (user: AdminUser, c: Context) => boolean | Promise<boolean>;
+    can?: (user: AdminUser, action: string, resource: string) => boolean | Promise<boolean>;
+
+    // Pluggable persistent audit sink (called in addition to the in-memory buffer).
+    auditSink?: (entry: AdminAuditEntry) => void | Promise<void>;
+
     allowedIPs?: string[];
     rateLimit?: { windowMs: number; maxRequests: number };
   };
@@ -628,30 +682,26 @@ interface AdminUIConfig {
 
 ```typescript
 import { createAdminUI, registerResource } from "@kahveciderin/concave/ui";
-import { createHealthEndpoints } from "@kahveciderin/concave/health";
+import { changelog, createHealthEndpoints } from "@kahveciderin/concave";
 import { createMetricsCollector, observabilityMiddleware } from "@kahveciderin/concave/middleware/observability";
-import { createChangelog } from "@kahveciderin/concave/resource/changelog";
-import { getTaskScheduler, startTaskWorkers } from "@kahveciderin/concave/tasks";
+import { getTaskScheduler, getTaskRegistry, startTaskWorkers } from "@kahveciderin/concave/tasks";
+import { createKV } from "@kahveciderin/concave/kv";
 
-const metricsCollector = createMetricsCollector({
-  maxMetrics: 1000,
-  slowThresholdMs: 500,
-});
+const metricsCollector = createMetricsCollector({ maxMetrics: 1000 });
 
-const changelog = createChangelog({ maxEntries: 10000 });
 const kv = await createKV({ type: "redis", redis: { url: "redis://localhost" } });
 const workers = await startTaskWorkers(kv, getTaskRegistry(), 3);
 
-app.use(observabilityMiddleware({ metrics: metricsCollector }));
+app.use("*", observabilityMiddleware({ metrics: metricsCollector }));
 
 // Health endpoints (no auth)
-app.use(createHealthEndpoints({
+app.route("/", createHealthEndpoints({
   version: "1.0.0",
   checks: { kv },
 }));
 
 // Admin UI (with auth in production)
-app.use("/__concave", createAdminUI({
+app.route("/__concave", createAdminUI({
   title: "My API Admin",
   metricsCollector,
   security: {
@@ -687,8 +737,8 @@ When using `useResource()`, schemas are automatically registered in a global sch
 
 ```typescript
 // Schemas are automatically discovered
-app.use("/users", useResource(usersTable, { ... }));
-app.use("/posts", useResource(postsTable, { ... }));
+app.route("/users", useResource(usersTable, { ... }));
+app.route("/posts", useResource(postsTable, { ... }));
 
 // Data explorer will show both users and posts
 // with full schema information including:
@@ -870,7 +920,7 @@ createAdminUI({
 
 ```typescript
 if (process.env.NODE_ENV !== "production") {
-  app.use("/__concave", createAdminUI({ ... }));
+  app.route("/__concave", createAdminUI({ ... }));
 }
 ```
 
@@ -882,7 +932,7 @@ Ensure you call `registerResource()` after setting up the resource route:
 
 ```typescript
 // Correct order
-app.use("/users", useResource(usersTable, { ... }));
+app.route("/users", useResource(usersTable, { ... }));
 registerResource({ path: "/users", ... });
 ```
 
@@ -892,8 +942,8 @@ Verify the observability middleware is added before your routes:
 
 ```typescript
 // Correct order
-app.use(observabilityMiddleware({ metrics: metricsCollector }));
-app.use("/users", useResource(usersTable, { ... }));
+app.use("*", observabilityMiddleware({ metrics: metricsCollector }));
+app.route("/users", useResource(usersTable, { ... }));
 ```
 
 ### Changelog Shows "Not Configured"

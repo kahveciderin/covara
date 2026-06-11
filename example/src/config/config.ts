@@ -1,8 +1,9 @@
-import dotenv from "dotenv";
 import { createEnv, envVariable } from "@kahveciderin/concave/env";
 import { z } from "zod";
 
-dotenv.config();
+try {
+  (process as unknown as { loadEnvFile?: () => void }).loadEnvFile?.();
+} catch {}
 
 const opensearchUrl = process.env.OPENSEARCH_URL;
 

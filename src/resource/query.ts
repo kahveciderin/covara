@@ -3,6 +3,7 @@ import {
   TableConfig,
   SQL,
   sql,
+  and,
   count,
   sum,
   avg,
@@ -11,7 +12,7 @@ import {
   getTableColumns,
   AnyColumn,
 } from "drizzle-orm";
-import { ProjectionParams, AggregationParams, AggregationResult } from "./types";
+import { AggregationResult } from "./types";
 import { ValidationError } from "./error";
 
 export const parseSelect = (select?: string): string[] | undefined => {
@@ -82,6 +83,7 @@ export interface ParsedAggregationParams {
   min: string[];
   max: string[];
   count: boolean;
+  having?: string;
 }
 
 export const parseAggregationParams = (
@@ -108,7 +110,52 @@ export const parseAggregationParams = (
     min: parseStringArray(query.min),
     max: parseStringArray(query.max),
     count: query.count === "true" || query.count === true,
+    having: typeof query.having === "string" ? query.having : undefined,
   };
+};
+
+const HAVING_OPERATORS: Record<string, string> = {
+  "==": "=",
+  "!=": "<>",
+  ">=": ">=",
+  "<=": "<=",
+  ">": ">",
+  "<": "<",
+};
+
+// Builds a SQL HAVING condition over aggregate output aliases (count, sum_x,
+// avg_x, min_x, max_x) or group-by columns. Syntax: comparisons joined by `;`
+// (AND), e.g. `count>=5;sum_amount>100`. Reuses the same aggregate SQL
+// expressions so it is portable across SQLite and Postgres.
+export const buildHavingCondition = (
+  havingExpr: string,
+  aggregateColumns: Record<string, SQL>,
+  groupByColumns: Record<string, AnyColumn>
+): SQL | undefined => {
+  const terms = havingExpr
+    .split(";")
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+  if (terms.length === 0) return undefined;
+
+  const conditions: SQL[] = [];
+  for (const term of terms) {
+    const match = term.match(/^([A-Za-z0-9_]+)\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
+    if (!match) {
+      throw new ValidationError(`Invalid having expression: ${term}`);
+    }
+    const [, alias, op, rawValue] = match;
+    const expr = aggregateColumns[alias] ?? groupByColumns[alias];
+    if (!expr) {
+      throw new ValidationError(`Unknown having field: ${alias}`);
+    }
+    const sqlOp = HAVING_OPERATORS[op];
+    const numeric = Number(rawValue);
+    const value: unknown = rawValue !== "" && !Number.isNaN(numeric) ? numeric : rawValue;
+    conditions.push(sql`${expr} ${sql.raw(sqlOp)} ${value}`);
+  }
+
+  return conditions.length === 1 ? conditions[0] : and(...conditions);
 };
 
 export interface AggregationSelections {

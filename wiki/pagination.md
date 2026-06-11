@@ -9,7 +9,7 @@ Concave uses cursor-based pagination for efficient traversal of large datasets. 
 Pagination is automatically enabled on all list endpoints. Configure default and maximum limits:
 
 ```typescript
-app.use("/api/users", useResource(usersTable, {
+app.route("/api/users", useResource(usersTable, {
   id: usersTable.id,
   db,
   pagination: {

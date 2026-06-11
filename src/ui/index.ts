@@ -24,6 +24,8 @@ export {
   logAdminAction,
   getAdminAuditLog,
   clearAdminAuditLog,
+  setAdminAuditSink,
+  extractUserRoles,
   getAdminUser,
   requireAdminUser,
   detectEnvironment,
@@ -33,6 +35,8 @@ export type {
   AdminSecurityConfig,
   AdminAuditEntry,
   EnvironmentMode,
+  AdminAuthorizeFn,
+  AdminCanFn,
 } from "./admin-auth";
 export { createDataExplorerRoutes } from "./data-explorer";
 export type { DataExplorerConfig } from "./data-explorer";

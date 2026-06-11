@@ -6,6 +6,8 @@ import {
   ResolvedMutation,
 } from "./types";
 import { v4 as uuidv4 } from "uuid";
+import { createTabSync, TabSync, TabSyncMessage } from "./tab-sync";
+import { IndexedDBOfflineStorage, isIndexedDBAvailable } from "./indexeddb-storage";
 
 export const generateIdempotencyKey = (
   type: string,
@@ -115,11 +117,76 @@ export class LocalStorageOfflineStorage implements OfflineStorage {
   }
 }
 
+export { IndexedDBOfflineStorage, isIndexedDBAvailable } from "./indexeddb-storage";
+
+/**
+ * Pick the best available durable offline storage backend for the current
+ * environment, preferring IndexedDB (larger queues) and falling back to
+ * LocalStorage, then to an in-memory store (React Native / Node).
+ */
+export const createOfflineStorage = (options?: {
+  preferIndexedDB?: boolean;
+  storageKey?: string;
+  dbName?: string;
+}): OfflineStorage => {
+  const preferIndexedDB = options?.preferIndexedDB ?? true;
+  if (preferIndexedDB && isIndexedDBAvailable()) {
+    try {
+      return new IndexedDBOfflineStorage(options?.dbName);
+    } catch {
+      // fall through to localStorage
+    }
+  }
+  if (typeof localStorage !== "undefined") {
+    return new LocalStorageOfflineStorage(options?.storageKey);
+  }
+  return new InMemoryOfflineStorage();
+};
+
 export interface SyncResult {
   success: boolean;
   serverId?: string;
   error?: Error;
 }
+
+/**
+ * Field-level three-way merge for the `merge` conflict strategy.
+ * Server wins only on fields that BOTH sides changed; client field edits that
+ * the server did not touch are preserved.
+ */
+export const mergeConflict = (
+  base: Record<string, unknown> | undefined,
+  client: Record<string, unknown>,
+  server: Record<string, unknown>
+): Record<string, unknown> => {
+  const result: Record<string, unknown> = { ...server };
+
+  for (const key of Object.keys(client)) {
+    const clientChangedField =
+      base === undefined || !shallowEqual(base[key], client[key]);
+    if (!clientChangedField) continue;
+
+    const serverChangedField =
+      base !== undefined && !shallowEqual(base[key], server[key]);
+
+    // If the server also changed this field, server wins (already in result).
+    // Otherwise keep the client's edit.
+    if (!serverChangedField) {
+      result[key] = client[key];
+    }
+  }
+
+  return result;
+};
+
+const shallowEqual = (a: unknown, b: unknown): boolean => {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a && b && typeof a === "object") {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return false;
+};
 
 export interface OfflineManagerConfig {
   config: OfflineConfig;
@@ -251,6 +318,8 @@ export class OfflineManager {
   private onIdRemapped?: (optimisticId: string, serverId: string) => void;
   private idMappings: Map<string, string> = new Map();
   private cleanupNetworkListeners?: () => void;
+  private tabSync?: TabSync;
+  private tabMessageListeners = new Set<(message: TabSyncMessage) => void>();
 
   constructor(managerConfig: OfflineManagerConfig) {
     this.config = managerConfig.config;
@@ -260,7 +329,48 @@ export class OfflineManager {
     this.onSyncComplete = managerConfig.onSyncComplete;
     this.onIdRemapped = managerConfig.onIdRemapped ?? this.config.onIdRemapped;
 
+    this.setupTabSync();
     this.setupNetworkListeners();
+  }
+
+  private setupTabSync(): void {
+    const setting = this.config.tabSync;
+    // Opt-in: only coordinate across tabs when explicitly enabled. Avoids
+    // single-tab/test environments paying for (or being gated by) leader election.
+    if (!setting) return;
+    const channelName = typeof setting === "string" ? setting : "concave-tab-sync";
+    this.tabSync = createTabSync(channelName);
+    this.tabSync.subscribe((message) => {
+      if (message.kind === "id-remapped") {
+        if (!this.idMappings.has(message.optimisticId)) {
+          this.idMappings.set(message.optimisticId, message.serverId);
+          this.onIdRemapped?.(message.optimisticId, message.serverId);
+        }
+      }
+      for (const listener of this.tabMessageListeners) listener(message);
+    });
+  }
+
+  /** Subscribe to cross-tab messages (used by the LiveQuery cache to mirror state). */
+  onTabMessage(listener: (message: TabSyncMessage) => void): () => void {
+    this.tabMessageListeners.add(listener);
+    return () => this.tabMessageListeners.delete(listener);
+  }
+
+  /** Broadcast an optimistic mutation to other tabs. No-op without tab sync. */
+  broadcastMutation(
+    resource: string,
+    mutationType: "create" | "update" | "delete",
+    objectId?: string,
+    optimisticId?: string,
+    data?: unknown
+  ): void {
+    this.tabSync?.post({ kind: "mutation", resource, mutationType, objectId, optimisticId, data });
+  }
+
+  /** Broadcast a query invalidation to other tabs. */
+  broadcastInvalidate(paths: string[]): void {
+    this.tabSync?.post({ kind: "invalidate", paths });
   }
 
   /**
@@ -309,6 +419,8 @@ export class OfflineManager {
    */
   destroy(): void {
     this.cleanupNetworkListeners?.();
+    this.tabSync?.close();
+    this.tabMessageListeners.clear();
   }
 
   private handleOnline(): void {
@@ -387,6 +499,29 @@ export class OfflineManager {
         return "discard";
       case "client-wins":
         return { data: mutation.data, retryWith: mutation.type as "create" | "update" };
+      case "merge": {
+        // Only updates can be field-merged; for create/delete fall back to discard.
+        if (
+          mutation.type !== "update" ||
+          typeof error.serverState !== "object" ||
+          error.serverState === null
+        ) {
+          return "discard";
+        }
+        const merged = mergeConflict(
+          error.baseState as Record<string, unknown> | undefined,
+          (mutation.data as Record<string, unknown>) ?? {},
+          error.serverState as Record<string, unknown>
+        );
+        // Strip server-only fields so we retry with just the resolved field set
+        // plus any non-conflicting client edits.
+        const clientKeys = new Set(Object.keys((mutation.data as object) ?? {}));
+        const retryData: Record<string, unknown> = {};
+        for (const key of clientKeys) {
+          retryData[key] = merged[key];
+        }
+        return { data: retryData, retryWith: "update" };
+      }
       case "manual":
         return "discard";
       default:
@@ -396,6 +531,13 @@ export class OfflineManager {
 
   async syncPendingMutations(): Promise<void> {
     if (this.syncInProgress || !this.isOnline || !this.onMutationSync) {
+      return;
+    }
+
+    // Multi-tab coherence: only the leader tab flushes the shared queue so the
+    // same mutation isn't sent by every open tab. Non-leaders skip; the leader's
+    // sync-complete broadcast lets them refresh.
+    if (this.tabSync && !this.tabSync.acquireLeadership()) {
       return;
     }
 
@@ -435,6 +577,11 @@ export class OfflineManager {
             ) {
               this.idMappings.set(mutation.optimisticId, result.serverId);
               this.onIdRemapped?.(mutation.optimisticId, result.serverId);
+              this.tabSync?.post({
+                kind: "id-remapped",
+                optimisticId: mutation.optimisticId,
+                serverId: result.serverId,
+              });
 
               await this.storage.updateMutation(mutation.id, {
                 serverId: result.serverId,
@@ -491,6 +638,7 @@ export class OfflineManager {
       }
 
       this.onSyncComplete?.();
+      this.tabSync?.post({ kind: "sync-complete" });
     } finally {
       this.syncInProgress = false;
     }

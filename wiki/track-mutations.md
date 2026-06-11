@@ -1,6 +1,6 @@
 # Mutation Tracking
 
-Concave provides automatic mutation tracking via a Drizzle db wrapper that tracks all database mutations to the changelog system. This enables real-time subscriptions and query caching across both `useResource` endpoints and custom Express routes.
+Concave provides automatic mutation tracking via a Drizzle db wrapper that tracks all database mutations to the changelog system. This enables real-time subscriptions and query caching across both `useResource` endpoints and custom Hono routes.
 
 ## Quick Start
 
@@ -39,6 +39,8 @@ The `trackMutations` function wraps your Drizzle database instance with a Proxy 
 | `db.run(sql\`INSERT INTO...\`)` | No | `invalidate` |
 | `db.run(sql\`UPDATE...\`)` | No | `invalidate` |
 | `db.run(sql\`DELETE FROM...\`)` | No | `invalidate` |
+| `db.batch([...])` | No | `invalidate` (per detected statement) |
+| `recordExternalMutation(...)` | No | `invalidate` |
 
 ## Configuration
 
@@ -95,7 +97,7 @@ const db = trackMutations(baseDb, {
 When using `useResource`, the `ctx.db` provided to procedure handlers is automatically tracked for the current resource. You don't need to wrap it manually:
 
 ```typescript
-app.use("/posts", useResource(postsTable, {
+app.route("/posts", useResource(postsTable, {
   id: postsTable.id,
   db,
   procedures: {
@@ -122,26 +124,31 @@ const trackedDb = trackMutations(baseDb, {
   notifications: { table: notificationsTable, id: notificationsTable.id },
 });
 
-app.use("/posts", useResource(postsTable, {
+app.route("/posts", useResource(postsTable, {
   id: postsTable.id,
   db: trackedDb,  // Already tracked
   // ...
 }));
 ```
 
-## Using in Custom Express Routes
+## Using in Custom Routes
 
 Mutations are automatically tracked when you use the wrapped database:
 
 ```typescript
-app.post("/api/custom-action", async (req, res) => {
+import { requireUser } from "@kahveciderin/concave";
+
+app.post("/api/custom-action", async (c) => {
+  const body = await c.req.json<{ title: string }>();
+  const user = requireUser(c);
+
   // This insert is tracked and triggers subscription updates!
   const [todo] = await db
     .insert(todosTable)
-    .values({ title: req.body.title, userId: req.user.id })
+    .values({ title: body.title, userId: user.id })
     .returning();
 
-  res.json(todo);
+  return c.json(todo);
 });
 ```
 
@@ -168,6 +175,11 @@ await db.transaction(async (tx) => {
 });
 ```
 
+Side effects are **commit-gated**: changelog entries, subscription pushes, and cache
+invalidations made inside the transaction are buffered and only emitted after the
+transaction commits. If the callback throws and the transaction rolls back, those buffered
+effects are discarded — subscribers never see an event for state that was never persisted.
+
 ## Raw SQL Detection
 
 Raw SQL mutations via `db.run()` or `db.execute()` are detected by parsing the SQL string:
@@ -183,7 +195,57 @@ await db.run(sql`UPDATE todos SET archived = 1 WHERE created_at < ${date}`);
 await db.run(sql`DELETE FROM todos WHERE id = ${id}`);
 ```
 
-Raw SQL mutations record a changelog entry with `objectId: "*"` and trigger `invalidate` events for subscribers.
+Raw SQL mutations record a changelog entry with `objectId: "*"`, invalidate the query cache, and
+notify live subscribers with an `invalidate` event (so connected clients refetch). Row-level
+detail is unavailable, so no `added`/`changed`/`removed` event is emitted.
+
+## Batch Statements
+
+Drizzle's `db.batch([...])` runs an array of query builders atomically without awaiting them
+individually, so the per-builder tracking never fires. Concave inspects each statement's compiled
+SQL, detects mutations, and records a **coarse `invalidate`** (`objectId: "*"`) — the same
+contract as raw SQL — so subscribers and caches stay correct even though individual rows aren't
+visible:
+
+```typescript
+await db.batch([
+  db.insert(todosTable).values({ id: "1", title: "A" }),
+  db.update(todosTable).set({ done: true }).where(eq(todosTable.id, "2")),
+]);
+// Each detected statement records an invalidate for its resource
+```
+
+A statement whose SQL can't be introspected is simply not tracked.
+
+## Notifying External Writers
+
+When something **outside** the tracked db mutates a table — a cron job, another service, a
+manual database edit, or a CDC pipeline — Concave can't observe it. Call `recordExternalMutation`
+to notify it manually. It appends a changelog entry, invalidates the query cache, and sends live
+subscribers an `invalidate` event so they refetch. This is the portable alternative to
+database-specific change data capture (CDC):
+
+```typescript
+import { recordExternalMutation } from "@kahveciderin/concave";
+
+// A separate worker just updated a row in "todos"
+await recordExternalMutation("todos", "update", { objectId: "todo-1" });
+
+// objectId is optional; omit it for bulk/unknown changes (defaults to "*")
+await recordExternalMutation("todos", "delete");
+```
+
+```typescript
+function recordExternalMutation(
+  resource: string,
+  type: "create" | "update" | "delete",
+  options?: { objectId?: string }
+): Promise<void>
+```
+
+Like raw SQL, this never carries `object`/`previousObject`, so subscribers receive `invalidate`
+(not `added`/`changed`/`removed`). For cross-instance fan-out, initialize a distributed KV (see
+[Subscriptions](./subscriptions.md)).
 
 ## Query Caching
 
@@ -213,6 +275,22 @@ await db.insert(todosTable).values({ title: "New" }).returning();
 
 // Next query: hits database again
 const todosRefresh = await db.select().from(todosTable);
+```
+
+### Join-Aware Invalidation
+
+Cached queries are tagged with **every** table they reference — including joined tables —
+so a mutation to any of them invalidates the cached result, not just the `FROM` table:
+
+```typescript
+// This cached query references both "todos" and "users"
+const rows = await db
+  .select()
+  .from(todosTable)
+  .leftJoin(usersTable, eq(todosTable.userId, usersTable.id));
+
+// A mutation to EITHER table invalidates the cached result above
+await db.update(usersTable).set({ name: "New" }).where(eq(usersTable.id, userId));
 ```
 
 ### Manual Cache Invalidation

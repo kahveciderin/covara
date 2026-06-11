@@ -5,10 +5,11 @@ Concave provides a comprehensive file upload system with support for local files
 ## Quick Start
 
 ```typescript
-import express from "express";
+import { Hono } from "hono";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { useFileResource, initializeStorage } from "@kahveciderin/concave";
 
-const app = express();
+const app = new Hono();
 
 // Initialize local storage
 initializeStorage({
@@ -19,11 +20,11 @@ initializeStorage({
   },
 });
 
-// Serve uploaded files
-app.use("/uploads", express.static("./uploads"));
+// Serve uploaded files (Node; on Cloudflare Workers use S3-compatible storage instead)
+app.use("/uploads/*", serveStatic({ root: "./" }));
 
 // Create the file resource
-app.use("/api/files", useFileResource(filesTable, {
+app.route("/api/files", useFileResource(filesTable, {
   db,
   schema: filesTable,
   id: filesTable.id,
@@ -96,6 +97,52 @@ Features:
 - Automatic multipart uploads for large files
 - Works with any S3-compatible service
 
+### Cloudflare R2
+
+R2 is the recommended object store on Cloudflare Workers (where local filesystem storage
+isn't available). The adapter works in two modes:
+
+**Bindings mode** (inside a Worker, using an R2 bucket binding):
+
+```typescript
+import { initializeStorage } from "@kahveciderin/concave";
+
+initializeStorage({
+  type: "r2",
+  r2: {
+    binding: env.MY_BUCKET,           // R2 bucket binding from wrangler.toml
+    publicUrl: "https://cdn.example.com", // optional, for building public URLs
+  },
+});
+```
+
+```toml
+# wrangler.toml
+[[r2_buckets]]
+binding = "MY_BUCKET"
+bucket_name = "my-bucket"
+```
+
+**S3 mode** (R2's S3-compatible API, usable from anywhere with access keys):
+
+```typescript
+initializeStorage({
+  type: "r2",
+  r2: {
+    accountId: process.env.R2_ACCOUNT_ID!,
+    bucket: "my-bucket",
+    accessKeyId: process.env.R2_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
+    presignedUrlExpiry: 3600,
+    // publicUrl: "https://cdn.example.com",
+  },
+});
+```
+
+You can also build the adapter directly with `createR2Adapter(config)`; passing a `binding`
+selects bindings mode, otherwise the S3-compatible credentials are used. S3 mode supports
+presigned upload/download URLs; bindings mode streams through the Worker.
+
 ### Memory Storage
 
 For testing without filesystem/network dependencies:
@@ -113,7 +160,7 @@ Features:
 
 ## File Resource
 
-The `useFileResource` hook creates an Express router with file upload endpoints.
+The `useFileResource` hook creates a Hono router with file upload endpoints.
 
 ### Schema Requirements
 
@@ -147,6 +194,12 @@ useFileResource(filesTable, {
   storage: adapter,      // Override global storage
   allowedMimeTypes: ["image/jpeg", "image/png"],
   maxFileSize: 5 * 1024 * 1024,  // 5MB
+  // Fine-grained upload validation (applied to direct uploads and presigned-URL requests)
+  validation: {
+    maxSize: 5 * 1024 * 1024,
+    allowedTypes: ["image/jpeg", "image/png"],
+    blockedTypes: ["application/x-msdownload"],
+  },
   usePresignedUrls: false,       // Use presigned URLs for downloads
   presignedUrlExpiry: 3600,      // Presigned URL expiry in seconds
 
@@ -161,6 +214,20 @@ useFileResource(filesTable, {
   },
 });
 ```
+
+### Upload Validation
+
+Uploads are validated before any bytes are persisted. `allowedMimeTypes`/`maxFileSize` are
+the simple knobs; the `validation` option (an `UploadValidationOptions`) adds `maxSize`,
+`allowedTypes`, and `blockedTypes` and is checked on both direct multipart uploads and
+presigned-URL requests. A rejected upload returns a `400 ValidationError` and nothing is
+written to storage or the database.
+
+### Orphan Cleanup
+
+Deleting a file record removes the underlying blob from storage as well — both
+`DELETE /:id` and `DELETE /batch` delete from the storage adapter before deleting the
+database row, so you don't accumulate orphaned objects.
 
 ### Endpoints
 
@@ -244,7 +311,7 @@ export const todosTable = sqliteTable("todos", {
 });
 
 // Configure the relation
-app.use("/api/todos", useResource(todosTable, {
+app.route("/api/todos", useResource(todosTable, {
   relations: {
     image: {
       resource: "files",
@@ -339,9 +406,12 @@ Initialize and set the global storage adapter.
 
 ```typescript
 initializeStorage({
-  type: "local" | "s3" | "memory",
+  type: "local" | "s3" | "r2" | "memory",
   local?: { basePath, baseUrl?, createDirectories? },
   s3?: { bucket, region?, endpoint?, accessKeyId?, secretAccessKey?, presignedUrlExpiry? },
+  r2?:
+    | { binding, publicUrl? }                                  // Workers R2 binding
+    | { accountId, bucket, accessKeyId, secretAccessKey, endpoint?, presignedUrlExpiry?, publicUrl? }, // S3 mode
 });
 ```
 

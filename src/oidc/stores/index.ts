@@ -14,6 +14,7 @@ import {
   UserConsent,
 } from "../types";
 import { KVAdapter } from "@/kv/types";
+import { getGlobalKV, hasGlobalKV } from "@/kv";
 
 const PREFIX = "oidc";
 
@@ -393,20 +394,39 @@ export class KVStateStore implements StateStore {
   }
 }
 
-export const createStores = (
-  config: StoreConfig,
+const buildKVStores = (
+  kv: KVAdapter,
+  prefix: string,
   clients: OIDCClient[]
 ): OIDCProviderStores => {
-  if (config.type === "redis" && config.kv) {
-    const prefix = config.prefix ?? PREFIX;
-    return {
-      clients: new KVClientStore(config.kv, prefix),
-      authorizationCodes: new KVAuthorizationCodeStore(config.kv, prefix),
-      refreshTokens: new KVRefreshTokenStore(config.kv, prefix),
-      consent: new KVConsentStore(config.kv, prefix),
-      interactions: new KVInteractionStore(config.kv, prefix),
-      state: new KVStateStore(config.kv, prefix),
-    };
+  const clientStore = new KVClientStore(kv, prefix);
+  for (const client of clients) {
+    void clientStore.set(client);
+  }
+  return {
+    clients: clientStore,
+    authorizationCodes: new KVAuthorizationCodeStore(kv, prefix),
+    refreshTokens: new KVRefreshTokenStore(kv, prefix),
+    consent: new KVConsentStore(kv, prefix),
+    interactions: new KVInteractionStore(kv, prefix),
+    state: new KVStateStore(kv, prefix),
+  };
+};
+
+export const createStores = (
+  config: StoreConfig | undefined,
+  clients: OIDCClient[]
+): OIDCProviderStores => {
+  const prefix = config?.prefix ?? PREFIX;
+
+  if (config?.kv) {
+    return buildKVStores(config.kv, prefix, clients);
+  }
+
+  const forcedMemory = config?.type === "memory";
+
+  if (!forcedMemory && hasGlobalKV()) {
+    return buildKVStores(getGlobalKV(), prefix, clients);
   }
 
   const clientStore = new InMemoryClientStore(clients);

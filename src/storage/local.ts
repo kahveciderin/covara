@@ -1,7 +1,7 @@
-import { Readable } from "stream";
-import { createReadStream, createWriteStream } from "fs";
-import { mkdir, unlink, stat, readFile, writeFile, access, rm } from "fs/promises";
-import { dirname, join, resolve } from "path";
+import { Readable } from "node:stream";
+import { createReadStream, createWriteStream } from "node:fs";
+import { mkdir, unlink, stat, readFile, writeFile, access, rm } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import {
   StorageAdapter,
   FileMetadata,

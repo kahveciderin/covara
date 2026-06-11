@@ -1,149 +1,141 @@
 # Secure Query Builder
 
-The Secure Query Builder provides a type-safe way to build queries with automatic scope enforcement.
+The Secure Query Builder is the scope-enforcement layer used internally by `useResource`. Every list, get, count, aggregate, and mutation goes through it, so the authenticated user's scope is always applied. You can also use it directly in custom routes or procedures when you need scope-safe database access.
 
 ## Overview
 
 When you define auth scopes on a resource, all queries automatically have the scope applied. The Secure Query Builder provides additional control for complex scenarios.
 
+> Note: the builder lives in `src/resource/secure-query.ts` and is not part of the public package exports — scope enforcement happens automatically on every `useResource` endpoint. The API below documents the enforcement layer's behavior and guarantees; `createScopeResolver` and `createResourceFilter` are exported from `@kahveciderin/concave` if you need scoped SQL conditions in your own routes.
+
 ## Basic Usage
 
 ```typescript
-import { createSecureQueryBuilder } from "@kahveciderin/concave/resource/secure-query";
+import { createScopeResolver, createResourceFilter, getUser } from "@kahveciderin/concave";
+import { createSecureQueryBuilder } from "@/resource/secure-query";
 
-const builder = createSecureQueryBuilder({
-  db,
-  table: postsTable,
-  user: req.user,
-  scope: await config.auth.read(req.user),
-});
+const scopeResolver = createScopeResolver(config.auth);
+const filterer = createResourceFilter(postsTable);
 
-// All queries automatically include scope filter
-const posts = await builder.findMany({
-  where: eq(postsTable.published, true),
-  orderBy: desc(postsTable.createdAt),
-  limit: 10,
+app.get("/api/my-posts", async (c) => {
+  const builder = createSecureQueryBuilder(postsTable, db, scopeResolver, filterer, {
+    user: getUser(c),
+  });
+
+  // Scope is automatically combined with the additional RSQL filter
+  const posts = await builder.executeSelect('published==true', { limit: 10 });
+  return c.json(posts);
 });
 ```
 
 ## API
 
-### `findMany(options)`
+### `executeSelect(additionalFilter?, options?)`
 
-Find multiple records with scope enforcement:
-
-```typescript
-const results = await builder.findMany({
-  where: and(
-    eq(postsTable.status, "active"),
-    gt(postsTable.createdAt, "2024-01-01"),
-  ),
-  orderBy: [desc(postsTable.createdAt), asc(postsTable.id)],
-  limit: 20,
-  offset: 0,
-});
-```
-
-### `findOne(options)`
-
-Find a single record:
+Find records with scope enforcement. The optional filter is an RSQL string; options support `limit`, `offset`, `orderBy`, and `cursorCondition`:
 
 ```typescript
-const post = await builder.findOne({
-  where: eq(postsTable.id, postId),
-});
-
-if (!post) {
-  throw new NotFoundError("Post not found");
-}
+const results = await builder.executeSelect(
+  'status=="active";createdAt>"2024-01-01"',
+  { limit: 20, offset: 0 }
+);
 ```
 
-### `count(options)`
+### `executeCount(additionalFilter?)`
 
 Count matching records:
 
 ```typescript
-const { count } = await builder.count({
-  where: eq(postsTable.status, "published"),
-});
+const count = await builder.executeCount('status=="published"');
 ```
 
-### `aggregate(options)`
+### `executeAggregate(params, additionalFilter?)`
 
 Aggregation queries:
 
 ```typescript
-const stats = await builder.aggregate({
-  groupBy: [postsTable.category],
-  select: {
-    category: postsTable.category,
-    count: count(),
-    avgViews: avg(postsTable.views),
-  },
+const stats = await builder.executeAggregate({
+  groupBy: ["category"],
+  count: true,
+  avg: ["views"],
 });
+// { groups: [{ key: { category: "..." }, count: 12, avg: { views: 340 } }, ...] }
 ```
+
+### `select(additionalFilter?)` / `selectWithScope(operation, additionalFilter?)`
+
+Build the scoped Drizzle `SQL` WHERE condition without executing, for use in custom queries. `selectWithScope` resolves the scope for a specific operation (`"read"`, `"update"`, `"delete"`, ...).
 
 ## Scope Enforcement
 
 The builder always applies the user's scope, preventing unauthorized data access:
 
 ```typescript
-// Even if a user tries to query other users' data
-const builder = createSecureQueryBuilder({
-  scope: rsql`userId=="${user.id}"`,  // Only own posts
-  // ...
-});
+// auth.read scope: rsql`userId=="${user.id}"` — only own posts
 
 // This query is safe - scope is automatically applied
-const allPosts = await builder.findMany({
-  where: eq(postsTable.status, "draft"),
-});
+const allPosts = await builder.executeSelect('status=="draft"');
 // SQL: SELECT * FROM posts WHERE status = 'draft' AND userId = 'user123'
 ```
 
 ## Admin Bypass
 
-For admin operations, you can bypass scope with logging:
+For admin operations, you can bypass scope with audit logging:
 
 ```typescript
-const builder = createSecureQueryBuilder({
-  // ...
-  bypassScope: true,
-  bypassReason: "Admin data export",
-});
+const adminBuilder = builder.asAdmin("Admin data export");
+const everything = await adminBuilder.executeSelect();
 
 // Logs: {"level":"warn","type":"admin_scope_bypass","reason":"Admin data export",...}
 ```
 
-## Mutations
-
-The builder also provides scope-aware mutations:
+All bypasses are recorded in an in-memory audit log:
 
 ```typescript
-// Update - only affects records within scope
-await builder.updateMany({
-  where: eq(postsTable.category, "draft"),
-  set: { status: "published" },
+import { getAdminAuditLog, clearAdminAuditLog } from "@/resource/secure-query";
+
+const entries = getAdminAuditLog();  // [{ reason, timestamp, userId }]
+```
+
+## Mutations
+
+`createSecureMutationBuilder` provides scope-aware mutations. The `update` and `delete` methods take a scoped filter (built via the query builder) so they only affect records within scope:
+
+```typescript
+import { createSecureMutationBuilder } from "@/resource/secure-query";
+
+const mutations = createSecureMutationBuilder(postsTable, db, scopeResolver, filterer, {
+  user: getUser(c),
 });
 
-// Delete - only affects records within scope
-await builder.deleteMany({
-  where: lt(postsTable.createdAt, "2023-01-01"),
-});
+const updateFilter = await builder.selectWithScope("update", 'category=="draft"');
+await mutations.update(updateFilter, { status: "published" });
+
+const deleteFilter = await builder.selectWithScope("delete", 'createdAt<"2023-01-01"');
+await mutations.delete(deleteFilter);
 ```
+
+## Field-level write enforcement
+
+Separately from scope filters, `fields.writable` on a resource is an **enforced allowlist** of table
+columns a client may set on create and update. Any table column not in the list is stripped from the
+incoming body before hooks or the database see it, on every create/update path including
+`POST /batch/upsert`. The primary key and `generatedFields` are exempt, and non-column keys (relation
+payloads) pass through.
+
+This is mass-assignment protection: even if a client posts `{ "ownerId": "victim", ... }`, the
+`ownerId` field is dropped unless it appears in `fields.writable`. Stripping happens before lifecycle
+hooks, so a server-side hook can still set protected fields itself. See
+[Resources → Field-level write enforcement](./resources.md#field-level-write-enforcement-mass-assignment-protection)
+and the [Authentication contract](../contracts/auth.md).
 
 ## Type Safety
 
-The builder is fully typed based on your Drizzle schema:
+Results are typed from your Drizzle schema:
 
 ```typescript
-// TypeScript knows the shape of results
-const posts = await builder.findMany({});
+const posts = await builder.executeSelect<Post>();
 posts[0].title;  // string
-posts[0].createdAt;  // string | null
-
-// Type errors for invalid fields
-posts[0].nonExistentField;  // Error!
 ```
 
 ## Related

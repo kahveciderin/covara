@@ -1,5 +1,5 @@
 import { KVAdapter } from "@/kv/types";
-import { Task, TaskStatus, TaskFilter } from "./types";
+import { Task, TaskStatus, TaskFilter, TaskProgress } from "./types";
 
 const TASK_DATA_PREFIX = "concave:tasks:data:";
 const STATUS_INDEX_PREFIX = "concave:tasks:status:";
@@ -25,6 +25,16 @@ const serializeTask = (task: Task): Record<string, string> => {
   if (task.result !== undefined) result.result = JSON.stringify(task.result);
   if (task.idempotencyKey !== undefined) result.idempotencyKey = task.idempotencyKey;
   if (task.recurring !== undefined) result.recurring = JSON.stringify(task.recurring);
+  if (task.progress !== undefined) result.progress = JSON.stringify(task.progress);
+  if (task.lastHeartbeatAt !== undefined)
+    result.lastHeartbeatAt = String(task.lastHeartbeatAt);
+  if (task.resultExpiresAt !== undefined)
+    result.resultExpiresAt = String(task.resultExpiresAt);
+  if (task.originalTaskId !== undefined) result.originalTaskId = task.originalTaskId;
+  if (task.replayCount !== undefined) result.replayCount = String(task.replayCount);
+  if (task.replayedFromDlqAt !== undefined)
+    result.replayedFromDlqAt = String(task.replayedFromDlqAt);
+  if (task.replayedBy !== undefined) result.replayedBy = task.replayedBy;
   return result;
 };
 
@@ -45,6 +55,19 @@ const deserializeTask = (data: Record<string, string>): Task => ({
   ...(data.result && { result: JSON.parse(data.result) }),
   ...(data.idempotencyKey && { idempotencyKey: data.idempotencyKey }),
   ...(data.recurring && { recurring: JSON.parse(data.recurring) }),
+  ...(data.progress && { progress: JSON.parse(data.progress) }),
+  ...(data.lastHeartbeatAt && {
+    lastHeartbeatAt: parseInt(data.lastHeartbeatAt, 10),
+  }),
+  ...(data.resultExpiresAt && {
+    resultExpiresAt: parseInt(data.resultExpiresAt, 10),
+  }),
+  ...(data.originalTaskId && { originalTaskId: data.originalTaskId }),
+  ...(data.replayCount && { replayCount: parseInt(data.replayCount, 10) }),
+  ...(data.replayedFromDlqAt && {
+    replayedFromDlqAt: parseInt(data.replayedFromDlqAt, 10),
+  }),
+  ...(data.replayedBy && { replayedBy: data.replayedBy }),
 });
 
 const matchesFilter = (task: Task, filter: TaskFilter): boolean => {
@@ -71,6 +94,9 @@ export interface TaskStorage {
   query(filter: TaskFilter): Promise<Task[]>;
   findByIdempotencyKey(key: string): Promise<Task | null>;
   setIdempotencyKey(key: string, taskId: string, ttlMs: number): Promise<void>;
+  setProgress(taskId: string, progress: TaskProgress): Promise<void>;
+  getProgress(taskId: string): Promise<TaskProgress | null>;
+  setHeartbeat(taskId: string, at: number): Promise<void>;
 }
 
 export const createTaskStorage = (kv: KVAdapter): TaskStorage => ({
@@ -93,7 +119,18 @@ export const createTaskStorage = (kv: KVAdapter): TaskStorage => ({
   async get(taskId: string): Promise<Task | null> {
     const data = await kv.hgetall(`${TASK_DATA_PREFIX}${taskId}`);
     if (!data || Object.keys(data).length === 0) return null;
-    return deserializeTask(data);
+    const task = deserializeTask(data);
+
+    if (
+      task.resultExpiresAt !== undefined &&
+      Date.now() >= task.resultExpiresAt &&
+      (task.status === "completed" || task.status === "failed")
+    ) {
+      await this.delete(taskId);
+      return null;
+    }
+
+    return task;
   },
 
   async update(taskId: string, updates: Partial<Task>): Promise<void> {
@@ -119,6 +156,10 @@ export const createTaskStorage = (kv: KVAdapter): TaskStorage => ({
     const multi = kv.multi();
 
     for (const [key, value] of Object.entries(updates)) {
+      if (value === undefined) {
+        multi.hdel(`${TASK_DATA_PREFIX}${taskId}`, key);
+        continue;
+      }
       const serialized =
         typeof value === "object" ? JSON.stringify(value) : String(value);
       multi.hset(`${TASK_DATA_PREFIX}${taskId}`, key, serialized);
@@ -132,8 +173,9 @@ export const createTaskStorage = (kv: KVAdapter): TaskStorage => ({
   },
 
   async delete(taskId: string): Promise<void> {
-    const task = await this.get(taskId);
-    if (!task) return;
+    const data = await kv.hgetall(`${TASK_DATA_PREFIX}${taskId}`);
+    if (!data || Object.keys(data).length === 0) return;
+    const task = deserializeTask(data);
 
     const multi = kv.multi();
     multi.del(`${TASK_DATA_PREFIX}${taskId}`);
@@ -215,5 +257,27 @@ export const createTaskStorage = (kv: KVAdapter): TaskStorage => ({
     await kv.set(`${IDEMPOTENCY_PREFIX}${key}`, taskId, {
       ex: Math.ceil(ttlMs / 1000),
     });
+  },
+
+  async setProgress(taskId: string, progress: TaskProgress): Promise<void> {
+    await kv.hset(
+      `${TASK_DATA_PREFIX}${taskId}`,
+      "progress",
+      JSON.stringify(progress)
+    );
+  },
+
+  async getProgress(taskId: string): Promise<TaskProgress | null> {
+    const raw = await kv.hget(`${TASK_DATA_PREFIX}${taskId}`, "progress");
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as TaskProgress;
+    } catch {
+      return null;
+    }
+  },
+
+  async setHeartbeat(taskId: string, at: number): Promise<void> {
+    await kv.hset(`${TASK_DATA_PREFIX}${taskId}`, "lastHeartbeatAt", String(at));
   },
 });

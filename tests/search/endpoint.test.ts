@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import request from "supertest";
+import { Hono } from "hono";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
@@ -13,19 +12,7 @@ import {
   clearGlobalSearch,
   createMemorySearchAdapter,
 } from "@/search";
-
-const injectTestUser = (req: Request, res: Response, next: NextFunction) => {
-  (req as any).user = { id: "test-user", email: "test@test.com" };
-  next();
-};
-
-const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err.statusCode || err.status || 500;
-  res.status(status).json({
-    error: err.message,
-    code: err.code || "INTERNAL_ERROR",
-  });
-};
+import { createTestApp, get } from "../helpers/hono";
 
 const testItemsTable = sqliteTable("test_items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -35,7 +22,7 @@ const testItemsTable = sqliteTable("test_items", {
 });
 
 describe("Search Endpoint", () => {
-  let app: Express;
+  let app: Hono;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
   let tempDir: string;
@@ -68,9 +55,7 @@ describe("Search Endpoint", () => {
     searchAdapter = createMemorySearchAdapter();
     setGlobalSearch(searchAdapter);
 
-    app = express();
-    app.use(express.json());
-    app.use(injectTestUser);
+    app = createTestApp({ user: {} });
   });
 
   afterEach(() => {
@@ -81,26 +66,24 @@ describe("Search Endpoint", () => {
   describe("without search adapter", () => {
     beforeEach(() => {
       clearGlobalSearch();
-      app.use(
+      app.route(
         "/items",
         useResource(testItemsTable, {
           id: testItemsTable.id,
           db,
         })
       );
-      app.use(errorHandler);
     });
 
     it("should return 404 when search not configured", async () => {
-      const res = await request(app)
-        .get("/items/search?q=test")
-        .expect(404);
+      const res = await get(app, "/items/search?q=test");
+      expect(res.status).toBe(404);
     });
   });
 
   describe("with search adapter", () => {
     beforeEach(async () => {
-      app.use(
+      app.route(
         "/items",
         useResource(testItemsTable, {
           id: testItemsTable.id,
@@ -108,7 +91,6 @@ describe("Search Endpoint", () => {
           search: { enabled: true },
         })
       );
-      app.use(errorHandler);
 
       await searchAdapter.index("test_items", "1", {
         id: 1,
@@ -131,26 +113,23 @@ describe("Search Endpoint", () => {
     });
 
     it("should return search results", async () => {
-      const res = await request(app)
-        .get("/items/search?q=important")
-        .expect(200);
+      const res = await get(app, "/items/search?q=important");
+      expect(res.status).toBe(200);
 
       expect(res.body.items).toHaveLength(2);
       expect(res.body.total).toBe(2);
     });
 
     it("should return 400 when query missing", async () => {
-      const res = await request(app)
-        .get("/items/search")
-        .expect(400);
+      const res = await get(app, "/items/search");
+      expect(res.status).toBe(400);
 
-      expect(res.body.error).toBe("Missing query parameter 'q'");
+      expect(res.body.detail).toBe("Missing query parameter 'q'");
     });
 
     it("should return empty results for no matches", async () => {
-      const res = await request(app)
-        .get("/items/search?q=nonexistent")
-        .expect(200);
+      const res = await get(app, "/items/search?q=nonexistent");
+      expect(res.status).toBe(200);
 
       expect(res.body.items).toHaveLength(0);
       expect(res.body.total).toBe(0);
@@ -158,29 +137,25 @@ describe("Search Endpoint", () => {
 
     describe("pagination", () => {
       it("should respect limit parameter", async () => {
-        const res = await request(app)
-          .get("/items/search?q=task&limit=1")
-          .expect(200);
+        const res = await get(app, "/items/search?q=task&limit=1");
+        expect(res.status).toBe(200);
 
         expect(res.body.items).toHaveLength(1);
       });
 
       it("should respect offset parameter", async () => {
-        const res1 = await request(app)
-          .get("/items/search?q=task&limit=1&offset=0")
-          .expect(200);
+        const res1 = await get(app, "/items/search?q=task&limit=1&offset=0");
+        expect(res1.status).toBe(200);
 
-        const res2 = await request(app)
-          .get("/items/search?q=task&limit=1&offset=1")
-          .expect(200);
+        const res2 = await get(app, "/items/search?q=task&limit=1&offset=1");
+        expect(res2.status).toBe(200);
 
         expect(res1.body.items[0].id).not.toBe(res2.body.items[0].id);
       });
 
       it("should cap limit at 100", async () => {
-        const res = await request(app)
-          .get("/items/search?q=task&limit=200")
-          .expect(200);
+        const res = await get(app, "/items/search?q=task&limit=200");
+        expect(res.status).toBe(200);
 
         // Limit is capped internally, but we can't directly verify
         // The endpoint should not error
@@ -190,18 +165,16 @@ describe("Search Endpoint", () => {
 
     describe("RSQL filter", () => {
       it("should apply filter to search results", async () => {
-        const res = await request(app)
-          .get("/items/search?q=important&filter=status==completed")
-          .expect(200);
+        const res = await get(app, "/items/search?q=important&filter=status==completed");
+        expect(res.status).toBe(200);
 
         expect(res.body.items).toHaveLength(1);
         expect(res.body.items[0].status).toBe("completed");
       });
 
       it("should work with complex filters", async () => {
-        const res = await request(app)
-          .get("/items/search?q=task&filter=status==active")
-          .expect(200);
+        const res = await get(app, "/items/search?q=task&filter=status==active");
+        expect(res.status).toBe(200);
 
         for (const item of res.body.items) {
           expect(item.status).toBe("active");
@@ -211,17 +184,15 @@ describe("Search Endpoint", () => {
 
     describe("highlights", () => {
       it("should return highlights when requested", async () => {
-        const res = await request(app)
-          .get("/items/search?q=important&highlight=true")
-          .expect(200);
+        const res = await get(app, "/items/search?q=important&highlight=true");
+        expect(res.status).toBe(200);
 
         expect(res.body.highlights).toBeDefined();
       });
 
       it("should not return highlights by default", async () => {
-        const res = await request(app)
-          .get("/items/search?q=important")
-          .expect(200);
+        const res = await get(app, "/items/search?q=important");
+        expect(res.status).toBe(200);
 
         expect(res.body.highlights).toBeUndefined();
       });
@@ -230,7 +201,7 @@ describe("Search Endpoint", () => {
 
   describe("with search disabled", () => {
     beforeEach(() => {
-      app.use(
+      app.route(
         "/items",
         useResource(testItemsTable, {
           id: testItemsTable.id,
@@ -238,19 +209,17 @@ describe("Search Endpoint", () => {
           search: { enabled: false },
         })
       );
-      app.use(errorHandler);
     });
 
     it("should return 404 when search disabled", async () => {
-      const res = await request(app)
-        .get("/items/search?q=test")
-        .expect(404);
+      const res = await get(app, "/items/search?q=test");
+      expect(res.status).toBe(404);
     });
   });
 
   describe("custom index name", () => {
     beforeEach(async () => {
-      app.use(
+      app.route(
         "/items",
         useResource(testItemsTable, {
           id: testItemsTable.id,
@@ -261,7 +230,6 @@ describe("Search Endpoint", () => {
           },
         })
       );
-      app.use(errorHandler);
 
       await searchAdapter.index("custom_index", "1", {
         id: 1,
@@ -270,9 +238,8 @@ describe("Search Endpoint", () => {
     });
 
     it("should use custom index name", async () => {
-      const res = await request(app)
-        .get("/items/search?q=test")
-        .expect(200);
+      const res = await get(app, "/items/search?q=test");
+      expect(res.status).toBe(200);
 
       expect(res.body.items).toHaveLength(1);
     });
@@ -281,7 +248,7 @@ describe("Search Endpoint", () => {
   describe("field configuration", () => {
     describe("array config", () => {
       beforeEach(async () => {
-        app.use(
+        app.route(
           "/items",
           useResource(testItemsTable, {
             id: testItemsTable.id,
@@ -292,7 +259,6 @@ describe("Search Endpoint", () => {
             },
           })
         );
-        app.use(errorHandler);
 
         await searchAdapter.index("test_items", "1", {
           id: 1,
@@ -302,15 +268,13 @@ describe("Search Endpoint", () => {
       });
 
       it("should search only specified fields", async () => {
-        const titleMatch = await request(app)
-          .get("/items/search?q=important")
-          .expect(200);
+        const titleMatch = await get(app, "/items/search?q=important");
+        expect(titleMatch.status).toBe(200);
 
         expect(titleMatch.body.items).toHaveLength(1);
 
-        const descMatch = await request(app)
-          .get("/items/search?q=critical")
-          .expect(200);
+        const descMatch = await get(app, "/items/search?q=critical");
+        expect(descMatch.status).toBe(200);
 
         expect(descMatch.body.items).toHaveLength(0);
       });
@@ -318,7 +282,7 @@ describe("Search Endpoint", () => {
 
     describe("object config with weights", () => {
       beforeEach(async () => {
-        app.use(
+        app.route(
           "/items",
           useResource(testItemsTable, {
             id: testItemsTable.id,
@@ -332,7 +296,6 @@ describe("Search Endpoint", () => {
             },
           })
         );
-        app.use(errorHandler);
 
         await searchAdapter.index("test_items", "1", {
           id: 1,
@@ -342,10 +305,8 @@ describe("Search Endpoint", () => {
       });
 
       it("should respect searchable: false", async () => {
-        const newApp = express();
-        newApp.use(express.json());
-        newApp.use(injectTestUser);
-        newApp.use(
+        const newApp = createTestApp({ user: {} });
+        newApp.route(
           "/items",
           useResource(testItemsTable, {
             id: testItemsTable.id,
@@ -359,7 +320,6 @@ describe("Search Endpoint", () => {
             },
           })
         );
-        newApp.use(errorHandler);
 
         await searchAdapter.index("test_items", "2", {
           id: 2,
@@ -367,9 +327,8 @@ describe("Search Endpoint", () => {
           description: "UniqueDescription",
         });
 
-        const res = await request(newApp)
-          .get("/items/search?q=uniquedescription")
-          .expect(200);
+        const res = await get(newApp, "/items/search?q=uniquedescription");
+        expect(res.status).toBe(200);
 
         expect(res.body.items).toHaveLength(0);
       });

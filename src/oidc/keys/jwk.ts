@@ -1,14 +1,6 @@
-import * as crypto from "crypto";
+import * as crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { Algorithm, JWK, KeyConfig, KeyManager, KeyPair } from "../types";
-
-const base64UrlEncode = (buffer: Buffer): string => {
-  return buffer
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=/g, "");
-};
 
 const generateKeyId = (): string => {
   return crypto.randomBytes(16).toString("hex");

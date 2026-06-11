@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Request, Response, NextFunction } from "express";
+import { describe, it, expect, vi } from "vitest";
+import { Hono } from "hono";
+import type { MiddlewareHandler } from "hono";
 import {
   versioningMiddleware,
   addFieldDeprecationWarnings,
@@ -16,28 +17,14 @@ import {
 } from "@/middleware/versioning";
 
 describe("Versioning Middleware", () => {
-  const createMockRequest = (overrides: Partial<Request> = {}): Request => {
-    return {
-      method: "GET",
-      path: "/users",
-      query: {},
-      headers: {},
-      get: vi.fn((header: string) => {
-        const headers = overrides.headers as Record<string, string> | undefined;
-        return headers?.[header.toLowerCase()];
-      }),
-      ...overrides,
-    } as unknown as Request;
-  };
-
-  const createMockResponse = (): Response => {
-    const res: Partial<Response> = {
-      statusCode: 200,
-      set: vi.fn().mockReturnThis(),
-      json: vi.fn().mockReturnThis(),
-      status: vi.fn().mockReturnThis(),
-    };
-    return res as Response;
+  const buildApp = (middleware: MiddlewareHandler, handler?: () => void): Hono => {
+    const app = new Hono();
+    app.use("*", middleware);
+    app.all("*", (c) => {
+      handler?.();
+      return c.json({ ok: true });
+    });
+    return app;
   };
 
   describe("CONCAVE_VERSION", () => {
@@ -48,19 +35,16 @@ describe("Versioning Middleware", () => {
   });
 
   describe("versioningMiddleware", () => {
-    it("should set version header on response", () => {
-      const middleware = versioningMiddleware();
-      const req = createMockRequest();
-      const res = createMockResponse();
-      const next = vi.fn();
+    it("should set version header on response", async () => {
+      const app = buildApp(versioningMiddleware());
 
-      middleware(req, res, next);
+      const res = await app.request("/users");
 
-      expect(res.set).toHaveBeenCalledWith("X-Concave-Version", CONCAVE_VERSION);
-      expect(next).toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(res.headers.get("X-Concave-Version")).toBe(CONCAVE_VERSION);
     });
 
-    it("should add deprecation warning header for affected paths", () => {
+    it("should add deprecation warning header for affected paths", async () => {
       const config: VersioningConfig = {
         deprecations: [
           {
@@ -70,19 +54,16 @@ describe("Versioning Middleware", () => {
           },
         ],
       };
-      const middleware = versioningMiddleware(config);
-      const req = createMockRequest({ path: "/users" });
-      const res = createMockResponse();
-      const next = vi.fn();
+      const app = buildApp(versioningMiddleware(config));
 
-      middleware(req, res, next);
+      const res = await app.request("/users");
 
-      expect(res.set).toHaveBeenCalledWith("X-Concave-Warn", "Use /v2/users instead");
-      expect(res.set).toHaveBeenCalledWith("Deprecation", "2025-06-01");
-      expect(res.set).toHaveBeenCalledWith("Sunset", expect.any(String));
+      expect(res.headers.get("X-Concave-Warn")).toBe("Use /v2/users instead");
+      expect(res.headers.get("Deprecation")).toBe("2025-06-01");
+      expect(res.headers.get("Sunset")).toEqual(expect.any(String));
     });
 
-    it("should set Sunset header when sunsetDate is provided", () => {
+    it("should set Sunset header when sunsetDate is provided", async () => {
       const sunsetDate = new Date("2025-12-31");
       const config: VersioningConfig = {
         deprecations: [
@@ -93,17 +74,14 @@ describe("Versioning Middleware", () => {
           },
         ],
       };
-      const middleware = versioningMiddleware(config);
-      const req = createMockRequest({ path: "/old-endpoint" });
-      const res = createMockResponse();
-      const next = vi.fn();
+      const app = buildApp(versioningMiddleware(config));
 
-      middleware(req, res, next);
+      const res = await app.request("/old-endpoint");
 
-      expect(res.set).toHaveBeenCalledWith("Sunset", sunsetDate.toUTCString());
+      expect(res.headers.get("Sunset")).toBe(sunsetDate.toUTCString());
     });
 
-    it("should not add warnings for unaffected paths", () => {
+    it("should not add warnings for unaffected paths", async () => {
       const config: VersioningConfig = {
         deprecations: [
           {
@@ -112,16 +90,15 @@ describe("Versioning Middleware", () => {
           },
         ],
       };
-      const middleware = versioningMiddleware(config);
-      const req = createMockRequest({ path: "/users" });
-      const res = createMockResponse();
-      const next = vi.fn();
+      const app = buildApp(versioningMiddleware(config));
 
-      middleware(req, res, next);
+      const res = await app.request("/users");
 
       // Should only have version header, not deprecation
-      expect(res.set).toHaveBeenCalledTimes(1);
-      expect(res.set).toHaveBeenCalledWith("X-Concave-Version", CONCAVE_VERSION);
+      expect(res.headers.get("X-Concave-Version")).toBe(CONCAVE_VERSION);
+      expect(res.headers.get("X-Concave-Warn")).toBeNull();
+      expect(res.headers.get("Deprecation")).toBeNull();
+      expect(res.headers.get("Sunset")).toBeNull();
     });
   });
 
@@ -204,75 +181,63 @@ describe("Versioning Middleware", () => {
   });
 
   describe("createVersionChecker", () => {
-    it("should pass requests with valid version", () => {
-      const middleware = createVersionChecker("1.0.0");
-      const req = createMockRequest({
+    it("should pass requests with valid version", async () => {
+      const handler = vi.fn();
+      const app = buildApp(createVersionChecker("1.0.0"), handler);
+
+      const res = await app.request("/users", {
         headers: { "x-concave-client-version": "2.0.0" },
       });
 
-      const res = createMockResponse();
-      const next = vi.fn();
-
-      middleware(req, res, next);
-
-      expect(next).toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(handler).toHaveBeenCalled();
     });
 
-    it("should reject requests with old version", () => {
-      const middleware = createVersionChecker("2.0.0");
-      const req = createMockRequest({
+    it("should reject requests with old version", async () => {
+      const handler = vi.fn();
+      const app = buildApp(createVersionChecker("2.0.0"), handler);
+
+      const res = await app.request("/users", {
         headers: { "x-concave-client-version": "1.0.0" },
       });
 
-      const res = createMockResponse();
-      const next = vi.fn();
-
-      middleware(req, res, next);
-
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith(
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual(
         expect.objectContaining({
           type: "/__concave/problems/unsupported-version",
           status: 400,
         })
       );
-      expect(next).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
     });
 
-    it("should pass requests without version header", () => {
-      const middleware = createVersionChecker("1.0.0");
-      const req = createMockRequest();
-      const res = createMockResponse();
-      const next = vi.fn();
+    it("should pass requests without version header", async () => {
+      const handler = vi.fn();
+      const app = buildApp(createVersionChecker("1.0.0"), handler);
 
-      middleware(req, res, next);
+      const res = await app.request("/users");
 
-      expect(next).toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(handler).toHaveBeenCalled();
     });
   });
 
   describe("schemaVersionMiddleware", () => {
-    it("should set schema version header", () => {
-      const middleware = schemaVersionMiddleware(5);
-      const req = createMockRequest();
-      const res = createMockResponse();
-      const next = vi.fn();
+    it("should set schema version header", async () => {
+      const app = buildApp(schemaVersionMiddleware(5));
 
-      middleware(req, res, next);
+      const res = await app.request("/users");
 
-      expect(res.set).toHaveBeenCalledWith(SCHEMA_VERSION_HEADER, "5");
-      expect(next).toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(res.headers.get(SCHEMA_VERSION_HEADER)).toBe("5");
     });
 
-    it("should accept string version", () => {
-      const middleware = schemaVersionMiddleware("10");
-      const req = createMockRequest();
-      const res = createMockResponse();
-      const next = vi.fn();
+    it("should accept string version", async () => {
+      const app = buildApp(schemaVersionMiddleware("10"));
 
-      middleware(req, res, next);
+      const res = await app.request("/users");
 
-      expect(res.set).toHaveBeenCalledWith(SCHEMA_VERSION_HEADER, "10");
+      expect(res.headers.get(SCHEMA_VERSION_HEADER)).toBe("10");
     });
   });
 

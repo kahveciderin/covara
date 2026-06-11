@@ -15,6 +15,8 @@ export interface DefineTaskOptions<TInput, TOutput> {
   maxConcurrency?: number;
   debounce?: DebounceConfig;
   idempotencyKey?: (input: TInput) => string;
+  idempotencyRetentionMs?: number;
+  resultTtlMs?: number;
 }
 
 export const defineTask = <TInput = unknown, TOutput = unknown>(
@@ -31,5 +33,7 @@ export const defineTask = <TInput = unknown, TOutput = unknown>(
     maxConcurrency: options.maxConcurrency,
     debounce: options.debounce,
     idempotencyKey: options.idempotencyKey,
+    idempotencyRetentionMs: options.idempotencyRetentionMs,
+    resultTtlMs: options.resultTtlMs,
   };
 };

@@ -7,10 +7,11 @@ import {
   SQLWrapper,
 } from "drizzle-orm";
 import { z } from "zod";
+import type { Context as HonoContext } from "hono";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 export type DrizzleDatabase = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 export type DrizzleTransaction = any;
 
 export type EventType =
@@ -141,7 +142,8 @@ export interface ProcedureContext<TConfig extends TableConfig = TableConfig> {
   db: unknown;
   schema: Table<TConfig>;
   user: UserContext | null;
-  req: unknown;
+  req: Request | null;
+  context: HonoContext | null;
 }
 
 export interface ProcedureDefinition<TInput = unknown, TOutput = unknown> {
@@ -293,6 +295,7 @@ export interface IncludeSpec {
   select?: string[];
   filter?: string;
   limit?: number;
+  offset?: number;
   nested?: IncludeSpec[];
 }
 
@@ -300,6 +303,7 @@ export interface IncludeConfig {
   maxDepth?: number;
   defaultLimit?: number;
   allowNestedFilters?: boolean;
+  customOperators?: Record<string, CustomOperator>;
 }
 
 export interface SearchFieldConfig {
@@ -313,6 +317,26 @@ export interface ResourceSearchConfig {
   indexName?: string;
   fields?: string[] | Record<string, SearchFieldConfig>;
   autoIndex?: boolean;
+  // Route auto-index/delete through a durable KV-backed outbox that is drained
+  // with retries, instead of indexing inline. Guarantees at-least-once DB->index
+  // convergence across transient search-backend failures and restarts. Requires
+  // a configured global KV. Off by default.
+  outbox?: boolean;
+  // Called when an auto-index/delete still fails after a retry. Use it to
+  // enqueue a re-index so the search index reconciles with the database.
+  onIndexError?: (info: {
+    operation: "index" | "delete";
+    id: string;
+    index: string;
+    error: unknown;
+  }) => void | Promise<void>;
+}
+
+export interface ETagResourceConfig {
+  versionField?: string;
+  updatedAtField?: string;
+  idField?: string;
+  algorithm?: "weak" | "strong";
 }
 
 export interface ResourceConfig<
@@ -321,6 +345,7 @@ export interface ResourceConfig<
 > {
   db: DrizzleDatabase;
   id: AnyColumn<{ tableName: TTable["_"]["name"] }>;
+  etag?: ETagResourceConfig;
   batch?: BatchConfig;
   pagination?: {
     defaultLimit?: number;
@@ -341,4 +366,28 @@ export interface ResourceConfig<
   relations?: RelationsConfig;
   include?: IncludeConfig;
   search?: ResourceSearchConfig;
+  softDelete?: SoftDeleteConfig;
+  // Enable write-through of nested relation objects in POST bodies. When true,
+  // a create payload may embed `belongsTo` parents and `hasMany`/`hasOne`
+  // children under their relation names; they are created in one transaction
+  // and foreign keys wired automatically. Off by default.
+  nestedWrites?: boolean;
+  // Reject request bodies containing unknown fields (Zod strict mode) on
+  // create/update instead of silently ignoring them. Off by default.
+  strictInput?: boolean;
+  // Computed/virtual fields added to every response (and subscription event).
+  // Each function receives the full row (before read-masking) and returns the
+  // value; the key is added to the serialized output. Computed fields are not
+  // persisted and are exempt from `fields.readable` masking.
+  computed?: Record<string, (row: Record<string, unknown>) => unknown>;
+}
+
+export interface SoftDeleteConfig {
+  // Column used as the deletion marker. A row is considered deleted when this
+  // column is non-null. On DELETE the column is set (instead of removing the
+  // row); reads exclude deleted rows unless `?withDeleted=true` is passed.
+  field: string;
+  // Produces the value written on delete. Defaults to the current ISO
+  // timestamp. Use e.g. `() => Date.now()` for integer columns.
+  deletedValue?: () => unknown;
 }

@@ -1,15 +1,18 @@
-import { ClientConfig, ResourceClient, OfflineConfig, ConcaveClient } from "./types";
-import { createTransport, Transport, FetchTransport, TransportError } from "./transport";
-import { createRepository, Repository } from "./repository";
-import { createOfflineManager, OfflineManager, InMemoryOfflineStorage, LocalStorageOfflineStorage } from "./offline";
-import { createSubscription, SubscriptionManager } from "./subscription-manager";
-import { getClient, setGlobalClient, getAuthErrorHandler, setAuthErrorHandler } from "./globals";
+import { ClientConfig, ResourceClient, OfflineConfig, ConcaveClient, CheckAuthResult, ProcedureDef, AnyProcedures } from "./types";
+import { createTransport } from "./transport";
+import { createRepository } from "./repository";
+import { createOfflineManager, OfflineManager, LocalStorageOfflineStorage } from "./offline";
+import { setGlobalClient, setAuthErrorHandler, getAuthErrorHandler } from "./globals";
+import { LiveQueryCache, InvalidateTarget } from "./query-cache";
+import type { LiveQueryOptions } from "./live-store";
+import type { LiveListResourceClient, LiveQueryOptionsLike } from "./types";
 import {
-  AuthManager,
   createAuthManager,
   OIDCClientConfig,
 } from "./auth";
 import { createJWTClient, JWTClient, JWTClientConfig } from "./jwt";
+import type { DateFieldRegistry } from "./dates";
+import { createBillingClient } from "./billing";
 
 export { getClient, setGlobalClient, getAuthErrorHandler } from "./globals";
 export type { ConcaveClient } from "./types";
@@ -25,18 +28,33 @@ export interface SimplifiedClientConfig {
   authCheckUrl?: string;
   auth?: OIDCClientConfig;
   jwt?: Omit<JWTClientConfig, "baseUrl">;
+  /** Opt into automatic ISO date-string -> Date conversion (see TransportConfig.parseDates). */
+  parseDates?: boolean | DateFieldRegistry;
+  /** Configure the typed billing client (mounted server-side, default `/api/billing`). */
+  billing?: { basePath?: string };
 }
 
 export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
+  const auth = createAuthManager();
+  let jwtClient: JWTClient | undefined;
+
   const transport = createTransport({
     baseUrl: config.baseUrl,
     headers: config.headers,
     credentials: config.credentials,
     timeout: config.timeout,
+    parseDates: config.parseDates,
+    refreshAuth: async () => {
+      if (jwtClient?.isAuthenticated()) {
+        const tokens = await jwtClient.refresh();
+        return tokens.accessToken;
+      }
+      if (config.auth) {
+        const tokens = await auth.refreshTokens();
+        return tokens.accessToken;
+      }
+    },
   });
-
-  const auth = createAuthManager();
-  let jwtClient: JWTClient | undefined;
 
   if (config.jwt) {
     jwtClient = createJWTClient({
@@ -140,18 +158,65 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
     });
   }
 
+  const resolveRepo = <T extends { id: string }>(path: string): LiveListResourceClient<T> =>
+    createRepository<T>({ transport, resourcePath: path, offline });
+
+  const queryCache = new LiveQueryCache({
+    resolveRepo,
+    callbacks: {
+      onAuthError: () => getAuthErrorHandler()?.(),
+      getPendingCount: offline
+        ? async () => (await offline!.getPendingMutations())?.length ?? 0
+        : undefined,
+      onIdRemapped: offline ? (o, s) => offline!.registerIdMapping(o, s) : undefined,
+      getIdMappings: offline ? () => offline!.getIdMappings() : undefined,
+      hasPendingMutationsForId: offline
+        ? (id) => offline!.hasPendingMutationsForId(id)
+        : undefined,
+    },
+  });
+
+  // Cross-tab invalidation: when another tab broadcasts invalidate, mirror it locally.
+  offline?.onTabMessage((message) => {
+    if (message.kind === "invalidate") {
+      for (const path of message.paths) queryCache.invalidate(path);
+    } else if (message.kind === "sync-complete") {
+      // A leader tab finished flushing; refresh everything so this tab catches up.
+      queryCache.invalidate(() => true);
+    }
+  });
+
   const client: ConcaveClient = {
     transport,
     offline,
     auth,
     jwt: jwtClient,
+    billing: createBillingClient({ transport, basePath: config.billing?.basePath }),
+    queryCache,
 
-    resource<T extends { id: string }>(path: string): ResourceClient<T> {
-      return createRepository<T>({
+    resource<T extends { id: string }, P extends Record<keyof P, ProcedureDef> = AnyProcedures>(
+      path: string
+    ): ResourceClient<T, P> {
+      return createRepository<T, P>({
         transport,
         resourcePath: path,
         offline,
       });
+    },
+
+    invalidate(target: InvalidateTarget): number {
+      const count = queryCache.invalidate(target);
+      if (typeof target === "string") {
+        offline?.broadcastInvalidate([target]);
+      }
+      return count;
+    },
+
+    async prefetch(
+      resource: string,
+      options: LiveQueryOptionsLike = {}
+    ): Promise<void> {
+      await queryCache.prefetch(resource, options as LiveQueryOptions);
     },
 
     setAuthToken(token: string): void {
@@ -172,16 +237,16 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
       return mutations?.length ?? 0;
     },
 
-    async checkAuth(url?: string): Promise<{ user: unknown | null; expiresAt?: Date }> {
+    async checkAuth<TUser = unknown>(url?: string): Promise<CheckAuthResult<TUser>> {
       if (auth.isAuthenticated()) {
         const user = auth.getUser();
-        return { user };
+        return { user: user as TUser | null };
       }
 
       if (jwtClient?.isAuthenticated()) {
         const user = await jwtClient.getUser();
         if (user) {
-          return { user };
+          return { user: user as unknown as TUser };
         }
       }
 
@@ -198,7 +263,7 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
           credentials: config.credentials ?? "include",
           headers: Object.keys(headers).length > 0 ? headers : undefined,
         });
-        const data = await response.json();
+        const data = (await response.json()) as { user?: TUser | null; expiresAt?: string };
         return {
           user: data.user ?? null,
           expiresAt: data.expiresAt ? new Date(data.expiresAt) : undefined,
@@ -271,12 +336,48 @@ export {
   OfflineManager,
   InMemoryOfflineStorage,
   LocalStorageOfflineStorage,
+  IndexedDBOfflineStorage,
+  isIndexedDBAvailable,
+  createOfflineStorage,
   createOfflineManager,
+  mergeConflict,
 } from "./offline";
+
+export {
+  createTabSync,
+  isTabSyncSupported,
+} from "./tab-sync";
+export type { TabSync, TabSyncMessage } from "./tab-sync";
+
+export {
+  LiveQueryCache,
+} from "./query-cache";
+export type {
+  CachedQueryEntry,
+  InvalidateTarget,
+  InvalidatePredicate,
+} from "./query-cache";
+
+export {
+  createMutation,
+  resourceMutationFn,
+} from "./mutation";
+export type {
+  MutationStatus,
+  MutationState,
+  MutationController,
+  MutationOptions,
+  MutationFn,
+  MutationFnContext,
+  CreateMutationConfig,
+  ResourceMutationVars,
+  ResourceMutationKind,
+} from "./mutation";
 
 export {
   SubscriptionManager,
   createSubscription,
+  computeBackoffDelay,
 } from "./subscription-manager";
 
 export {
@@ -331,6 +432,8 @@ export {
   where,
   createTypedQueryBuilder,
   createFieldBuilder,
+  createTypedFilter,
+  f,
   include,
   withSelect,
   withLimit,
@@ -344,9 +447,21 @@ export type {
   Primitive,
   FieldBuilder,
   TypedQueryBuilder,
+  TypedFilter,
   IncludeOptions,
   IncludeConfig,
 } from "./query-builder";
+
+export {
+  toDate,
+  toDateOrNull,
+  isISODateString,
+  reviveDates,
+} from "./dates";
+export type {
+  ISODateString,
+  DateFieldRegistry,
+} from "./dates";
 
 export {
   createEnvClient,
@@ -374,6 +489,23 @@ export type {
   FileListResponse,
   FileClientConfig,
 } from "./file-upload";
+
+export {
+  createBillingClient,
+  isActiveSubscription,
+} from "./billing";
+export type {
+  BillingClient,
+  BillingClientConfig,
+  BillingSubscription,
+  SubscriptionStatus,
+  BillingProviderName,
+  CheckoutInput,
+  CheckoutItem,
+  CheckoutMode,
+  CheckoutResult,
+  PortalResult,
+} from "./billing";
 
 export {
   createJWTClient,

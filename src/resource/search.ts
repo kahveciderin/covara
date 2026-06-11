@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from "express";
+import type { Context } from "hono";
 import { getGlobalSearch, hasGlobalSearch, SearchConfig } from "@/search";
 import { ValidationError, SearchError } from "./error";
 import { ScopeResolver } from "@/auth/scope";
@@ -158,7 +158,7 @@ const parseCondition = (str: string): ParsedCondition | null => {
     const idx = str.indexOf(op);
     if (idx > 0) {
       const field = str.slice(0, idx).trim();
-      let valueStr = str.slice(idx + op.length).trim();
+      const valueStr = str.slice(idx + op.length).trim();
 
       let value: unknown = valueStr;
 
@@ -215,10 +215,11 @@ const executeFilter = (
 
 export interface SearchHandlerOptions {
   scopeResolver: ScopeResolver;
-  getUser: (req: Request) => UserContext | null;
+  getUser: (c: Context) => UserContext | null;
   filterer: {
     execute: (expr: string, obj: unknown) => boolean;
   };
+  maskItem?: (item: Record<string, unknown>) => Record<string, unknown>;
 }
 
 export const createSearchHandler = (
@@ -227,32 +228,28 @@ export const createSearchHandler = (
   _primaryKeyName: string,
   options?: SearchHandlerOptions
 ) => {
-  return async (req: Request, res: Response, next: NextFunction) => {
+  return async (c: Context): Promise<Response> => {
     if (!hasGlobalSearch()) {
-      return res.status(404).end();
+      return c.body(null, 404);
     }
 
     const search = getGlobalSearch();
-    const query = req.query.q as string;
+    const query = c.req.query("q");
 
     if (!query) {
-      return next(new ValidationError("Missing query parameter 'q'"));
+      throw new ValidationError("Missing query parameter 'q'");
     }
 
     let authScope: string | null = null;
     if (options) {
-      try {
-        const user = options.getUser(req);
-        const scope = await options.scopeResolver.resolve("read", user);
-        authScope = scope.toString();
-      } catch (err) {
-        return next(err);
-      }
+      const user = options.getUser(c);
+      const scope = await options.scopeResolver.resolve("read", user);
+      authScope = scope.toString();
     }
 
     const indexName = config.indexName ?? tableName;
-    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
-    const offset = parseInt(req.query.offset as string) || 0;
+    const limit = Math.min(parseInt(c.req.query("limit") ?? "") || 20, 100);
+    const offset = parseInt(c.req.query("offset") ?? "") || 0;
 
     let fields: string[] | undefined;
     let fieldWeights: Record<string, number> | undefined;
@@ -272,6 +269,8 @@ export const createSearchHandler = (
       }
     }
 
+    const highlightEnabled = c.req.query("highlight") === "true";
+
     try {
       const result = await search.search(indexName, {
         query,
@@ -279,11 +278,11 @@ export const createSearchHandler = (
         fieldWeights,
         from: offset,
         size: limit,
-        highlight: req.query.highlight === "true",
+        highlight: highlightEnabled,
       });
 
       let items = result.hits.map((hit) => hit.source);
-      const userFilter = req.query.filter as string | undefined;
+      const userFilter = c.req.query("filter");
 
       if (options && authScope && authScope !== "*") {
         let combinedFilter: string;
@@ -308,26 +307,29 @@ export const createSearchHandler = (
       }
 
       const itemIds = new Set(items.map((item) => String((item as Record<string, unknown>).id)));
-      const highlights =
-        req.query.highlight === "true"
-          ? Object.fromEntries(
-              result.hits
-                .filter((h) => h.highlights && itemIds.has(String(h.id)))
-                .map((h) => [h.id, h.highlights])
-            )
-          : undefined;
+      const highlights = highlightEnabled
+        ? Object.fromEntries(
+            result.hits
+              .filter((h) => h.highlights && itemIds.has(String(h.id)))
+              .map((h) => [h.id, h.highlights])
+          )
+        : undefined;
 
-      res.json({
+      if (options?.maskItem) {
+        items = items.map((item) => options.maskItem!(item as Record<string, unknown>));
+      }
+
+      return c.json({
         items,
         total: items.length,
         ...(highlights && Object.keys(highlights).length > 0 && { highlights }),
       });
     } catch (err) {
       const error = err as Error;
-      return next(new SearchError(`Search failed: ${error.message}`, {
+      throw new SearchError(`Search failed: ${error.message}`, {
         originalError: error.message,
         index: indexName,
-      }));
+      });
     }
   };
 };

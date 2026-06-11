@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import express, { Express } from "express";
-import request from "supertest";
+import { Hono } from "hono";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -9,6 +8,7 @@ import {
   registerResourceSchema,
   clearSchemaRegistry,
 } from "../../src/ui/schema-registry";
+import { get } from "../helpers/hono";
 
 const testTable = sqliteTable("test_items", {
   id: text("id").primaryKey(),
@@ -18,7 +18,7 @@ const testTable = sqliteTable("test_items", {
 });
 
 describe("Admin UI Data Explorer", () => {
-  let app: Express;
+  let app: Hono;
   let sqlite: Database.Database;
   let db: ReturnType<typeof drizzle>;
 
@@ -48,9 +48,8 @@ describe("Admin UI Data Explorer", () => {
     // Clear schema registry
     clearSchemaRegistry();
 
-    // Create Express app
-    app = express();
-    app.use(express.json());
+    // Create Hono app
+    app = new Hono();
   });
 
   afterEach(() => {
@@ -65,71 +64,69 @@ describe("Admin UI Data Explorer", () => {
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
       // Mount admin UI
-      app.use("/__concave", createAdminUI({}));
+      app.route("/__concave", createAdminUI({}));
 
       // Try to access data table using path (without leading slash, as URL normalization does)
-      const response = await request(app)
-        .get("/__concave/ui/data/api%2Ftest_items/table")
-        .expect("Content-Type", /html/);
+      const response = await get(app, "/__concave/ui/data/api%2Ftest_items/table");
+      expect(response.headers.get("content-type")).toMatch(/html/);
 
       // Should NOT contain "Resource not found" error
-      expect(response.text).not.toContain("Resource not found");
-      expect(response.text).not.toContain("is not registered");
+      expect(response.body).not.toContain("Resource not found");
+      expect(response.body).not.toContain("is not registered");
     });
 
     it("should find schema when queried with table name directly", async () => {
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
-      app.use("/__concave", createAdminUI({}));
+      app.route("/__concave", createAdminUI({}));
 
-      const response = await request(app)
-        .get("/__concave/ui/data/test_items/table")
-        .expect("Content-Type", /html/);
+      const response = await get(app, "/__concave/ui/data/test_items/table");
+      expect(response.headers.get("content-type")).toMatch(/html/);
 
-      expect(response.text).not.toContain("Resource not found");
+      expect(response.body).not.toContain("Resource not found");
     });
 
     it("should return data table with items when schema is found", async () => {
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
-      app.use("/__concave", createAdminUI({}));
+      app.route("/__concave", createAdminUI({}));
 
-      const response = await request(app)
-        .get("/__concave/ui/data/api%2Ftest_items/table")
-        .expect("Content-Type", /html/);
+      const response = await get(app, "/__concave/ui/data/api%2Ftest_items/table");
+      expect(response.headers.get("content-type")).toMatch(/html/);
 
       // Should contain table with data
-      expect(response.text).toContain("Item 1");
-      expect(response.text).toContain("Item 2");
-      expect(response.text).toContain("Item 3");
+      expect(response.body).toContain("Item 1");
+      expect(response.body).toContain("Item 2");
+      expect(response.body).toContain("Item 3");
     });
 
     it("should handle versioned API paths", async () => {
       // Path like /api/v1/test_items should also work - extract last segment
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
-      app.use("/__concave", createAdminUI({}));
+      app.route("/__concave", createAdminUI({}));
 
-      const response = await request(app)
-        .get("/__concave/ui/data/api%2Fv1%2Ftest_items/table")
-        .expect("Content-Type", /html/);
+      const response = await get(
+        app,
+        "/__concave/ui/data/api%2Fv1%2Ftest_items/table"
+      );
+      expect(response.headers.get("content-type")).toMatch(/html/);
 
-      expect(response.text).not.toContain("Resource not found");
-      expect(response.text).toContain("Item 1");
+      expect(response.body).not.toContain("Resource not found");
+      expect(response.body).toContain("Item 1");
     });
 
     it("should handle path registered directly in schema registry", async () => {
       // If someone explicitly registers with path, it should still work
       registerResourceSchema("/api/items", testTable, db, testTable.id, {});
 
-      app.use("/__concave", createAdminUI({}));
+      app.route("/__concave", createAdminUI({}));
 
-      const response = await request(app)
-        .get("/__concave/ui/data/api%2Fitems/table")
-        .expect("Content-Type", /html/);
+      const response = await get(app, "/__concave/ui/data/api%2Fitems/table");
+      expect(response.headers.get("content-type")).toMatch(/html/);
 
-      expect(response.text).not.toContain("Resource not found");
-      expect(response.text).toContain("Item 1");
+      expect(response.body).not.toContain("Resource not found");
+      expect(response.body).toContain("Item 1");
     });
   });
 
@@ -137,29 +134,27 @@ describe("Admin UI Data Explorer", () => {
     it("should render data explorer page with resources", async () => {
       registerResourceSchema("items", testTable, db, testTable.id, {});
 
-      app.use("/__concave", createAdminUI({}));
+      app.route("/__concave", createAdminUI({}));
 
-      const response = await request(app)
-        .get("/__concave/ui/data-explorer")
-        .expect("Content-Type", /html/)
-        .expect(200);
+      const response = await get(app, "/__concave/ui/data-explorer");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toMatch(/html/);
 
-      expect(response.text).toContain("Data Explorer");
-      expect(response.text).toContain("items");
+      expect(response.body).toContain("Data Explorer");
+      expect(response.body).toContain("items");
     });
 
     it("should show resources list", async () => {
       registerResourceSchema("users", testTable, db, testTable.id, {});
       registerResourceSchema("posts", testTable, db, testTable.id, {});
 
-      app.use("/__concave", createAdminUI({}));
+      app.route("/__concave", createAdminUI({}));
 
-      const response = await request(app)
-        .get("/__concave/ui/data/resources")
-        .expect("Content-Type", /html/);
+      const response = await get(app, "/__concave/ui/data/resources");
+      expect(response.headers.get("content-type")).toMatch(/html/);
 
-      expect(response.text).toContain("users");
-      expect(response.text).toContain("posts");
+      expect(response.body).toContain("users");
+      expect(response.body).toContain("posts");
     });
   });
 
@@ -167,26 +162,24 @@ describe("Admin UI Data Explorer", () => {
     it("should fetch single row detail", async () => {
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
-      app.use("/__concave", createAdminUI({}));
+      app.route("/__concave", createAdminUI({}));
 
-      const response = await request(app)
-        .get("/__concave/ui/data/test_items/row/1")
-        .expect("Content-Type", /html/);
+      const response = await get(app, "/__concave/ui/data/test_items/row/1");
+      expect(response.headers.get("content-type")).toMatch(/html/);
 
-      expect(response.text).toContain("Item 1");
-      expect(response.text).toContain("active");
+      expect(response.body).toContain("Item 1");
+      expect(response.body).toContain("active");
     });
 
     it("should return not found for missing row", async () => {
       registerResourceSchema("test_items", testTable, db, testTable.id, {});
 
-      app.use("/__concave", createAdminUI({}));
+      app.route("/__concave", createAdminUI({}));
 
-      const response = await request(app)
-        .get("/__concave/ui/data/test_items/row/999")
-        .expect("Content-Type", /html/);
+      const response = await get(app, "/__concave/ui/data/test_items/row/999");
+      expect(response.headers.get("content-type")).toMatch(/html/);
 
-      expect(response.text).toContain("Record not found");
+      expect(response.body).toContain("Record not found");
     });
   });
 });

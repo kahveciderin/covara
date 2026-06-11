@@ -1,21 +1,29 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import request from "supertest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { Hono } from "hono";
 import {
   createAdminAuthMiddleware,
   logAdminAction,
   getAdminAuditLog,
   clearAdminAuditLog,
+  setAdminAuditSink,
+  extractUserRoles,
   getAdminUser,
   detectEnvironment,
+  type AdminAuditEntry,
 } from "../src/ui/admin-auth";
+import { get } from "./helpers/hono";
+
+const injectAppUser = (user: any) => async (c: any, next: any) => {
+  if (user !== null) c.set("user", user);
+  await next();
+};
 
 describe("Admin Auth", () => {
-  let app: Express;
+  let app: Hono;
   const originalEnv = process.env.NODE_ENV;
 
   beforeEach(() => {
-    app = express();
+    app = new Hono();
     clearAdminAuditLog();
   });
 
@@ -45,23 +53,23 @@ describe("Admin Auth", () => {
       process.env.NODE_ENV = "development";
 
       const middleware = createAdminAuthMiddleware({ mode: "development" });
-      app.use(middleware);
-      app.get("/test", (req: Request, res: Response) => {
-        const user = getAdminUser(req);
-        res.json({ user });
+      app.use("*", middleware);
+      app.get("/test", (c) => {
+        const user = getAdminUser(c);
+        return c.json({ user });
       });
 
-      const res = await request(app).get("/test");
+      const res = await get(app, "/test");
       expect(res.status).toBe(200);
       expect(res.body.user).toBeDefined();
     });
 
     it("requires auth in production mode", async () => {
       const middleware = createAdminAuthMiddleware({ mode: "production" });
-      app.use(middleware);
-      app.get("/test", (_req: Request, res: Response) => res.json({ ok: true }));
+      app.use("*", middleware);
+      app.get("/test", (c) => c.json({ ok: true }));
 
-      const res = await request(app).get("/test");
+      const res = await get(app, "/test");
       expect(res.status).toBe(401);
     });
 
@@ -70,15 +78,13 @@ describe("Admin Auth", () => {
         mode: "production",
         auth: { apiKey: "secret-key" },
       });
-      app.use(middleware);
-      app.get("/test", (req: Request, res: Response) => {
-        const user = getAdminUser(req);
-        res.json({ user });
+      app.use("*", middleware);
+      app.get("/test", (c) => {
+        const user = getAdminUser(c);
+        return c.json({ user });
       });
 
-      const res = await request(app)
-        .get("/test")
-        .set("X-Admin-API-Key", "secret-key");
+      const res = await get(app, "/test", { "X-Admin-API-Key": "secret-key" });
       expect(res.status).toBe(200);
       expect(res.body.user.id).toBe("api-key");
     });
@@ -88,15 +94,15 @@ describe("Admin Auth", () => {
         mode: "production",
         auth: { apiKey: "secret-key" },
       });
-      app.use(middleware);
-      app.get("/test", (req: Request, res: Response) => {
-        const user = getAdminUser(req);
-        res.json({ user });
+      app.use("*", middleware);
+      app.get("/test", (c) => {
+        const user = getAdminUser(c);
+        return c.json({ user });
       });
 
-      const res = await request(app)
-        .get("/test")
-        .set("Authorization", "Bearer secret-key");
+      const res = await get(app, "/test", {
+        Authorization: "Bearer secret-key",
+      });
       expect(res.status).toBe(200);
       expect(res.body.user.id).toBe("api-key");
     });
@@ -106,12 +112,10 @@ describe("Admin Auth", () => {
         mode: "production",
         auth: { apiKey: "secret-key" },
       });
-      app.use(middleware);
-      app.get("/test", (_req: Request, res: Response) => res.json({ ok: true }));
+      app.use("*", middleware);
+      app.get("/test", (c) => c.json({ ok: true }));
 
-      const res = await request(app)
-        .get("/test")
-        .set("X-Admin-API-Key", "wrong-key");
+      const res = await get(app, "/test", { "X-Admin-API-Key": "wrong-key" });
       expect(res.status).toBe(401);
     });
 
@@ -120,10 +124,10 @@ describe("Admin Auth", () => {
         mode: "development",
         auth: { disabled: true },
       });
-      app.use(middleware);
-      app.get("/test", (_req: Request, res: Response) => res.json({ ok: true }));
+      app.use("*", middleware);
+      app.get("/test", (c) => c.json({ ok: true }));
 
-      const res = await request(app).get("/test");
+      const res = await get(app, "/test");
       expect(res.status).toBe(200);
     });
 
@@ -133,13 +137,10 @@ describe("Admin Auth", () => {
         auth: { disabled: true },
         allowedIPs: ["192.168.1.1"],
       });
-      app.set("trust proxy", true);
-      app.use(middleware);
-      app.get("/test", (_req: Request, res: Response) => res.json({ ok: true }));
+      app.use("*", middleware);
+      app.get("/test", (c) => c.json({ ok: true }));
 
-      const res = await request(app)
-        .get("/test")
-        .set("X-Forwarded-For", "10.0.0.1");
+      const res = await get(app, "/test", { "X-Forwarded-For": "10.0.0.1" });
       expect(res.status).toBe(403);
     });
 
@@ -155,10 +156,10 @@ describe("Admin Auth", () => {
         },
         authorization: { requiredRole: "admin" },
       });
-      app.use(middleware);
-      app.get("/test", (_req: Request, res: Response) => res.json({ ok: true }));
+      app.use("*", middleware);
+      app.get("/test", (c) => c.json({ ok: true }));
 
-      const res = await request(app).get("/test");
+      const res = await get(app, "/test");
       expect(res.status).toBe(403);
     });
 
@@ -173,13 +174,13 @@ describe("Admin Auth", () => {
           }),
         },
       });
-      app.use(middleware);
-      app.get("/test", (req: Request, res: Response) => {
-        const user = getAdminUser(req);
-        res.json({ user });
+      app.use("*", middleware);
+      app.get("/test", (c) => {
+        const user = getAdminUser(c);
+        return c.json({ user });
       });
 
-      const res = await request(app).get("/test");
+      const res = await get(app, "/test");
       expect(res.status).toBe(200);
       expect(res.body.user.id).toBe("custom");
     });
@@ -190,13 +191,169 @@ describe("Admin Auth", () => {
         auth: { disabled: true },
         rateLimit: { windowMs: 1000, maxRequests: 2 },
       });
-      app.use(middleware);
-      app.get("/test", (_req: Request, res: Response) => res.json({ ok: true }));
+      app.use("*", middleware);
+      app.get("/test", (c) => c.json({ ok: true }));
 
-      await request(app).get("/test");
-      await request(app).get("/test");
-      const res = await request(app).get("/test");
+      await get(app, "/test");
+      await get(app, "/test");
+      const res = await get(app, "/test");
       expect(res.status).toBe(429);
+    });
+  });
+
+  describe("App auth integration (authorize / requireRole)", () => {
+    const buildApp = (config: any, user: any) => {
+      const a = new Hono();
+      a.use("*", injectAppUser(user));
+      a.use("*", createAdminAuthMiddleware(config));
+      a.get("/test", (c) => c.json({ user: getAdminUser(c) }));
+      return a;
+    };
+
+    it("allows a logged-in authorized user via authorize()", async () => {
+      const a = buildApp(
+        { mode: "production", authorize: (u: any) => u.email === "ok@test.com" },
+        { id: "u1", email: "ok@test.com" }
+      );
+      const res = await get(a, "/test");
+      expect(res.status).toBe(200);
+      expect(res.body.user.id).toBe("u1");
+    });
+
+    it("denies anonymous with 401 when authorize is configured", async () => {
+      const a = buildApp({ mode: "production", authorize: () => true }, null);
+      const res = await get(a, "/test");
+      expect(res.status).toBe(401);
+    });
+
+    it("denies unauthorized logged-in user with 403", async () => {
+      const a = buildApp(
+        { mode: "production", authorize: () => false },
+        { id: "u1", email: "u1@test.com" }
+      );
+      const res = await get(a, "/test");
+      expect(res.status).toBe(403);
+    });
+
+    it("requireRole allows a user with the role (from user.roles)", async () => {
+      const a = buildApp(
+        { mode: "production", requireRole: "admin" },
+        { id: "u1", email: "u1@test.com", roles: ["admin"] }
+      );
+      const res = await get(a, "/test");
+      expect(res.status).toBe(200);
+    });
+
+    it("requireRole denies a user without the role with 403", async () => {
+      const a = buildApp(
+        { mode: "production", requireRole: "admin" },
+        { id: "u1", email: "u1@test.com", roles: ["viewer"] }
+      );
+      const res = await get(a, "/test");
+      expect(res.status).toBe(403);
+    });
+
+    it("requireRole denies anonymous with 401", async () => {
+      const a = buildApp({ mode: "production", requireRole: "admin" }, null);
+      const res = await get(a, "/test");
+      expect(res.status).toBe(401);
+    });
+
+    it("requireRole accepts an array of allowed roles", async () => {
+      const a = buildApp(
+        { mode: "production", requireRole: ["superadmin", "admin"] },
+        { id: "u1", email: "u1@test.com", roles: ["admin"] }
+      );
+      const res = await get(a, "/test");
+      expect(res.status).toBe(200);
+    });
+
+    it("finds roles in user.role (singular)", async () => {
+      const a = buildApp(
+        { mode: "production", requireRole: "admin" },
+        { id: "u1", email: "u1@test.com", role: "admin" }
+      );
+      const res = await get(a, "/test");
+      expect(res.status).toBe(200);
+    });
+
+    it("finds roles in user.metadata.roles", async () => {
+      const a = buildApp(
+        { mode: "production", requireRole: "admin" },
+        { id: "u1", email: "u1@test.com", metadata: { roles: ["admin"] } }
+      );
+      const res = await get(a, "/test");
+      expect(res.status).toBe(200);
+    });
+
+    it("finds roles in user.metadata.role (singular)", async () => {
+      const a = buildApp(
+        { mode: "production", requireRole: "admin" },
+        { id: "u1", email: "u1@test.com", metadata: { role: "admin" } }
+      );
+      const res = await get(a, "/test");
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe("Fail-closed in production", () => {
+    it("denies access in production when no auth is configured", async () => {
+      const a = new Hono();
+      a.use("*", createAdminAuthMiddleware({ mode: "production" }));
+      a.get("/test", (c) => c.json({ ok: true }));
+      const res = await get(a, "/test");
+      expect(res.status).toBe(401);
+    });
+
+    it("denies access in production even with a logged-in user when nothing is configured", async () => {
+      const a = new Hono();
+      a.use("*", injectAppUser({ id: "u1", email: "u1@test.com", roles: ["admin"] }));
+      a.use("*", createAdminAuthMiddleware({ mode: "production" }));
+      a.get("/test", (c) => c.json({ ok: true }));
+      const res = await get(a, "/test");
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe("extractUserRoles", () => {
+    it("merges roles from all known locations", () => {
+      const roles = extractUserRoles({
+        roles: ["a"],
+        role: "b",
+        metadata: { roles: ["c"], role: "d" },
+      } as any);
+      expect(roles.sort()).toEqual(["a", "b", "c", "d"]);
+    });
+
+    it("returns empty array for null user", () => {
+      expect(extractUserRoles(null)).toEqual([]);
+    });
+  });
+
+  describe("Audit sink", () => {
+    afterEach(() => {
+      setAdminAuditSink(null);
+    });
+
+    it("forwards logged entries to a configured sink", () => {
+      const received: AdminAuditEntry[] = [];
+      setAdminAuditSink((e) => {
+        received.push(e);
+      });
+      logAdminAction({ userId: "u1", userEmail: "u1@test.com", operation: "delete" });
+      expect(received).toHaveLength(1);
+      expect(received[0].operation).toBe("delete");
+      expect(received[0].timestamp).toBeDefined();
+    });
+
+    it("does not let a throwing sink break logging", () => {
+      setAdminAuditSink(() => {
+        throw new Error("sink boom");
+      });
+      expect(() =>
+        logAdminAction({ userId: "u1", userEmail: "u1@test.com", operation: "x" })
+      ).not.toThrow();
+      expect(getAdminAuditLog()[0].operation).toBe("x");
     });
   });
 

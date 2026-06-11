@@ -1,4 +1,5 @@
-import { Request, Router } from "express";
+import { Hono, type Context } from "hono";
+import { getCookie } from "hono/cookie";
 import {
   AuthAdapter,
   AuthCredentials,
@@ -19,10 +20,10 @@ export abstract class BaseAuthAdapter implements AuthAdapter {
     this.sessionTtlMs = options.sessionTtlMs ?? 24 * 60 * 60 * 1000;
   }
 
-  extractCredentials(req: Request): AuthCredentials | null {
-    const authHeader = req.headers.authorization;
+  extractCredentials(c: Context): AuthCredentials | null {
+    const authHeader = c.req.header("authorization");
     if (!authHeader) {
-      const sessionId = req.cookies?.session;
+      const sessionId = getCookie(c, "session");
       if (sessionId) {
         return { type: "session", sessionId };
       }
@@ -40,7 +41,7 @@ export abstract class BaseAuthAdapter implements AuthAdapter {
       return { type: "basic", username, password };
     }
 
-    const apiKey = req.headers["x-api-key"];
+    const apiKey = c.req.header("x-api-key");
     if (typeof apiKey === "string") {
       return { type: "apiKey", apiKey };
     }
@@ -78,6 +79,16 @@ export abstract class BaseAuthAdapter implements AuthAdapter {
     return session;
   }
 
+  async invalidateUserSessions(userId: string, exceptSessionId?: string): Promise<void> {
+    if (!this.sessionStore.getAll) return;
+    const sessions = await this.sessionStore.getAll();
+    await Promise.all(
+      sessions
+        .filter((s) => s.userId === userId && s.id !== exceptSessionId)
+        .map((s) => this.sessionStore.delete(s.id))
+    );
+  }
+
   async refreshSession(sessionId: string): Promise<SessionData | null> {
     const session = await this.sessionStore.get(sessionId);
     if (!session) return null;
@@ -89,7 +100,7 @@ export abstract class BaseAuthAdapter implements AuthAdapter {
     return session;
   }
 
-  abstract getRoutes(): Router;
+  abstract getRoutes(): Hono;
 }
 
 export class CompositeAuthAdapter implements AuthAdapter {
@@ -100,9 +111,9 @@ export class CompositeAuthAdapter implements AuthAdapter {
     this.adapters = adapters;
   }
 
-  extractCredentials(req: Request): AuthCredentials | null {
+  extractCredentials(c: Context): AuthCredentials | null {
     for (const adapter of this.adapters) {
-      const credentials = adapter.extractCredentials(req);
+      const credentials = adapter.extractCredentials(c);
       if (credentials) return credentials;
     }
     return null;
@@ -132,10 +143,10 @@ export class CompositeAuthAdapter implements AuthAdapter {
     await Promise.all(this.adapters.map((a) => a.invalidateSession(token)));
   }
 
-  getRoutes(): Router {
-    const router = Router();
+  getRoutes(): Hono {
+    const router = new Hono();
     for (const adapter of this.adapters) {
-      router.use(`/${adapter.name}`, adapter.getRoutes());
+      router.route(`/${adapter.name}`, adapter.getRoutes());
     }
     return router;
   }
@@ -144,7 +155,7 @@ export class CompositeAuthAdapter implements AuthAdapter {
 export class NullAuthAdapter implements AuthAdapter {
   name = "null";
 
-  extractCredentials(_req: Request): AuthCredentials | null {
+  extractCredentials(_c: Context): AuthCredentials | null {
     return null;
   }
 
@@ -158,8 +169,8 @@ export class NullAuthAdapter implements AuthAdapter {
 
   async invalidateSession(_token: string): Promise<void> {}
 
-  getRoutes(): Router {
-    return Router();
+  getRoutes(): Hono {
+    return new Hono();
   }
 }
 

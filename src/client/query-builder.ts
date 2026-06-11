@@ -40,16 +40,17 @@ export interface QueryBuilder {
   lte: (field: string, value: number | Date | string) => string;
   like: (field: string, pattern: string) => string;
   notLike: (field: string, pattern: string) => string;
+  ilike: (field: string, pattern: string) => string;
   in: (field: string, values: unknown[]) => string;
   out: (field: string, values: unknown[]) => string;
   isNull: (field: string) => string;
   isNotNull: (field: string) => string;
   and: (...conditions: string[]) => string;
   or: (...conditions: string[]) => string;
-  not: (condition: string) => string;
   startsWith: (field: string, prefix: string) => string;
   endsWith: (field: string, suffix: string) => string;
   contains: (field: string, substring: string) => string;
+  icontains: (field: string, substring: string) => string;
   between: (
     field: string,
     min: number | Date | string,
@@ -65,8 +66,9 @@ export const q: QueryBuilder = {
   gte: (field, value) => `${field}>=${escapeValue(value)}`,
   lt: (field, value) => `${field}<${escapeValue(value)}`,
   lte: (field, value) => `${field}<=${escapeValue(value)}`,
-  like: (field, pattern) => `${field}=like=${escapeValue(pattern)}`,
-  notLike: (field, pattern) => `${field}=notlike=${escapeValue(pattern)}`,
+  like: (field, pattern) => `${field}%=${escapeValue(pattern)}`,
+  notLike: (field, pattern) => `${field}!%=${escapeValue(pattern)}`,
+  ilike: (field, pattern) => `${field}=ilike=${escapeValue(pattern)}`,
   in: (field, values) => `${field}=in=(${escapeForArray(values)})`,
   out: (field, values) => `${field}=out=(${escapeForArray(values)})`,
   isNull: (field) => `${field}=isnull=true`,
@@ -83,11 +85,10 @@ export const q: QueryBuilder = {
     if (filtered.length === 1) return filtered[0]!;
     return filtered.map((c) => `(${c})`).join(",");
   },
-  not: (condition) => `!not=(${condition})`,
-  startsWith: (field, prefix) => `${field}=like=${escapeValue(prefix + "%")}`,
-  endsWith: (field, suffix) => `${field}=like=${escapeValue("%" + suffix)}`,
-  contains: (field, substring) =>
-    `${field}=like=${escapeValue("%" + substring + "%")}`,
+  startsWith: (field, prefix) => `${field}=startswith=${escapeValue(prefix)}`,
+  endsWith: (field, suffix) => `${field}=endswith=${escapeValue(suffix)}`,
+  contains: (field, substring) => `${field}=contains=${escapeValue(substring)}`,
+  icontains: (field, substring) => `${field}=icontains=${escapeValue(substring)}`,
   between: (field, min, max) =>
     q.and(q.gte(field, min), q.lte(field, max)),
   raw: (expression) => expression,
@@ -206,13 +207,6 @@ export class QueryBuilderChain {
     return this;
   }
 
-  not(condition: string | QueryBuilderChain): this {
-    const cond =
-      condition instanceof QueryBuilderChain ? condition.build() : condition;
-    this.conditions.push(q.not(cond));
-    return this;
-  }
-
   raw(expression: string): this {
     this.conditions.push(expression);
     return this;
@@ -242,19 +236,19 @@ export const where = createQueryBuilder;
 export interface FieldBuilder<T extends Primitive = Primitive> {
   eq: (value: T) => string;
   neq: (value: T) => string;
-  gt: (value: T) => string;
-  gte: (value: T) => string;
-  lt: (value: T) => string;
-  lte: (value: T) => string;
-  in: (values: T[]) => string;
-  out: (values: T[]) => string;
+  gt: (value: NonNullable<T>) => string;
+  gte: (value: NonNullable<T>) => string;
+  lt: (value: NonNullable<T>) => string;
+  lte: (value: NonNullable<T>) => string;
+  in: (values: NonNullable<T>[]) => string;
+  out: (values: NonNullable<T>[]) => string;
   isNull: () => string;
   isNotNull: () => string;
-  like?: (pattern: string) => string;
-  contains?: (substring: string) => string;
-  startsWith?: (prefix: string) => string;
-  endsWith?: (suffix: string) => string;
-  between?: (min: T, max: T) => string;
+  like: (pattern: string) => string;
+  contains: (substring: string) => string;
+  startsWith: (prefix: string) => string;
+  endsWith: (suffix: string) => string;
+  between: (min: NonNullable<T>, max: NonNullable<T>) => string;
 }
 
 export const createFieldBuilder = <T extends Primitive = Primitive>(
@@ -281,20 +275,12 @@ export const createFieldBuilder = <T extends Primitive = Primitive>(
 };
 
 export type TypedQueryBuilder<T> = {
-  [K in keyof T]: T[K] extends string
-    ? FieldBuilder<string>
-    : T[K] extends number
-      ? FieldBuilder<number>
-      : T[K] extends boolean
-        ? FieldBuilder<boolean>
-        : T[K] extends Date
-          ? FieldBuilder<Date>
-          : T[K] extends null
-            ? FieldBuilder<null>
-            : FieldBuilder;
+  [K in keyof T]-?: [Extract<T[K], Primitive>] extends [never]
+    ? FieldBuilder
+    : FieldBuilder<Extract<T[K], Primitive>>;
 };
 
-export const createTypedQueryBuilder = <T extends Record<string, unknown>>(
+export const createTypedQueryBuilder = <T extends object>(
   fields?: (keyof T)[]
 ): TypedQueryBuilder<T> => {
   // If fields are provided, create explicit builder
@@ -399,5 +385,64 @@ export class IncludeBuilder {
 export const createIncludeBuilder = (): IncludeBuilder => {
   return new IncludeBuilder();
 };
+
+type FieldType<T, K extends keyof T> = Extract<T[K], Primitive>;
+
+export interface TypedFilter<T> {
+  eq<K extends keyof T>(field: K, value: FieldType<T, K>): string;
+  neq<K extends keyof T>(field: K, value: FieldType<T, K>): string;
+  gt<K extends keyof T>(field: K, value: NonNullable<FieldType<T, K>>): string;
+  gte<K extends keyof T>(field: K, value: NonNullable<FieldType<T, K>>): string;
+  lt<K extends keyof T>(field: K, value: NonNullable<FieldType<T, K>>): string;
+  lte<K extends keyof T>(field: K, value: NonNullable<FieldType<T, K>>): string;
+  in<K extends keyof T>(field: K, values: NonNullable<FieldType<T, K>>[]): string;
+  out<K extends keyof T>(field: K, values: NonNullable<FieldType<T, K>>[]): string;
+  isNull<K extends keyof T>(field: K): string;
+  isNotNull<K extends keyof T>(field: K): string;
+  like<K extends keyof T>(field: K, pattern: string): string;
+  contains<K extends keyof T>(field: K, substring: string): string;
+  startsWith<K extends keyof T>(field: K, prefix: string): string;
+  endsWith<K extends keyof T>(field: K, suffix: string): string;
+  between<K extends keyof T>(
+    field: K,
+    min: NonNullable<FieldType<T, K>>,
+    max: NonNullable<FieldType<T, K>>
+  ): string;
+  and(...conditions: string[]): string;
+  or(...conditions: string[]): string;
+  raw(expression: string): string;
+}
+
+/**
+ * Typed RSQL filter builder. Field names are validated against `keyof T` and
+ * value types are checked against the field type, while `raw()` remains an
+ * escape hatch for arbitrary expressions.
+ *
+ * @example
+ * const filter = f<Todo>().eq("completed", true); // 'completed==true'
+ */
+export const createTypedFilter = <T>(): TypedFilter<T> => ({
+  eq: (field, value) => q.eq(String(field), value),
+  neq: (field, value) => q.neq(String(field), value),
+  gt: (field, value) => q.gt(String(field), value as number | Date | string),
+  gte: (field, value) => q.gte(String(field), value as number | Date | string),
+  lt: (field, value) => q.lt(String(field), value as number | Date | string),
+  lte: (field, value) => q.lte(String(field), value as number | Date | string),
+  in: (field, values) => q.in(String(field), values),
+  out: (field, values) => q.out(String(field), values),
+  isNull: (field) => q.isNull(String(field)),
+  isNotNull: (field) => q.isNotNull(String(field)),
+  like: (field, pattern) => q.like(String(field), pattern),
+  contains: (field, substring) => q.contains(String(field), substring),
+  startsWith: (field, prefix) => q.startsWith(String(field), prefix),
+  endsWith: (field, suffix) => q.endsWith(String(field), suffix),
+  between: (field, min, max) =>
+    q.between(String(field), min as number | Date | string, max as number | Date | string),
+  and: (...conditions) => q.and(...conditions),
+  or: (...conditions) => q.or(...conditions),
+  raw: (expression) => q.raw(expression),
+});
+
+export const f = createTypedFilter;
 
 export default q;

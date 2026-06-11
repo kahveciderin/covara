@@ -65,23 +65,35 @@ throw new ForbiddenError("Cannot delete admin users");
 // -> 403: { type: "/__concave/problems/forbidden", title: "Forbidden", status: 403, detail: "Cannot delete admin users" }
 ```
 
-### Error Middleware
+### Error Handlers
 
-Add error handling middleware to your Express app:
+All Concave error classes extend Hono's `HTTPException` and self-render as RFC 7807 `application/problem+json` responses — throwing them from any handler, hook, or procedure produces the correct response.
+
+When using `createConcave`, error handling is wired up automatically. With a plain Hono app, register the handlers yourself:
 
 ```typescript
-import { errorMiddleware } from "@kahveciderin/concave";
+import { Hono } from "hono";
+import { errorHandler, notFoundHandler } from "@kahveciderin/concave";
 
-// After all routes
-app.use(errorMiddleware);
+const app = new Hono();
+app.onError(errorHandler);
+app.notFound(notFoundHandler);
 ```
 
-The middleware automatically:
+The error handler automatically:
 - Formats errors as RFC 7807 Problem Details
 - Sets `Content-Type: application/problem+json`
 - Adds `Retry-After` header for rate limit errors
 - Includes request ID if available
 - Logs errors with structured JSON
+
+#### Log severity by status
+
+The error handler picks the log level from the resolved HTTP status: `5xx` server errors are logged
+at `error`, while `4xx` client errors (validation, not-found, precondition, rate-limit, auth) are
+logged at `warn`. This keeps expected client errors from drowning out genuine server faults in your
+logs. Each record includes `requestId`, `method`, `path`, `status`, and the error message (plus the
+stack trace when debug mode is enabled).
 
 ### Validation Errors
 
@@ -332,7 +344,7 @@ function useResource<T>(resource: ResourceClient<T>) {
 ## Throwing Errors in Hooks
 
 ```typescript
-app.use("/api/users", useResource(usersTable, {
+app.route("/api/users", useResource(usersTable, {
   id: usersTable.id,
   db,
   hooks: {

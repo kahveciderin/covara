@@ -159,7 +159,7 @@ export const dataTable = (data: DataTableData): string => {
             sortUrl: '/__concave/ui/data/' + resource + '/table?limit=' + data.limit + (data.filter ? '&filter=' + encodeURIComponent(data.filter) : ''),
           })}
           <tbody>
-            ${data.items.map((item, i) => html`
+            ${data.items.map((item) => html`
               <tr hx-get="/__concave/ui/data/${resource}/row/${encodeURIComponent(String(item[data.schema.primaryKey]))}"
                   hx-target="#detail-panel"
                   hx-swap="innerHTML"

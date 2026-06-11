@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
-import { Response } from "express";
+import type { SSEWriter } from "@/server/sse";
 import {
   createSubscription,
   removeSubscription,
@@ -29,27 +29,37 @@ import { createMemoryKV, setGlobalKV, KVAdapter } from "@/kv";
 
 let kv: KVAdapter;
 
-const createMockResponse = () => {
+type MockWriter = SSEWriter & {
+  closed: boolean;
+  write: ReturnType<typeof vi.fn>;
+  getChunks: () => string[];
+  getEvents: () => any[];
+};
+
+const createMockResponse = (): MockWriter => {
   const chunks: string[] = [];
+  const closeCallbacks: (() => void)[] = [];
   const mockRes = {
     write: vi.fn((data: string) => {
       chunks.push(data);
       return true;
     }),
-    writableEnded: false,
-    end: vi.fn(() => {
-      mockRes.writableEnded = true;
+    closed: false,
+    bufferedBytes: 0,
+    close: vi.fn(() => {
+      mockRes.closed = true;
+      for (const cb of closeCallbacks.splice(0)) cb();
     }),
+    onClose: (cb: () => void) => {
+      closeCallbacks.push(cb);
+    },
     getChunks: () => chunks,
     getEvents: () =>
       chunks
         .filter((c) => c.startsWith("data: "))
         .map((c) => JSON.parse(c.slice(6).trim())),
-  } as unknown as Response & {
-    getChunks: () => string[];
-    getEvents: () => any[];
   };
-  return mockRes;
+  return mockRes as unknown as MockWriter;
 };
 
 const createMockFilter = () => ({
@@ -89,6 +99,47 @@ describe("Subscription System", () => {
   beforeEach(async () => {
     await clearAllSubscriptions();
     await changelog.clear();
+  });
+
+  describe("External mutation notification", () => {
+    it("delivers an invalidate event to subscribers on recordExternalMutation", async () => {
+      const { recordExternalMutation } = await import("@/resource/track-mutations");
+      const writer = createMockResponse();
+      registerHandler("ext-handler", writer);
+      await createSubscription({
+        resource: "widgets",
+        filter: "",
+        handlerId: "ext-handler",
+        authId: null,
+      });
+
+      await recordExternalMutation("widgets", "update");
+
+      const events = writer.getEvents();
+      expect(events.some((e) => e.type === "invalidate")).toBe(true);
+
+      const entries = await changelog.getEntriesSince("widgets", 0);
+      expect(entries.some((e) => e.objectId === "*" && e.type === "update")).toBe(true);
+
+      await unregisterHandler("ext-handler");
+    });
+
+    it("does not notify subscribers of a different resource", async () => {
+      const { recordExternalMutation } = await import("@/resource/track-mutations");
+      const writer = createMockResponse();
+      registerHandler("other-handler", writer);
+      await createSubscription({
+        resource: "gadgets",
+        filter: "",
+        handlerId: "other-handler",
+        authId: null,
+      });
+
+      await recordExternalMutation("widgets", "create");
+
+      expect(writer.getEvents().some((e) => e.type === "invalidate")).toBe(false);
+      await unregisterHandler("other-handler");
+    });
   });
 
   describe("Subscription Lifecycle", () => {
@@ -189,7 +240,7 @@ describe("Subscription System", () => {
     it("should detect disconnected handlers", () => {
       const mockRes = createMockResponse();
       registerHandler("handler-2", mockRes);
-      mockRes.writableEnded = true;
+      mockRes.closed = true;
       expect(isHandlerConnected("handler-2")).toBe(false);
     });
 
@@ -382,7 +433,7 @@ describe("Subscription System", () => {
     });
 
     it("should not send to ended handlers", async () => {
-      mockRes.writableEnded = true;
+      mockRes.closed = true;
 
       const items = [{ id: "1", name: "John" }];
       await sendExistingItems(subscriptionId, items, "id");
@@ -917,12 +968,12 @@ describe("SSE Error Handling", () => {
     });
 
     // Mark the response as ended (simulating connection close after error)
-    mockRes.writableEnded = true;
+    mockRes.closed = true;
 
     // Try to send an error event - should not write
     mockRes.write(`event: error\ndata: ${JSON.stringify({ error: "Should not appear" })}\n\n`);
 
-    // The write mock still captures the call, but in real scenario writableEnded check prevents actual writes
+    // The write mock still captures the call, but in real scenario the writer.closed check prevents actual writes
     // What we're testing is that isHandlerConnected returns false
     expect(isHandlerConnected(handlerId)).toBe(false);
 
@@ -982,7 +1033,7 @@ describe("SSE Error Handling", () => {
 
     // Send error to first subscription only
     mockRes1.write(`event: error\ndata: ${JSON.stringify({ error: "Error on sub1" })}\n\n`);
-    mockRes1.writableEnded = true;
+    mockRes1.closed = true;
 
     // Second subscription should still be able to receive events
     expect(isHandlerConnected(handlerId1)).toBe(false);
@@ -1018,28 +1069,7 @@ describe("SSE Error Handling", () => {
 describe("Subscription System (No KV - In-Memory Fallback)", () => {
   let savedKV: KVAdapter | null = null;
 
-  const createNoKVMockResponse = () => {
-    const chunks: string[] = [];
-    const mockRes = {
-      write: vi.fn((data: string) => {
-        chunks.push(data);
-        return true;
-      }),
-      writableEnded: false,
-      end: vi.fn(() => {
-        mockRes.writableEnded = true;
-      }),
-      getChunks: () => chunks,
-      getEvents: () =>
-        chunks
-          .filter((c) => c.startsWith("data: "))
-          .map((c) => JSON.parse(c.slice(6).trim())),
-    } as unknown as Response & {
-      getChunks: () => string[];
-      getEvents: () => any[];
-    };
-    return mockRes;
-  };
+  const createNoKVMockResponse = (): MockWriter => createMockResponse();
 
   const createNoKVMockFilter = () => ({
     compile: (expr: string) => ({

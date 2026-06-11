@@ -1,4 +1,4 @@
-import { Readable } from "stream";
+import { Readable } from "node:stream";
 
 export interface FileMetadata {
   key: string;
@@ -92,9 +92,10 @@ export interface S3StorageConfig {
 }
 
 export interface StorageConfig {
-  type: "memory" | "local" | "s3";
+  type: "memory" | "local" | "s3" | "r2";
   local?: LocalStorageConfig;
   s3?: S3StorageConfig;
+  r2?: unknown;
 }
 
 let globalStorage: StorageAdapter | null = null;

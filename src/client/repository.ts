@@ -4,7 +4,9 @@ import {
   AggregationResponse,
   SearchResponse,
   ListOptions,
+  ListOptionsWithSelect,
   GetOptions,
+  GetOptionsWithSelect,
   AggregateOptions,
   SearchOptions,
   CreateOptions,
@@ -13,9 +15,11 @@ import {
   SubscribeOptions,
   SubscriptionCallbacks,
   Subscription,
+  ProcedureDef,
+  AnyProcedures,
 } from "./types";
-import { Transport, TransportError } from "./transport";
-import { createSubscription, SubscriptionManager } from "./subscription-manager";
+import { Transport } from "./transport";
+import { createSubscription } from "./subscription-manager";
 import { OfflineManager } from "./offline";
 import { ResourceQueryBuilder } from "./resource-query-builder";
 
@@ -26,7 +30,10 @@ export interface RepositoryConfig {
   offline?: OfflineManager;
 }
 
-export class Repository<T extends { id: string }> implements ResourceClient<T> {
+export class Repository<
+  T extends { id: string },
+  P extends Record<keyof P, ProcedureDef> = AnyProcedures
+> implements ResourceClient<T, P> {
   private transport: Transport;
   private resourcePath: string;
   private idField: keyof T;
@@ -39,7 +46,13 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
     this.offline = config.offline;
   }
 
-  async list(options: ListOptions = {}): Promise<PaginatedResponse<T>> {
+  list<K extends keyof T>(
+    options: ListOptionsWithSelect<T, K>
+  ): Promise<PaginatedResponse<Pick<T, K>>>;
+  list(options?: ListOptions): Promise<PaginatedResponse<T>>;
+  async list(
+    options: ListOptions | ListOptionsWithSelect<T, keyof T> = {}
+  ): Promise<PaginatedResponse<Partial<T>>> {
     const params: Record<string, string | number | boolean | string[]> = {};
 
     if (options.filter) params.filter = options.filter;
@@ -59,7 +72,15 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
     return response.data;
   }
 
-  async get(id: string, options: GetOptions = {}): Promise<T> {
+  get<K extends keyof T>(
+    id: string,
+    options: GetOptionsWithSelect<T, K>
+  ): Promise<Pick<T, K>>;
+  get(id: string, options?: GetOptions): Promise<T>;
+  async get(
+    id: string,
+    options: GetOptions | GetOptionsWithSelect<T, keyof T> = {}
+  ): Promise<Partial<T>> {
     const params: Record<string, string | string[]> = {};
 
     if (options.select) params.select = options.select.join(",");
@@ -317,10 +338,15 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
     });
   }
 
-  async rpc<TInput, TOutput>(name: string, input: TInput): Promise<TOutput> {
-    const response = await this.transport.request<{ data: TOutput }>({
+  rpc<N extends keyof P>(name: N, input: P[N]["input"]): Promise<P[N]["output"]>;
+  rpc<TInput = unknown, TOutput = unknown>(
+    name: [keyof P] extends [never] ? string : never,
+    input: TInput
+  ): Promise<TOutput>;
+  async rpc(name: PropertyKey, input: unknown): Promise<unknown> {
+    const response = await this.transport.request<{ data: unknown }>({
       method: "POST",
-      path: `${this.resourcePath}/rpc/${name}`,
+      path: `${this.resourcePath}/rpc/${String(name)}`,
       body: input,
     });
 
@@ -332,8 +358,11 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
   }
 }
 
-export const createRepository = <T extends { id: string }>(
+export const createRepository = <
+  T extends { id: string },
+  P extends Record<keyof P, ProcedureDef> = AnyProcedures
+>(
   config: RepositoryConfig
-): ResourceClient<T> => {
-  return new Repository<T>(config);
+): ResourceClient<T, P> => {
+  return new Repository<T, P>(config);
 };

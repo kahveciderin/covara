@@ -1,8 +1,9 @@
-import { Request, Response, NextFunction } from "express";
-import { createHash } from "crypto";
+import type { MiddlewareHandler } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { createHash } from "node:crypto";
 import { KVAdapter } from "@/kv";
 import { IdempotencyMismatchError } from "@/resource/error";
-import { AuthenticatedRequest } from "@/auth/types";
+import { getLogger } from "@/server/logger";
 
 export interface IdempotencyConfig {
   storage: KVAdapter;
@@ -11,6 +12,12 @@ export interface IdempotencyConfig {
   paths?: string[];
   excludePaths?: string[];
   headerName?: string;
+  // What to do when the idempotency store is unreachable:
+  // - "proceed" (default): process the request without replay protection
+  //   (favors availability; logged at warn).
+  // - "fail": reject with 503 so the client retries (favors correctness — no
+  //   risk of a non-idempotent operation running twice).
+  onStoreError?: "proceed" | "fail";
 }
 
 interface CachedResponse {
@@ -29,7 +36,17 @@ const hashRequest = (method: string, path: string, body: unknown): string => {
   return createHash("sha256").update(data).digest("hex");
 };
 
-export const idempotencyMiddleware = (config: IdempotencyConfig) => {
+const readBodyForHash = async (raw: Request): Promise<unknown> => {
+  const text = await raw.clone().text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+};
+
+export const idempotencyMiddleware = (config: IdempotencyConfig): MiddlewareHandler => {
   const {
     storage,
     ttlMs = DEFAULT_TTL_MS,
@@ -37,77 +54,99 @@ export const idempotencyMiddleware = (config: IdempotencyConfig) => {
     paths,
     excludePaths,
     headerName = DEFAULT_HEADER,
+    onStoreError = "proceed",
   } = config;
 
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const key = req.headers[headerName] as string | undefined;
+  return async (c, next) => {
+    const key = c.req.header(headerName);
 
     if (!key) {
       return next();
     }
 
-    const method = req.method.toUpperCase() as "POST" | "PATCH" | "PUT" | "DELETE" | "GET";
-    if (!methods.includes(method as typeof methods[number])) {
+    const method = c.req.method.toUpperCase() as "POST" | "PATCH" | "PUT" | "DELETE" | "GET";
+    if (!methods.includes(method as (typeof methods)[number])) {
       return next();
     }
 
-    if (paths && !paths.some((p) => req.path.startsWith(p))) {
+    if (paths && !paths.some((p) => c.req.path.startsWith(p))) {
       return next();
     }
 
-    if (excludePaths && excludePaths.some((p) => req.path.startsWith(p))) {
+    if (excludePaths && excludePaths.some((p) => c.req.path.startsWith(p))) {
       return next();
     }
 
-    const userId = (req as AuthenticatedRequest).user?.id ?? "anonymous";
-    const requestHash = hashRequest(req.method, req.path, req.body);
+    const userId = c.get("user")?.id ?? "anonymous";
+    const body = await readBodyForHash(c.req.raw);
+    const requestHash = hashRequest(c.req.method, c.req.path, body);
     const cacheKey = `idempotency:${userId}:${key}`;
 
+    let parsedCache: CachedResponse | null = null;
     try {
       const cached = await storage.get(cacheKey);
-
       if (cached) {
-        const parsedCache: CachedResponse = JSON.parse(cached);
+        parsedCache = JSON.parse(cached) as CachedResponse;
+      }
+    } catch (error) {
+      getLogger().warn("Idempotency store unreachable", {
+        path: c.req.path,
+        onStoreError,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (onStoreError === "fail") {
+        return c.json(
+          {
+            type: "/__concave/problems/idempotency-store-unavailable",
+            title: "Idempotency store unavailable",
+            status: 503,
+            detail: "The idempotency store is unreachable; retry shortly.",
+          },
+          503
+        );
+      }
+      return next();
+    }
 
-        if (parsedCache.requestHash !== requestHash) {
-          const error = new IdempotencyMismatchError(
-            "Idempotency key was already used with different request parameters"
-          );
-          return next(error);
-        }
-
-        res.status(parsedCache.status).json(parsedCache.body);
-        return;
+    if (parsedCache) {
+      if (parsedCache.requestHash !== requestHash) {
+        throw new IdempotencyMismatchError(
+          "Idempotency key was already used with different request parameters"
+        );
       }
 
-      const originalJson = res.json.bind(res);
-      let responseCaptured = false;
-
-      res.json = function (body: unknown): Response {
-        if (!responseCaptured && res.statusCode < 500) {
-          responseCaptured = true;
-          const cacheData: CachedResponse = {
-            status: res.statusCode,
-            body,
-            requestHash,
-            createdAt: Date.now(),
-          };
-
-          storage
-            .set(cacheKey, JSON.stringify(cacheData), { px: ttlMs })
-            .catch((err) => {
-              console.error("Failed to cache idempotency response:", err);
-            });
-        }
-
-        return originalJson(body);
-      };
-
-      next();
-    } catch (error) {
-      console.error("Idempotency middleware error:", error);
-      next();
+      return c.json(parsedCache.body, parsedCache.status as ContentfulStatusCode);
     }
+
+    await next();
+
+    if (c.res.status >= 500) return;
+
+    const contentType = c.res.headers.get("content-type") ?? "";
+    if (!contentType.includes("application/json")) return;
+
+    let responseBody: unknown;
+    try {
+      responseBody = await c.res.clone().json();
+    } catch {
+      return;
+    }
+
+    const cacheData: CachedResponse = {
+      status: c.res.status,
+      body: responseBody,
+      requestHash,
+      createdAt: Date.now(),
+    };
+
+    storage
+      .set(cacheKey, JSON.stringify(cacheData), { px: ttlMs })
+      .catch((err) => {
+        getLogger().warn("Failed to cache idempotency response", {
+          path: c.req.path,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
   };
 };
 
@@ -153,20 +192,23 @@ export const validateIdempotencyKey = (key: string): boolean => {
 
 export const idempotencyKeyValidationMiddleware = (
   headerName: string = DEFAULT_HEADER
-) => {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const key = req.headers[headerName] as string | undefined;
+): MiddlewareHandler => {
+  return async (c, next) => {
+    const key = c.req.header(headerName);
 
     if (key && !validateIdempotencyKey(key)) {
-      res.status(400).json({
-        type: "/__concave/problems/validation-error",
-        title: "Invalid idempotency key",
-        status: 400,
-        detail: "Idempotency key must be 8-256 characters and contain only alphanumeric characters, underscores, and hyphens",
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/validation-error",
+          title: "Invalid idempotency key",
+          status: 400,
+          detail:
+            "Idempotency key must be 8-256 characters and contain only alphanumeric characters, underscores, and hyphens",
+        },
+        400
+      );
     }
 
-    next();
+    return next();
   };
 };

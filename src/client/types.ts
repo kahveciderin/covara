@@ -1,4 +1,11 @@
 import type { ResourceQueryBuilder } from "./resource-query-builder";
+import type { Transport } from "./transport";
+import type { OfflineManager } from "./offline";
+import type { AuthManager } from "./auth";
+import type { JWTClient } from "./jwt";
+import type { DateFieldRegistry } from "./dates";
+import type { LiveQueryCache, InvalidateTarget } from "./query-cache";
+import type { BillingClient } from "./billing";
 
 export type EventType = "added" | "existing" | "changed" | "removed" | "invalidate";
 
@@ -142,13 +149,13 @@ export interface DeleteOptions {
   optimistic?: boolean;
 }
 
-export interface BatchCreateOptions {
-  items: unknown[];
+export interface BatchCreateOptions<T = unknown> {
+  items: T[];
 }
 
-export interface BatchUpdateOptions {
+export interface BatchUpdateOptions<T = unknown> {
   filter: string;
-  data: unknown;
+  data: Partial<T>;
 }
 
 export interface BatchDeleteOptions {
@@ -178,6 +185,15 @@ export interface TransportConfig {
   headers?: Record<string, string>;
   credentials?: RequestCredentials;
   timeout?: number;
+  refreshAuth?: () => Promise<string | void>;
+  /**
+   * Opt into automatic ISO date-string -> Date conversion on parsed responses.
+   * - `true`: convert every string that looks like an ISO 8601 date.
+   * - a registry: convert only the listed field names per resource path. The
+   *   `request` call may also pass `dateFields` to scope conversion further.
+   * Defaults to off (wire types remain ISO `string`).
+   */
+  parseDates?: boolean | DateFieldRegistry;
 }
 
 export interface TransportRequest {
@@ -186,6 +202,13 @@ export interface TransportRequest {
   params?: Record<string, string | number | boolean | string[]>;
   body?: unknown;
   headers?: Record<string, string>;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  /**
+   * When date parsing is enabled on the transport, restrict ISO-string -> Date
+   * conversion to these field names for this request.
+   */
+  dateFields?: readonly string[];
 }
 
 export interface TransportResponse<T = unknown> {
@@ -194,12 +217,19 @@ export interface TransportResponse<T = unknown> {
   headers: Headers;
 }
 
-export type ConflictResolutionStrategy = "server-wins" | "client-wins" | "manual";
+export type ConflictResolutionStrategy = "server-wins" | "client-wins" | "merge" | "manual";
 
 export interface ConflictError {
   code: "CONFLICT";
   serverState: unknown;
   clientState: unknown;
+  /**
+   * Optional snapshot of the object as it was when the client started editing it.
+   * When present, the `merge` strategy uses it to detect which fields the client
+   * actually changed; otherwise every field present in the mutation data is
+   * treated as a client change.
+   */
+  baseState?: unknown;
 }
 
 export interface ResolvedMutation {
@@ -235,6 +265,15 @@ export interface OfflineConfig {
   ) => ResolvedMutation | "retry" | "discard";
   onIdRemapped?: (optimisticId: string, serverId: string) => void;
   dedupeWindowMs?: number;
+  /**
+   * Coordinate optimistic mutations, id-remaps, invalidations and queue flushing
+   * across browser tabs via BroadcastChannel. Opt-in: pass `true` to enable
+   * (default channel name), or a string to set a custom channel name. When
+   * enabled, only one "leader" tab flushes the shared mutation queue, preventing
+   * double-sends. Feature-detected: a no-op in React Native / Node where
+   * BroadcastChannel is unavailable.
+   */
+  tabSync?: boolean | string;
 }
 
 export interface OfflineStorage {
@@ -256,8 +295,63 @@ export interface ClientConfig {
   onSyncComplete?: () => void;
 }
 
-export interface ResourceClient<T extends { id: string }> {
+/**
+ * Options for `list` that carry a `select` projection as a literal tuple, used
+ * by the narrowing overloads to produce `Pick<T, K>` results.
+ */
+export interface ListOptionsWithSelect<T, K extends keyof T> {
+  select: readonly K[];
+  filter?: string;
+  include?: string;
+  cursor?: string;
+  limit?: number;
+  orderBy?: string;
+  totalCount?: boolean;
+}
+
+export interface GetOptionsWithSelect<T, K extends keyof T> {
+  select: readonly K[];
+  include?: string;
+}
+
+/**
+ * A map of RPC procedure names to their `input`/`output` shapes. Pass this as
+ * the second type parameter of `ResourceClient`/`Repository` to get
+ * compile-time checking of procedure names and payloads.
+ *
+ * @example
+ * interface TodoProcedures {
+ *   publish: { input: { id: string }; output: { success: boolean } };
+ * }
+ * const todos = client.resource<Todo, TodoProcedures>("/api/todos");
+ * await todos.rpc("publish", { id: "1" }); // typed; unknown names rejected
+ */
+export interface ProcedureDef {
+  input: unknown;
+  output: unknown;
+}
+
+/**
+ * Structural constraint for a procedures map. Written as a mapped type (rather
+ * than an index signature) so that both `interface` and `type` declarations
+ * with concrete procedure names satisfy it.
+ */
+export type ProceduresMap = { [name: string]: ProcedureDef };
+
+export type AnyProcedures = Record<never, ProcedureDef>;
+
+export interface ResourceClient<
+  T extends { id: string },
+  P extends Record<keyof P, ProcedureDef> = AnyProcedures
+> {
+  list<K extends keyof T>(
+    options: ListOptionsWithSelect<T, K>
+  ): Promise<PaginatedResponse<Pick<T, K>>>;
   list(options?: ListOptions): Promise<PaginatedResponse<T>>;
+  get<K extends keyof T>(
+    id: string,
+    options: GetOptionsWithSelect<T, K>
+  ): Promise<Pick<T, K>>;
   get(id: string, options?: GetOptions): Promise<T>;
   count(filter?: string): Promise<number>;
   aggregate(options: AggregateOptions): Promise<AggregationResponse>;
@@ -273,7 +367,13 @@ export interface ResourceClient<T extends { id: string }> {
     options?: SubscribeOptions,
     callbacks?: SubscriptionCallbacks<T>
   ): Subscription<T>;
-  rpc<TInput, TOutput>(name: string, input: TInput): Promise<TOutput>;
+  rpc<N extends keyof P>(name: N, input: P[N]["input"]): Promise<P[N]["output"]>;
+  // Loose escape hatch: only active when no procedures map is declared
+  // (`keyof P` is `never`), so a declared map rejects unknown names/inputs.
+  rpc<TInput = unknown, TOutput = unknown>(
+    name: [keyof P] extends [never] ? string : never,
+    input: TInput
+  ): Promise<TOutput>;
   query(): ResourceQueryBuilder<T>;
 }
 
@@ -324,7 +424,7 @@ export interface Subscription<T> {
  * const { items } = useLiveList(query);
  * // items type: (Pick<todos, 'id' | 'title'> & { category?: categories | null })[]
  */
-export interface LiveQueryLike<T extends { id: string } = { id: string }, Included = {}, Selected extends keyof T = keyof T> {
+export interface LiveQueryLike<T extends { id: string } = { id: string }, Included = unknown, Selected extends keyof T = keyof T> {
   readonly _type: T;
   readonly _included: Included;
   readonly _selected: Selected;
@@ -357,43 +457,58 @@ export interface ReactiveAggregate {
   setOptions(options: AggregateOptions): void;
 }
 
-export interface AuthManager {
-  configure(config: unknown): void;
-  initialize(): Promise<unknown>;
-  login(options?: { prompt?: "none" | "login" | "consent" }): Promise<void>;
-  handleCallback(callbackUrl?: string): Promise<unknown>;
-  logout(options?: { localOnly?: boolean }): Promise<void>;
-  refreshTokens(): Promise<unknown>;
-  getState(): unknown;
-  getAccessToken(): string | null;
-  getUser(): unknown | null;
-  isAuthenticated(): boolean;
-  getTransport(): unknown | null;
-  subscribe(callback: (state: unknown) => void): () => void;
-  on(event: string, listener: (...args: unknown[]) => void): () => void;
-}
+/**
+ * @deprecated Use the `JWTClient` type from the client package instead.
+ * This alias is kept for backward compatibility.
+ */
+export type JWTClientInterface = JWTClient;
 
-export interface JWTClientInterface {
-  getState(): unknown;
-  getAccessToken(): string | null;
-  isAuthenticated(): boolean;
-  login(email: string, password: string): Promise<unknown>;
-  signup(email: string, password: string, name?: string): Promise<unknown>;
-  refresh(): Promise<unknown>;
-  logout(): Promise<void>;
-  getUser(): Promise<unknown | null>;
-  subscribe(listener: (state: unknown) => void): () => void;
+export interface CheckAuthResult<TUser = unknown> {
+  user: TUser | null;
+  expiresAt?: Date;
 }
 
 export interface ConcaveClient {
-  readonly transport: unknown;
-  readonly offline?: unknown;
+  readonly transport: Transport;
+  readonly offline?: OfflineManager;
   readonly auth: AuthManager;
-  readonly jwt?: JWTClientInterface;
-  resource<T extends { id: string }>(path: string): ResourceClient<T>;
+  readonly jwt?: JWTClient;
+  /** Typed billing client for checkout, subscriptions, credits and the portal. */
+  readonly billing: BillingClient;
+  resource<T extends { id: string }, P extends Record<keyof P, ProcedureDef> = AnyProcedures>(
+    path: string
+  ): ResourceClient<T, P>;
   setAuthToken(token: string): void;
   clearAuthToken(): void;
   setAuthErrorHandler(handler: () => void): void;
   getPendingCount(): Promise<number>;
-  checkAuth(url?: string): Promise<{ user: unknown | null }>;
+  checkAuth<TUser = unknown>(url?: string): Promise<CheckAuthResult<TUser>>;
+  /**
+   * The shared LiveQuery cache. React hooks acquire/release queries here so they
+   * can be invalidated and prefetched centrally.
+   */
+  readonly queryCache: LiveQueryCache;
+  /**
+   * Mark matching cached LiveQuery stores stale and refetch them.
+   * @param target a resource path / prefix string, or a predicate over (path, options).
+   * @returns the number of cached queries refreshed.
+   */
+  invalidate(target: InvalidateTarget): number;
+  /**
+   * Warm the LiveQuery cache for a resource so a later `useLiveList` reads from
+   * cache immediately. Resolves once the initial fetch completes.
+   */
+  prefetch(
+    resource: string,
+    options?: LiveQueryOptionsLike
+  ): Promise<void>;
+}
+
+export interface LiveQueryOptionsLike {
+  filter?: string;
+  include?: string;
+  orderBy?: string;
+  limit?: number;
+  subscriptionMode?: string;
+  select?: string[];
 }

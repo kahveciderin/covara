@@ -328,6 +328,7 @@ describe("SubscriptionManager", () => {
         transport: mockTransport,
         resourcePath: "/items",
         idField: "id",
+        rng: () => 1,
       });
 
       // clear initial call
@@ -354,6 +355,7 @@ describe("SubscriptionManager", () => {
         transport: mockTransport,
         resourcePath: "/items",
         idField: "id",
+        rng: () => 1,
       });
 
       vi.clearAllMocks();
@@ -383,6 +385,7 @@ describe("SubscriptionManager", () => {
         transport: mockTransport,
         resourcePath: "/items",
         idField: "id",
+        rng: () => 1,
       });
 
       // set high reconnect attempts (but below max to allow scheduling)

@@ -26,3 +26,5 @@ export const clearGlobalSearch = (): void => {
 export * from "./types";
 export * from "./memory";
 export * from "./opensearch";
+export * from "./sqlite-fts";
+export * from "./postgres-fts";

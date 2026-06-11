@@ -1,12 +1,13 @@
-import { Router, Request, Response } from "express";
-import * as crypto from "crypto";
+import { Hono } from "hono";
+import * as crypto from "node:crypto";
 import {
-  OIDCClient,
   OIDCProviderConfig,
   OIDCProviderStores,
   OIDCUser,
   TokenService,
 } from "../types";
+import { readFormBody } from "../body";
+import { authenticateClient } from "./client-auth";
 
 const base64UrlEncode = (buffer: Buffer): string => {
   return buffer
@@ -14,50 +15,6 @@ const base64UrlEncode = (buffer: Buffer): string => {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=/g, "");
-};
-
-interface ClientAuth {
-  success: boolean;
-  client?: OIDCClient;
-  error?: string;
-}
-
-const authenticateClient = async (
-  req: Request,
-  clientStore: OIDCProviderStores["clients"]
-): Promise<ClientAuth> => {
-  let clientId: string | undefined;
-  let clientSecret: string | undefined;
-
-  const authHeader = req.headers.authorization;
-  if (authHeader?.startsWith("Basic ")) {
-    const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
-    const [id, secret] = decoded.split(":");
-    clientId = decodeURIComponent(id);
-    clientSecret = decodeURIComponent(secret);
-  } else {
-    clientId = req.body.client_id;
-    clientSecret = req.body.client_secret;
-  }
-
-  if (!clientId) {
-    return { success: false, error: "client_id is required" };
-  }
-
-  const client = await clientStore.get(clientId);
-  if (!client) {
-    return { success: false, error: "Unknown client" };
-  }
-
-  if (client.tokenEndpointAuthMethod === "none") {
-    return { success: true, client };
-  }
-
-  if (client.secret && client.secret !== clientSecret) {
-    return { success: false, error: "Invalid client credentials" };
-  }
-
-  return { success: true, client };
 };
 
 interface TokenEndpointConfig {
@@ -72,68 +29,91 @@ export const createTokenEndpoint = ({
   stores,
   tokenService,
   findUserById,
-}: TokenEndpointConfig): Router => {
-  const router = Router();
+}: TokenEndpointConfig): Hono => {
+  const router = new Hono();
 
-  router.post("/", async (req: Request, res: Response) => {
-    const clientAuth = await authenticateClient(req, stores.clients);
+  router.post("/", async (c) => {
+    const body = await readFormBody(c);
+
+    const clientAuth = await authenticateClient(c, body, stores.clients);
     if (!clientAuth.success || !clientAuth.client) {
-      return res.status(401).json({
-        error: "invalid_client",
-        error_description: clientAuth.error ?? "Client authentication failed",
-      });
+      return c.json(
+        {
+          error: "invalid_client",
+          error_description: clientAuth.error ?? "Client authentication failed",
+        },
+        401
+      );
     }
 
     const client = clientAuth.client;
-    const grantType = req.body.grant_type;
+    const grantType = body.grant_type;
 
     if (grantType === "authorization_code") {
-      const { code, redirect_uri, code_verifier } = req.body;
+      const { code, redirect_uri, code_verifier } = body;
 
       if (!code) {
-        return res.status(400).json({
-          error: "invalid_request",
-          error_description: "code is required",
-        });
+        return c.json(
+          {
+            error: "invalid_request",
+            error_description: "code is required",
+          },
+          400
+        );
       }
 
       const authCode = await stores.authorizationCodes.get(code);
       if (!authCode) {
-        return res.status(400).json({
-          error: "invalid_grant",
-          error_description: "Authorization code not found or expired",
-        });
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "Authorization code not found or expired",
+          },
+          400
+        );
       }
 
       await stores.authorizationCodes.delete(code);
 
       if (authCode.clientId !== client.id) {
-        return res.status(400).json({
-          error: "invalid_grant",
-          error_description: "Authorization code was not issued to this client",
-        });
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "Authorization code was not issued to this client",
+          },
+          400
+        );
       }
 
       if (authCode.redirectUri !== redirect_uri) {
-        return res.status(400).json({
-          error: "invalid_grant",
-          error_description: "redirect_uri does not match",
-        });
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "redirect_uri does not match",
+          },
+          400
+        );
       }
 
       if (Date.now() > authCode.expiresAt) {
-        return res.status(400).json({
-          error: "invalid_grant",
-          error_description: "Authorization code has expired",
-        });
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "Authorization code has expired",
+          },
+          400
+        );
       }
 
       if (authCode.codeChallenge) {
         if (!code_verifier) {
-          return res.status(400).json({
-            error: "invalid_grant",
-            error_description: "code_verifier is required",
-          });
+          return c.json(
+            {
+              error: "invalid_grant",
+              error_description: "code_verifier is required",
+            },
+            400
+          );
         }
 
         const method = authCode.codeChallengeMethod ?? "S256";
@@ -147,19 +127,25 @@ export const createTokenEndpoint = ({
         }
 
         if (computedChallenge !== authCode.codeChallenge) {
-          return res.status(400).json({
-            error: "invalid_grant",
-            error_description: "Invalid code_verifier",
-          });
+          return c.json(
+            {
+              error: "invalid_grant",
+              error_description: "Invalid code_verifier",
+            },
+            400
+          );
         }
       }
 
       const user = await findUserById(authCode.userId);
       if (!user) {
-        return res.status(400).json({
-          error: "invalid_grant",
-          error_description: "User not found",
-        });
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "User not found",
+          },
+          400
+        );
       }
 
       const tokens = await tokenService.generateTokenSet({
@@ -172,48 +158,63 @@ export const createTokenEndpoint = ({
         includeRefreshToken: authCode.scope.split(" ").includes("offline_access"),
       });
 
-      return res.json(tokens);
+      return c.json(tokens);
     }
 
     if (grantType === "refresh_token") {
-      const { refresh_token, scope: requestedScope } = req.body;
+      const { refresh_token, scope: requestedScope } = body;
 
       if (!refresh_token) {
-        return res.status(400).json({
-          error: "invalid_request",
-          error_description: "refresh_token is required",
-        });
+        return c.json(
+          {
+            error: "invalid_request",
+            error_description: "refresh_token is required",
+          },
+          400
+        );
       }
 
       const refreshData = await stores.refreshTokens.get(refresh_token);
       if (!refreshData) {
-        return res.status(400).json({
-          error: "invalid_grant",
-          error_description: "Refresh token not found or expired",
-        });
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "Refresh token not found or expired",
+          },
+          400
+        );
       }
 
       if (refreshData.clientId !== client.id) {
-        return res.status(400).json({
-          error: "invalid_grant",
-          error_description: "Refresh token was not issued to this client",
-        });
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "Refresh token was not issued to this client",
+          },
+          400
+        );
       }
 
       if (Date.now() > refreshData.expiresAt) {
         await stores.refreshTokens.delete(refresh_token);
-        return res.status(400).json({
-          error: "invalid_grant",
-          error_description: "Refresh token has expired",
-        });
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "Refresh token has expired",
+          },
+          400
+        );
       }
 
       const user = await findUserById(refreshData.userId);
       if (!user) {
-        return res.status(400).json({
-          error: "invalid_grant",
-          error_description: "User not found",
-        });
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "User not found",
+          },
+          400
+        );
       }
 
       let effectiveScope = refreshData.scope;
@@ -222,10 +223,13 @@ export const createTokenEndpoint = ({
         const originalScopes = refreshData.scope.split(" ");
         const narrowed = requestedScopes.filter((s: string) => originalScopes.includes(s));
         if (narrowed.length !== requestedScopes.length) {
-          return res.status(400).json({
-            error: "invalid_scope",
-            error_description: "Requested scope exceeds original grant",
-          });
+          return c.json(
+            {
+              error: "invalid_scope",
+              error_description: "Requested scope exceeds original grant",
+            },
+            400
+          );
         }
         effectiveScope = narrowed.join(" ");
       }
@@ -242,13 +246,16 @@ export const createTokenEndpoint = ({
         includeRefreshToken: true,
       });
 
-      return res.json(tokens);
+      return c.json(tokens);
     }
 
-    return res.status(400).json({
-      error: "unsupported_grant_type",
-      error_description: `Grant type '${grantType}' is not supported`,
-    });
+    return c.json(
+      {
+        error: "unsupported_grant_type",
+        error_description: `Grant type '${grantType}' is not supported`,
+      },
+      400
+    );
   });
 
   return router;

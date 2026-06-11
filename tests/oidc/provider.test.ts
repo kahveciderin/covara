@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import express, { Express } from "express";
-import request from "supertest";
+import { describe, it, expect, beforeEach } from "vitest";
+import { Hono } from "hono";
 import { createOIDCProvider } from "../../src/oidc/provider";
 import { createKeyManager } from "../../src/oidc/keys";
 import { generateDiscoveryDocument } from "../../src/oidc/discovery";
 import { OIDCClient, OIDCProviderConfig, OIDCUser } from "../../src/oidc/types";
+import { get, post } from "../helpers/hono";
 
 const testUser: OIDCUser = {
   id: "user-123",
@@ -53,6 +53,26 @@ const createTestConfig = (
   },
   ...overrides,
 });
+
+const postForm = async (
+  app: Hono,
+  path: string,
+  form: Record<string, string>
+) => {
+  const res = await app.request(path, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(form).toString(),
+  });
+  const text = await res.text();
+  let body: any;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = text;
+  }
+  return { status: res.status, body, headers: res.headers };
+};
 
 describe("OIDC Provider", () => {
   describe("Discovery Document", () => {
@@ -142,29 +162,25 @@ describe("OIDC Provider", () => {
   });
 
   describe("Provider Router", () => {
-    let app: Express;
+    let app: Hono;
 
     beforeEach(() => {
-      app = express();
-      app.use(express.json());
-      app.use(express.urlencoded({ extended: true }));
+      app = new Hono();
 
       const config = createTestConfig();
       const { router } = createOIDCProvider(config);
-      app.use("/oidc", router);
+      app.route("/oidc", router);
     });
 
     it("should serve discovery document", async () => {
-      const res = await request(app).get(
-        "/oidc/.well-known/openid-configuration"
-      );
+      const res = await get(app, "/oidc/.well-known/openid-configuration");
 
       expect(res.status).toBe(200);
       expect(res.body.issuer).toBe("https://auth.example.com");
     });
 
     it("should serve JWKS endpoint", async () => {
-      const res = await request(app).get("/oidc/jwks");
+      const res = await get(app, "/oidc/jwks");
 
       expect(res.status).toBe(200);
       expect(res.body.keys).toBeDefined();
@@ -173,61 +189,57 @@ describe("OIDC Provider", () => {
 
     describe("Authorization Endpoint", () => {
       it("should redirect to login for valid request", async () => {
-        const res = await request(app)
-          .get("/oidc/authorize")
-          .query({
-            response_type: "code",
-            client_id: "test-client",
-            redirect_uri: "http://localhost:3000/callback",
-            scope: "openid profile email",
-            state: "test-state",
-            code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
-            code_challenge_method: "S256",
-          });
+        const query = new URLSearchParams({
+          response_type: "code",
+          client_id: "test-client",
+          redirect_uri: "http://localhost:3000/callback",
+          scope: "openid profile email",
+          state: "test-state",
+          code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+          code_challenge_method: "S256",
+        });
+        const res = await get(app, `/oidc/authorize?${query.toString()}`);
 
         expect(res.status).toBe(302);
-        expect(res.headers.location).toContain("/login");
+        expect(res.headers.get("location")).toContain("/login");
       });
 
       it("should reject invalid client_id", async () => {
-        const res = await request(app)
-          .get("/oidc/authorize")
-          .query({
-            response_type: "code",
-            client_id: "invalid-client",
-            redirect_uri: "http://localhost:3000/callback",
-            scope: "openid",
-            state: "test-state",
-          });
+        const query = new URLSearchParams({
+          response_type: "code",
+          client_id: "invalid-client",
+          redirect_uri: "http://localhost:3000/callback",
+          scope: "openid",
+          state: "test-state",
+        });
+        const res = await get(app, `/oidc/authorize?${query.toString()}`);
 
         expect(res.status).toBe(400);
         expect(res.body.error).toBe("invalid_client");
       });
 
       it("should reject invalid redirect_uri", async () => {
-        const res = await request(app)
-          .get("/oidc/authorize")
-          .query({
-            response_type: "code",
-            client_id: "test-client",
-            redirect_uri: "http://malicious.com/callback",
-            scope: "openid",
-            state: "test-state",
-          });
+        const query = new URLSearchParams({
+          response_type: "code",
+          client_id: "test-client",
+          redirect_uri: "http://malicious.com/callback",
+          scope: "openid",
+          state: "test-state",
+        });
+        const res = await get(app, `/oidc/authorize?${query.toString()}`);
 
         expect(res.status).toBe(400);
         expect(res.body.error).toBe("invalid_redirect_uri");
       });
 
       it("should require state parameter", async () => {
-        const res = await request(app)
-          .get("/oidc/authorize")
-          .query({
-            response_type: "code",
-            client_id: "test-client",
-            redirect_uri: "http://localhost:3000/callback",
-            scope: "openid",
-          });
+        const query = new URLSearchParams({
+          response_type: "code",
+          client_id: "test-client",
+          redirect_uri: "http://localhost:3000/callback",
+          scope: "openid",
+        });
+        const res = await get(app, `/oidc/authorize?${query.toString()}`);
 
         expect(res.status).toBe(400);
         expect(res.body.error).toBe("invalid_request");
@@ -236,44 +248,35 @@ describe("OIDC Provider", () => {
 
     describe("Token Endpoint", () => {
       it("should reject missing grant_type", async () => {
-        const res = await request(app)
-          .post("/oidc/token")
-          .type("form")
-          .send({
-            code: "test-code",
-            redirect_uri: "http://localhost:3000/callback",
-            client_id: "test-client",
-          });
+        const res = await postForm(app, "/oidc/token", {
+          code: "test-code",
+          redirect_uri: "http://localhost:3000/callback",
+          client_id: "test-client",
+        });
 
         expect(res.status).toBe(400);
         expect(res.body.error).toBe("unsupported_grant_type");
       });
 
       it("should reject invalid authorization code", async () => {
-        const res = await request(app)
-          .post("/oidc/token")
-          .type("form")
-          .send({
-            grant_type: "authorization_code",
-            code: "invalid-code",
-            redirect_uri: "http://localhost:3000/callback",
-            client_id: "test-client",
-            code_verifier: "test-verifier",
-          });
+        const res = await postForm(app, "/oidc/token", {
+          grant_type: "authorization_code",
+          code: "invalid-code",
+          redirect_uri: "http://localhost:3000/callback",
+          client_id: "test-client",
+          code_verifier: "test-verifier",
+        });
 
         expect(res.status).toBe(400);
         expect(res.body.error).toBe("invalid_grant");
       });
 
       it("should reject invalid refresh token", async () => {
-        const res = await request(app)
-          .post("/oidc/token")
-          .type("form")
-          .send({
-            grant_type: "refresh_token",
-            refresh_token: "invalid-refresh-token",
-            client_id: "test-client",
-          });
+        const res = await postForm(app, "/oidc/token", {
+          grant_type: "refresh_token",
+          refresh_token: "invalid-refresh-token",
+          client_id: "test-client",
+        });
 
         expect(res.status).toBe(400);
         expect(res.body.error).toBe("invalid_grant");
@@ -282,15 +285,15 @@ describe("OIDC Provider", () => {
 
     describe("UserInfo Endpoint", () => {
       it("should reject request without authorization", async () => {
-        const res = await request(app).get("/oidc/userinfo");
+        const res = await get(app, "/oidc/userinfo");
 
         expect(res.status).toBe(401);
       });
 
       it("should reject invalid access token", async () => {
-        const res = await request(app)
-          .get("/oidc/userinfo")
-          .set("Authorization", "Bearer invalid-token");
+        const res = await get(app, "/oidc/userinfo", {
+          Authorization: "Bearer invalid-token",
+        });
 
         expect(res.status).toBe(401);
         expect(res.body.error).toBe("invalid_token");
@@ -299,21 +302,20 @@ describe("OIDC Provider", () => {
 
     describe("Logout Endpoint", () => {
       it("should handle logout without id_token_hint", async () => {
-        const res = await request(app).get("/oidc/logout");
+        const res = await get(app, "/oidc/logout");
 
         expect(res.status).toBe(200);
       });
 
       it("should handle post_logout_redirect_uri", async () => {
-        const res = await request(app)
-          .get("/oidc/logout")
-          .query({
-            post_logout_redirect_uri: "http://localhost:3000",
-            client_id: "test-client",
-          });
+        const query = new URLSearchParams({
+          post_logout_redirect_uri: "http://localhost:3000",
+          client_id: "test-client",
+        });
+        const res = await get(app, `/oidc/logout?${query.toString()}`);
 
         expect(res.status).toBe(302);
-        expect(res.headers.location).toContain("http://localhost:3000");
+        expect(res.headers.get("location")).toContain("http://localhost:3000");
       });
     });
   });
@@ -321,7 +323,7 @@ describe("OIDC Provider", () => {
   describe("Provider Middleware", () => {
     it("should validate access token", async () => {
       const config = createTestConfig();
-      const { middleware, tokenService, stores } = createOIDCProvider(config);
+      const { middleware, tokenService } = createOIDCProvider(config);
 
       const tokenSet = await tokenService.generateTokenSet({
         user: testUser,
@@ -330,16 +332,15 @@ describe("OIDC Provider", () => {
         authTime: Math.floor(Date.now() / 1000),
       });
 
-      const app = express();
-      app.use(middleware);
-      app.get("/protected", (req, res) => {
-        const user = (req as Express.Request & { user?: unknown }).user;
-        res.json({ user });
+      const app = new Hono();
+      app.use("*", middleware);
+      app.get("/protected", (c) => {
+        return c.json({ user: c.get("user") });
       });
 
-      const res = await request(app)
-        .get("/protected")
-        .set("Authorization", `Bearer ${tokenSet.access_token}`);
+      const res = await get(app, "/protected", {
+        Authorization: `Bearer ${tokenSet.access_token}`,
+      });
 
       expect(res.status).toBe(200);
       expect(res.body.user.id).toBe("user-123");
@@ -349,13 +350,13 @@ describe("OIDC Provider", () => {
       const config = createTestConfig();
       const { middleware } = createOIDCProvider(config);
 
-      const app = express();
-      app.use(middleware);
-      app.get("/public", (_req, res) => {
-        res.json({ ok: true });
+      const app = new Hono();
+      app.use("*", middleware);
+      app.get("/public", (c) => {
+        return c.json({ ok: true });
       });
 
-      const res = await request(app).get("/public");
+      const res = await get(app, "/public");
 
       expect(res.status).toBe(200);
     });
@@ -364,15 +365,15 @@ describe("OIDC Provider", () => {
       const config = createTestConfig();
       const { middleware } = createOIDCProvider(config);
 
-      const app = express();
-      app.use(middleware);
-      app.get("/protected", (_req, res) => {
-        res.json({ ok: true });
+      const app = new Hono();
+      app.use("*", middleware);
+      app.get("/protected", (c) => {
+        return c.json({ ok: true });
       });
 
-      const res = await request(app)
-        .get("/protected")
-        .set("Authorization", "Bearer invalid-token");
+      const res = await get(app, "/protected", {
+        Authorization: "Bearer invalid-token",
+      });
 
       expect(res.status).toBe(401);
     });

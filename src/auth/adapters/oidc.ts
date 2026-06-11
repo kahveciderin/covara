@@ -1,4 +1,5 @@
-import { Request, Router } from "express";
+import { Hono, type Context } from "hono";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { BaseAuthAdapter, createUserContext } from "../adapter";
 import {
   AuthCredentials,
@@ -7,7 +8,8 @@ import {
   SessionStore,
 } from "../types";
 import { UserContext } from "@/resource/types";
-import * as crypto from "crypto";
+import { isProduction } from "@/server/env";
+import * as crypto from "node:crypto";
 
 export interface OIDCProviderConfig {
   name: string;
@@ -325,13 +327,13 @@ export class OIDCAdapter extends BaseAuthAdapter {
     return { user: userContext, session, isNewUser };
   }
 
-  extractCredentials(req: Request): AuthCredentials | null {
-    const sessionCookie = req.cookies?.session;
+  extractCredentials(c: Context): AuthCredentials | null {
+    const sessionCookie = getCookie(c, "session");
     if (sessionCookie) {
       return { type: "session", sessionId: sessionCookie };
     }
 
-    const authHeader = req.headers.authorization;
+    const authHeader = c.req.header("authorization");
     if (authHeader?.startsWith("Bearer ")) {
       return { type: "bearer", token: authHeader.slice(7) };
     }
@@ -353,86 +355,85 @@ export class OIDCAdapter extends BaseAuthAdapter {
     return { success: true, expiresAt: session.expiresAt };
   }
 
-  getRoutes(): Router {
-    const router = Router();
+  getRoutes(): Hono {
+    const router = new Hono();
 
-    router.get("/provider/:name", async (req, res) => {
+    router.get("/provider/:name", async (c) => {
+      const name = c.req.param("name");
       try {
-        const { name } = req.params;
-        const returnTo = req.query.returnTo as string | undefined;
+        const returnTo = c.req.query("returnTo");
         const authUrl = await this.getAuthorizationUrl(name, returnTo);
-        res.redirect(authUrl);
+        return c.redirect(authUrl, 302);
       } catch (error) {
-        this.options.onError?.(error as Error, req.params.name);
-        res.status(400).json({ error: "Failed to initiate OAuth flow" });
+        this.options.onError?.(error as Error, name);
+        return c.json({ error: "Failed to initiate OAuth flow" }, 400);
       }
     });
 
-    router.get("/callback/:name", async (req, res) => {
+    router.get("/callback/:name", async (c) => {
+      const name = c.req.param("name");
       try {
-        const { name } = req.params;
-        const { code, state, error, error_description } = req.query;
+        const code = c.req.query("code");
+        const state = c.req.query("state");
+        const error = c.req.query("error");
+        const errorDescription = c.req.query("error_description");
 
         if (error) {
-          throw new Error(`OAuth error: ${error} - ${error_description}`);
+          throw new Error(`OAuth error: ${error} - ${errorDescription}`);
         }
 
         if (!code || !state) {
           throw new Error("Missing code or state parameter");
         }
 
-        const result = await this.handleCallback(
-          name,
-          code as string,
-          state as string
-        );
+        const result = await this.handleCallback(name, code, state);
 
-        res.cookie("session", result.session.id, {
+        setCookie(c, "session", result.session.id, {
           httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
+          secure: isProduction(),
           sameSite: "lax",
           expires: result.session.expiresAt,
         });
 
-        const stateData = this.stateStore.get(state as string);
+        const stateData = this.stateStore.get(state);
         const returnTo = stateData?.returnTo ?? "/";
-        res.redirect(returnTo);
+        return c.redirect(returnTo, 302);
       } catch (error) {
-        this.options.onError?.(error as Error, req.params.name);
-        res.status(400).json({ error: "OAuth callback failed" });
+        this.options.onError?.(error as Error, name);
+        return c.json({ error: "OAuth callback failed" }, 400);
       }
     });
 
-    router.get("/providers", (_req, res) => {
+    router.get("/providers", (c) => {
       const providers = Array.from(this.providers.keys()).map((name) => ({
         name,
         authUrl: `/auth/oidc/provider/${name}`,
       }));
-      res.json({ providers });
+      return c.json({ providers });
     });
 
-    router.get("/me", async (req, res) => {
-      const credentials = this.extractCredentials(req);
+    router.get("/me", async (c) => {
+      const credentials = this.extractCredentials(c);
       if (!credentials) {
-        return res.json({ user: null });
+        return c.json({ user: null });
       }
 
       const result = await this.validateCredentials(credentials);
       if (!result.success) {
-        return res.json({ user: null });
+        return c.json({ user: null });
       }
 
-      res.json({ expiresAt: result.expiresAt });
+      return c.json({ expiresAt: result.expiresAt });
     });
 
-    router.post("/logout", async (req, res) => {
-      const credentials = this.extractCredentials(req);
+    router.post("/logout", async (c) => {
+      const credentials = this.extractCredentials(c);
       if (credentials?.sessionId) {
         await this.invalidateSession(credentials.sessionId);
       }
 
-      res.clearCookie("session");
-      res.json({ success: true });
+      deleteCookie(c, "session");
+      return c.json({ success: true });
     });
 
     return router;

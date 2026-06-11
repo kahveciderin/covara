@@ -98,7 +98,10 @@ export const notIn = (field: string, values: unknown[]): CompiledScope =>
   new ScopeExpression(`${field}=out=${escapeValue(values)}`);
 
 export const like = (field: string, pattern: string): CompiledScope =>
-  new ScopeExpression(`${field}=like=${escapeValue(pattern)}`);
+  new ScopeExpression(`${field}%=${escapeValue(pattern)}`);
+
+export const notLike = (field: string, pattern: string): CompiledScope =>
+  new ScopeExpression(`${field}!%=${escapeValue(pattern)}`);
 
 export const isNull = (field: string): CompiledScope =>
   new ScopeExpression(`${field}=isnull=true`);
@@ -124,11 +127,6 @@ export const or = (...scopes: CompiledScope[]): CompiledScope => {
   return new ScopeExpression(
     nonEmpty.map((s) => `(${s.toString()})`).join(",")
   );
-};
-
-export const not = (scope: CompiledScope): CompiledScope => {
-  if (scope.isEmpty()) return allScope();
-  return new ScopeExpression(`!not=(${scope.toString()})`);
 };
 
 export const ownerScope = (userId: string, ownerField = "userId"): CompiledScope =>

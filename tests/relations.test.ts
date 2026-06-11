@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
-import express, { Express } from "express";
-import request from "supertest";
+import { Hono } from "hono";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -13,6 +12,7 @@ import {
   RelationsConfig,
 } from "@/resource/relations";
 import { createMemoryKV, setGlobalKV, KVAdapter } from "@/kv";
+import { createTestApp, get } from "./helpers/hono";
 
 const usersTable = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -60,7 +60,7 @@ const postTagsTable = sqliteTable("postTags", {
 
 let sqlite: Database.Database;
 let db: ReturnType<typeof drizzle>;
-let app: Express;
+let app: Hono;
 let kv: KVAdapter;
 
 describe("Relations System", () => {
@@ -872,10 +872,9 @@ describe("Relations System", () => {
         { postId: "post-2", tagId: "tag-2" },
       ]).run();
 
-      app = express();
-      app.use(express.json());
+      app = createTestApp();
 
-      app.use(
+      app.route(
         "/api/users",
         useResource(usersTable, {
           db,
@@ -884,7 +883,7 @@ describe("Relations System", () => {
         })
       );
 
-      app.use(
+      app.route(
         "/api/posts",
         useResource(postsTable, {
           db,
@@ -928,7 +927,7 @@ describe("Relations System", () => {
         })
       );
 
-      app.use(
+      app.route(
         "/api/categories",
         useResource(categoriesTable, {
           db,
@@ -940,7 +939,7 @@ describe("Relations System", () => {
 
     describe("GET / with include", () => {
       it("should return items without relations when no include param", async () => {
-        const res = await request(app).get("/api/posts");
+        const res = await get(app, "/api/posts");
 
         expect(res.status).toBe(200);
         expect(res.body.items).toHaveLength(3);
@@ -948,7 +947,7 @@ describe("Relations System", () => {
       });
 
       it("should include single belongsTo relation", async () => {
-        const res = await request(app).get("/api/posts?include=author");
+        const res = await get(app, "/api/posts?include=author");
 
         expect(res.status).toBe(200);
         expect(res.body.items).toHaveLength(3);
@@ -957,7 +956,7 @@ describe("Relations System", () => {
       });
 
       it("should include multiple relations", async () => {
-        const res = await request(app).get("/api/posts?include=author,category");
+        const res = await get(app, "/api/posts?include=author,category");
 
         expect(res.status).toBe(200);
         expect(res.body.items[0].author).toBeDefined();
@@ -965,7 +964,7 @@ describe("Relations System", () => {
       });
 
       it("should include hasMany relation", async () => {
-        const res = await request(app).get("/api/posts?include=comments");
+        const res = await get(app, "/api/posts?include=comments");
 
         expect(res.status).toBe(200);
         const post1 = res.body.items.find((p: any) => p.id === "post-1");
@@ -974,7 +973,7 @@ describe("Relations System", () => {
       });
 
       it("should include manyToMany relation", async () => {
-        const res = await request(app).get("/api/posts?include=tags");
+        const res = await get(app, "/api/posts?include=tags");
 
         expect(res.status).toBe(200);
         const post1 = res.body.items.find((p: any) => p.id === "post-1");
@@ -983,7 +982,7 @@ describe("Relations System", () => {
       });
 
       it("should include all relations", async () => {
-        const res = await request(app).get(
+        const res = await get(app, 
           "/api/posts?include=author,category,comments,tags"
         );
 
@@ -996,7 +995,7 @@ describe("Relations System", () => {
       });
 
       it("should work with pagination", async () => {
-        const res = await request(app).get("/api/posts?include=author&limit=2");
+        const res = await get(app, "/api/posts?include=author&limit=2");
 
         expect(res.status).toBe(200);
         expect(res.body.items).toHaveLength(2);
@@ -1005,7 +1004,7 @@ describe("Relations System", () => {
       });
 
       it("should work with filtering", async () => {
-        const res = await request(app).get(
+        const res = await get(app, 
           '/api/posts?include=author&filter=authorId=="user-1"'
         );
 
@@ -1015,7 +1014,7 @@ describe("Relations System", () => {
       });
 
       it("should include with select option", async () => {
-        const res = await request(app).get(
+        const res = await get(app, 
           "/api/posts?include=author(select:id,name)"
         );
 
@@ -1026,14 +1025,14 @@ describe("Relations System", () => {
       });
 
       it("should include with limit option on single item", async () => {
-        const res = await request(app).get("/api/posts/post-1?include=comments(limit:1)");
+        const res = await get(app, "/api/posts/post-1?include=comments(limit:1)");
 
         expect(res.status).toBe(200);
         expect(res.body.comments).toHaveLength(1);
       });
 
       it("should handle unknown relation gracefully", async () => {
-        const res = await request(app).get("/api/posts?include=nonexistent");
+        const res = await get(app, "/api/posts?include=nonexistent");
 
         expect(res.status).toBe(200);
         expect(res.body.items[0].nonexistent).toBeUndefined();
@@ -1042,7 +1041,7 @@ describe("Relations System", () => {
 
     describe("GET /:id with include", () => {
       it("should return item without relations when no include param", async () => {
-        const res = await request(app).get("/api/posts/post-1");
+        const res = await get(app, "/api/posts/post-1");
 
         expect(res.status).toBe(200);
         expect(res.body.id).toBe("post-1");
@@ -1050,7 +1049,7 @@ describe("Relations System", () => {
       });
 
       it("should include single relation", async () => {
-        const res = await request(app).get("/api/posts/post-1?include=author");
+        const res = await get(app, "/api/posts/post-1?include=author");
 
         expect(res.status).toBe(200);
         expect(res.body.id).toBe("post-1");
@@ -1059,7 +1058,7 @@ describe("Relations System", () => {
       });
 
       it("should include multiple relations", async () => {
-        const res = await request(app).get(
+        const res = await get(app, 
           "/api/posts/post-1?include=author,category,comments,tags"
         );
 
@@ -1071,7 +1070,7 @@ describe("Relations System", () => {
       });
 
       it("should return 404 for non-existent item", async () => {
-        const res = await request(app).get(
+        const res = await get(app, 
           "/api/posts/nonexistent?include=author"
         );
 
@@ -1088,7 +1087,7 @@ describe("Relations System", () => {
           })
           .run();
 
-        const res = await request(app).get(
+        const res = await get(app, 
           "/api/posts/post-orphan?include=author,category"
         );
 
@@ -1100,7 +1099,7 @@ describe("Relations System", () => {
 
     describe("resource without relations config", () => {
       it("should ignore include param when no relations configured", async () => {
-        const res = await request(app).get("/api/users?include=posts");
+        const res = await get(app, "/api/users?include=posts");
 
         expect(res.status).toBe(200);
         expect(res.body.items[0].posts).toBeUndefined();
@@ -1118,10 +1117,9 @@ describe("Relations System", () => {
         { id: "post-1", title: "Post", authorId: "user-1", categoryId: null },
       ]).run();
 
-      app = express();
-      app.use(express.json());
+      app = createTestApp();
 
-      app.use(
+      app.route(
         "/api/posts",
         useResource(postsTable, {
           db,
@@ -1141,7 +1139,7 @@ describe("Relations System", () => {
     });
 
     it("should handle special characters in include param", async () => {
-      const res = await request(app).get(
+      const res = await get(app, 
         "/api/posts?include=author(select:id,name)"
       );
 
@@ -1149,21 +1147,21 @@ describe("Relations System", () => {
     });
 
     it("should handle empty include param", async () => {
-      const res = await request(app).get("/api/posts?include=");
+      const res = await get(app, "/api/posts?include=");
 
       expect(res.status).toBe(200);
       expect(res.body.items[0].author).toBeUndefined();
     });
 
     it("should handle whitespace in include param", async () => {
-      const res = await request(app).get("/api/posts?include=%20author%20");
+      const res = await get(app, "/api/posts?include=%20author%20");
 
       expect(res.status).toBe(200);
       expect(res.body.items[0].author).toBeDefined();
     });
 
     it("should handle mixed valid and invalid relations", async () => {
-      const res = await request(app).get(
+      const res = await get(app, 
         "/api/posts?include=author,nonexistent,alsoInvalid"
       );
 

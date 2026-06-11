@@ -1,4 +1,4 @@
-import { Request, Router } from "express";
+import type { Context, Hono } from "hono";
 import { UserContext } from "@/resource/types";
 
 export interface AuthCredentials {
@@ -38,13 +38,14 @@ export interface ApiKeyData {
 
 export interface AuthAdapter {
   name: string;
-  extractCredentials(req: Request): AuthCredentials | null;
+  extractCredentials(c: Context): AuthCredentials | null;
   validateCredentials(credentials: AuthCredentials): Promise<AuthResult>;
   getSession(token: string): Promise<SessionData | null>;
   invalidateSession(token: string): Promise<void>;
-  getRoutes(): Router;
+  getRoutes(): Hono;
   refreshSession?(sessionId: string): Promise<SessionData | null>;
   createSession?(userId: string, data?: Record<string, unknown>): Promise<SessionData>;
+  invalidateUserSessions?(userId: string, exceptSessionId?: string): Promise<void>;
 }
 
 export interface ResourceAuthConfig {
@@ -62,15 +63,10 @@ export interface ResourceAuthConfig {
   };
 }
 
-export interface AuthenticatedRequest extends Request {
-  user?: UserContext;
-  session?: SessionData;
-}
-
 export interface AuthMiddlewareOptions {
   unauthorizedMessage?: string;
   skipPaths?: string[];
-  extractCredentials?: (req: Request) => AuthCredentials | null;
+  extractCredentials?: (c: Context) => AuthCredentials | null;
 }
 
 export interface SessionStore {
@@ -127,13 +123,14 @@ export class InMemorySessionStore implements SessionStore {
   }
 }
 
-export const isAuthenticated = (req: AuthenticatedRequest): boolean => {
-  return req.user !== undefined;
+export const isAuthenticated = (c: Context): boolean => {
+  return c.get("user") !== undefined;
 };
 
-export const requireUser = (req: AuthenticatedRequest): UserContext => {
-  if (!req.user) {
+export const requireUser = (c: Context): UserContext => {
+  const user = c.get("user");
+  if (!user) {
     throw new Error("User not authenticated");
   }
-  return req.user;
+  return user;
 };

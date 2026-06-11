@@ -1,5 +1,9 @@
 // Main server-side exports for Concave
 
+// App factory
+export { createConcave, ConcaveApp } from "./server/app";
+export type { ConcaveOptions, ConcaveAuthSetup } from "./server/app";
+
 // Resource (core)
 export { useResource } from "./resource/hook";
 export { createResourceFilter, type Filter } from "./resource/filter";
@@ -73,11 +77,11 @@ export {
   inList,
   notIn,
   like,
+  notLike,
   isNull,
   isNotNull,
   and,
   or,
-  not,
   ownerScope,
   publicScope,
   ownerOrPublic,
@@ -113,6 +117,28 @@ export { createJWTAdapter } from "./auth/adapters/jwt";
 export type { JWTConfig, JWTAdapterOptions } from "./auth/adapters/jwt";
 export { createAuthAdapter, createSessionStore } from "./auth/config";
 export type { AuthMode, AuthConfig, AuthConfigUser, SessionStoreConfig } from "./auth/config";
+export { hashPassword, verifyPassword, needsRehash } from "./auth/password";
+export type { PasswordHashOptions } from "./auth/password";
+export {
+  createCsrfMiddleware,
+  issueCsrfToken,
+  generateCsrfToken,
+  LoginThrottle,
+  InMemoryVerificationTokenStore,
+  issueToken,
+  verifyToken,
+  issuePasswordResetToken,
+  verifyPasswordResetToken,
+  hashNewPassword,
+} from "./auth";
+export type {
+  CsrfOptions,
+  LoginThrottleOptions,
+  ThrottleCheck,
+  VerificationTokenStore,
+  VerificationTokenRecord,
+  PasswordResetOptions,
+} from "./auth";
 export { useAuth, createAuthRoutes } from "./auth/routes";
 export type { UseAuthOptions, AuthRouterResult, AuthUser } from "./auth/routes";
 export type {
@@ -122,14 +148,37 @@ export type {
   ApiKeyData,
   AuthAdapter,
   ResourceAuthConfig,
-  AuthenticatedRequest,
   AuthMiddlewareOptions,
   SessionStore,
 } from "./auth/types";
 
 // Middleware
 export { createRateLimiter } from "./middleware/rateLimit";
-export { asyncHandler, errorMiddleware, notFoundHandler } from "./middleware/error";
+export { errorHandler, notFoundHandler } from "./middleware/error";
+export { createSecurityHeaders } from "./middleware/securityHeaders";
+export type {
+  SecurityHeadersOptions,
+  HSTSOptions,
+  FrameOption,
+} from "./middleware/securityHeaders";
+
+// Server runtime helpers
+export { createSSEStream, formatSSE, formatSSEComment } from "./server/sse";
+export type { SSEWriter, SSEStreamOptions, SSEMessage } from "./server/sse";
+export { getClientIP, readJsonBody } from "./server/request";
+export { requireUser, isAuthenticated as isContextAuthenticated, getSession as getContextSession } from "./server/context";
+export { readEnv, isDebugEnabled, isProduction } from "./server/env";
+export { beginShutdown, isShuttingDown, onShutdown } from "./server/lifecycle";
+export type { ShutdownHook } from "./server/lifecycle";
+export { createLogger, getLogger, setLogger, defaultSink } from "./server/logger";
+export type {
+  Logger,
+  LogLevel,
+  LogFields,
+  LogRecord,
+  LogSink,
+  CreateLoggerOptions,
+} from "./server/logger";
 export {
   observabilityMiddleware,
   createMetricsCollector,
@@ -197,17 +246,28 @@ export {
   createMemoryKV,
   createRedisKV,
   createRedisKVFromConfig,
+  createDurableObjectKV,
   setGlobalKV,
   getGlobalKV,
   hasGlobalKV,
   MemoryKVStore,
   RedisKVStore,
+  ConcaveKVDurableObject,
+  DurableKVEngine,
+  DurableObjectKVStore,
 } from "./kv";
 export type {
   KVAdapter,
   KVTransaction,
   KVConfig,
   RedisConfig,
+  DurableObjectConfig,
+  DurableObjectKVOptions,
+  DurableObjectNamespaceLike,
+  DurableObjectStubLike,
+  DurableObjectStateLike,
+  DurableObjectStorageLike,
+  WebSocketLike,
   SetOptions,
 } from "./kv";
 
@@ -259,8 +319,12 @@ export {
   startTaskWorkers,
   createTaskTriggerHooks,
   composeHooks as composeTaskHooks,
+  createConcurrencyLimiter,
+  createIdempotencyStore,
 } from "./tasks";
 export type {
+  ConcurrencyLimiter,
+  IdempotencyStore,
   TaskDefinition,
   TaskContext,
   Task,
@@ -302,6 +366,8 @@ export {
   clearGlobalSearch,
   createMemorySearchAdapter,
   createOpenSearchAdapter,
+  createSqliteFtsAdapter,
+  createPostgresFtsAdapter,
 } from "./search";
 export type {
   SearchAdapter,
@@ -312,6 +378,8 @@ export type {
   FieldMapping,
   IndexMappings,
   OpenSearchConfig,
+  SqliteFtsConfig,
+  PostgresFtsConfig,
 } from "./search";
 export type { ResourceSearchConfig, SearchFieldConfig } from "./resource/types";
 
@@ -329,6 +397,10 @@ export {
   MemoryStorageAdapter,
   LocalStorageAdapter,
   S3StorageAdapter,
+  createR2Adapter,
+  R2BindingAdapter,
+  R2S3Adapter,
+  validateUpload,
 } from "./storage";
 export type {
   StorageAdapter,
@@ -340,6 +412,12 @@ export type {
   LocalStorageConfig,
   S3StorageConfig,
   StorageConfig,
+  R2StorageConfig,
+  R2S3Config,
+  R2BindingConfig,
+  R2Bucket,
+  UploadValidationOptions,
+  UploadValidationInput,
 } from "./storage";
 export { useFileResource } from "./storage/resource";
 export type { FileResourceConfig, FileRecord, FileTableSchema } from "./storage/resource";
@@ -350,7 +428,101 @@ export {
   isTrackedDb,
   invalidateCache,
   invalidateAllCache,
+  recordExternalMutation,
 } from "./resource/track-mutations";
+export {
+  enqueueSearchOp,
+  drainSearchOutbox,
+  startSearchOutboxDrainer,
+  stopSearchOutboxDrainer,
+  getSearchOutboxStats,
+} from "./resource/search-outbox";
+export type { SearchOutboxOp, SearchOutboxConfig } from "./resource/search-outbox";
+
+// Database lifecycle (framework-owned internal tables, migrations, seeding)
+export {
+  migrateInternal,
+  autoMigrate,
+  detectDialect,
+  seed,
+  createSeed,
+  recommendedPoolConfig,
+  internalSchema,
+  internalSchemaSqlite,
+  internalSchemaPg,
+  authSessions,
+  authAccounts,
+  authApiKeys,
+  authVerificationTokens,
+  INTERNAL_TABLE_NAMES,
+} from "./db";
+export type {
+  Dialect,
+  MigrateOptions,
+  MigrationSummary,
+  SeedOptions,
+  SeedSummary,
+  PoolDriver,
+  PoolConfig,
+  InternalTableName,
+} from "./db";
+
+// Email
+export {
+  setGlobalEmail,
+  getGlobalEmail,
+  hasGlobalEmail,
+  clearGlobalEmail,
+  sendEmail,
+  sendEmailBatch,
+  createEmail,
+  EmailBuilder,
+  createResendAdapter,
+  createCloudflareEmailAdapter,
+  buildMimeMessage,
+} from "./email";
+export type {
+  EmailAdapter,
+  EmailMessage,
+  EmailAddress,
+  EmailAttachment,
+  SendEmailResult,
+  EmailTheme,
+  BuiltEmail,
+} from "./email";
+
+// Billing
+export {
+  setGlobalBilling,
+  getGlobalBilling,
+  hasGlobalBilling,
+  clearGlobalBilling,
+  createBilling,
+  createCreditsLedger,
+  createBillingRouter,
+  createStripeAdapter,
+  createLemonSqueezyAdapter,
+  createPaddleAdapter,
+  createPolarAdapter,
+  BillingError,
+} from "./billing";
+export type {
+  Billing,
+  BillingConfig,
+  BillingPlan,
+  BillingAdapter,
+  BillingProviderName,
+  BillingCustomer,
+  BillingSubscription,
+  SubscriptionStatus,
+  CheckoutSession,
+  CreateCheckoutInput,
+  BillingEvent,
+  BillingEventType,
+  CreditsLedger,
+  CreditEntry,
+  BillingRouterOptions,
+} from "./billing";
 export type {
   TableRegistration,
   TrackMutationsConfig,

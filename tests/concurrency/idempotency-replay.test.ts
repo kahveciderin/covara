@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import request from "supertest";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import type { ServerType } from "@hono/node-server";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
@@ -10,6 +11,7 @@ import { join } from "path";
 import { useResource } from "@/resource/hook";
 import { idempotencyMiddleware, validateIdempotencyKey } from "@/middleware/idempotency";
 import { createMemoryKV } from "@/kv/memory";
+import { createTestApp, get, post, patch } from "../helpers/hono";
 
 const testOrdersTable = sqliteTable("test_orders", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -18,23 +20,7 @@ const testOrdersTable = sqliteTable("test_orders", {
   status: text("status").default("pending"),
 });
 
-const injectTestUser = (userId: string) => (req: Request, _res: Response, next: NextFunction) => {
-  (req as any).user = { id: userId, roles: ["user"] };
-  next();
-};
-
-const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err.statusCode || err.status || 500;
-  res.status(status).json({
-    type: err.type || "/__concave/problems/internal-error",
-    title: err.title || "Error",
-    status,
-    detail: err.message,
-  });
-};
-
 describe("Idempotency Replay Tests", () => {
-  let app: Express;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
   let tempDir: string;
@@ -65,9 +51,6 @@ describe("Idempotency Replay Tests", () => {
         status TEXT DEFAULT 'pending'
       )
     `);
-
-    app = express();
-    app.use(express.json());
   });
 
   afterEach(async () => {
@@ -75,24 +58,23 @@ describe("Idempotency Replay Tests", () => {
     libsqlClient.close();
   });
 
-  const setupAppWithIdempotency = (userId = "test-user") => {
-    const testApp = express();
-    testApp.use(express.json());
-    testApp.use(injectTestUser(userId));
-    testApp.use(
-      idempotencyMiddleware({
-        storage: kvStore,
-        ttlMs: 60000,
-      })
-    );
-    testApp.use(
+  const setupAppWithIdempotency = (userId = "test-user"): Hono => {
+    const testApp = createTestApp({
+      user: { id: userId },
+      middleware: [
+        idempotencyMiddleware({
+          storage: kvStore,
+          ttlMs: 60000,
+        }),
+      ],
+    });
+    testApp.route(
       "/orders",
       useResource(testOrdersTable, {
         id: testOrdersTable.id,
         db,
       })
     );
-    testApp.use(errorHandler);
     return testApp;
   };
 
@@ -116,23 +98,28 @@ describe("Idempotency Replay Tests", () => {
     const testApp = setupAppWithIdempotency();
     const idempotencyKey = "create-order-12345678";
 
-    const res1 = await request(testApp)
-      .post("/orders")
-      .set("idempotency-key", idempotencyKey)
-      .send({ product: "Widget", quantity: 5 })
-      .expect(201);
+    const res1 = await post(
+      testApp,
+      "/orders",
+      { product: "Widget", quantity: 5 },
+      { "idempotency-key": idempotencyKey }
+    );
+    expect(res1.status).toBe(201);
 
-    const res2 = await request(testApp)
-      .post("/orders")
-      .set("idempotency-key", idempotencyKey)
-      .send({ product: "Widget", quantity: 5 })
-      .expect(201);
+    const res2 = await post(
+      testApp,
+      "/orders",
+      { product: "Widget", quantity: 5 },
+      { "idempotency-key": idempotencyKey }
+    );
+    expect(res2.status).toBe(201);
 
     expect(res1.body.id).toBe(res2.body.id);
     expect(res1.body.product).toBe(res2.body.product);
     expect(res1.body.quantity).toBe(res2.body.quantity);
 
-    const listRes = await request(testApp).get("/orders").expect(200);
+    const listRes = await get(testApp, "/orders");
+    expect(listRes.status).toBe(200);
     expect(listRes.body.items.length).toBe(1);
   });
 
@@ -140,40 +127,62 @@ describe("Idempotency Replay Tests", () => {
     const testApp = setupAppWithIdempotency();
     const idempotencyKey = "concurrent-order-12345";
 
-    const requests = Array.from({ length: 10 }, () =>
-      request(testApp)
-        .post("/orders")
-        .set("idempotency-key", idempotencyKey)
-        .send({ product: "Gadget", quantity: 1 })
+    // Concurrent load over real sockets to exercise the race between requests
+    const { server, port } = await new Promise<{ server: ServerType; port: number }>(
+      (resolve) => {
+        const s = serve({ fetch: testApp.fetch, port: 0 }, (info) =>
+          resolve({ server: s, port: info.port })
+        );
+      }
     );
 
-    const results = await Promise.all(requests);
+    try {
+      const requests = Array.from({ length: 10 }, () =>
+        fetch(`http://localhost:${port}/orders`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": idempotencyKey,
+          },
+          body: JSON.stringify({ product: "Gadget", quantity: 1 }),
+        }).then(async (r) => ({ status: r.status, body: await r.json() }))
+      );
 
-    const successResponses = results.filter((r) => r.status === 201);
-    expect(successResponses.length).toBeGreaterThan(0);
+      const results = await Promise.all(requests);
 
-    const ids = successResponses.map((r) => r.body.id);
-    const uniqueIds = new Set(ids);
-    expect(uniqueIds.size).toBe(1);
+      const successResponses = results.filter((r) => r.status === 201);
+      expect(successResponses.length).toBeGreaterThan(0);
 
-    const listRes = await request(testApp).get("/orders").expect(200);
-    expect(listRes.body.items.length).toBe(1);
+      const ids = successResponses.map((r) => r.body.id);
+      const uniqueIds = new Set(ids);
+      expect(uniqueIds.size).toBe(1);
+
+      const listRes = await get(testApp, "/orders");
+      expect(listRes.status).toBe(200);
+      expect(listRes.body.items.length).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("should reject different request body with same key", async () => {
     const testApp = setupAppWithIdempotency();
     const idempotencyKey = "mismatch-order-123456";
 
-    await request(testApp)
-      .post("/orders")
-      .set("idempotency-key", idempotencyKey)
-      .send({ product: "ItemA", quantity: 1 })
-      .expect(201);
+    const res1 = await post(
+      testApp,
+      "/orders",
+      { product: "ItemA", quantity: 1 },
+      { "idempotency-key": idempotencyKey }
+    );
+    expect(res1.status).toBe(201);
 
-    const res2 = await request(testApp)
-      .post("/orders")
-      .set("idempotency-key", idempotencyKey)
-      .send({ product: "ItemB", quantity: 2 });
+    const res2 = await post(
+      testApp,
+      "/orders",
+      { product: "ItemB", quantity: 2 },
+      { "idempotency-key": idempotencyKey }
+    );
 
     expect(res2.status).toBe(409);
     expect(res2.body.detail || res2.body.title || "").toMatch(/[Ii]dempotency/);
@@ -185,17 +194,21 @@ describe("Idempotency Replay Tests", () => {
     const app1 = setupAppWithIdempotency("user-1");
     const app2 = setupAppWithIdempotency("user-2");
 
-    const res1 = await request(app1)
-      .post("/orders")
-      .set("idempotency-key", idempotencyKey)
-      .send({ product: "Product1", quantity: 1 })
-      .expect(201);
+    const res1 = await post(
+      app1,
+      "/orders",
+      { product: "Product1", quantity: 1 },
+      { "idempotency-key": idempotencyKey }
+    );
+    expect(res1.status).toBe(201);
 
-    const res2 = await request(app2)
-      .post("/orders")
-      .set("idempotency-key", idempotencyKey)
-      .send({ product: "Product2", quantity: 2 })
-      .expect(201);
+    const res2 = await post(
+      app2,
+      "/orders",
+      { product: "Product2", quantity: 2 },
+      { "idempotency-key": idempotencyKey }
+    );
+    expect(res2.status).toBe(201);
 
     expect(res1.body.id).not.toBe(res2.body.id);
     expect(res1.body.product).toBe("Product1");
@@ -206,25 +219,17 @@ describe("Idempotency Replay Tests", () => {
     const testApp = setupAppWithIdempotency();
     const idempotencyKey = "get-request-12345678";
 
-    await request(testApp)
-      .post("/orders")
-      .send({ product: "TestProduct", quantity: 1 })
-      .expect(201);
+    const createRes = await post(testApp, "/orders", { product: "TestProduct", quantity: 1 });
+    expect(createRes.status).toBe(201);
 
-    const res1 = await request(testApp)
-      .get("/orders")
-      .set("idempotency-key", idempotencyKey)
-      .expect(200);
+    const res1 = await get(testApp, "/orders", { "idempotency-key": idempotencyKey });
+    expect(res1.status).toBe(200);
 
-    await request(testApp)
-      .post("/orders")
-      .send({ product: "AnotherProduct", quantity: 2 })
-      .expect(201);
+    const createRes2 = await post(testApp, "/orders", { product: "AnotherProduct", quantity: 2 });
+    expect(createRes2.status).toBe(201);
 
-    const res2 = await request(testApp)
-      .get("/orders")
-      .set("idempotency-key", idempotencyKey)
-      .expect(200);
+    const res2 = await get(testApp, "/orders", { "idempotency-key": idempotencyKey });
+    expect(res2.status).toBe(200);
 
     expect(res2.body.items.length).toBe(2);
   });
@@ -233,7 +238,7 @@ describe("Idempotency Replay Tests", () => {
     const testApp = setupAppWithIdempotency();
 
     const requests = Array.from({ length: 5 }, () =>
-      request(testApp).post("/orders").send({ product: "NoKeyProduct", quantity: 1 })
+      post(testApp, "/orders", { product: "NoKeyProduct", quantity: 1 })
     );
 
     const results = await Promise.all(requests);
@@ -241,69 +246,71 @@ describe("Idempotency Replay Tests", () => {
     const successCount = results.filter((r) => r.status === 201).length;
     expect(successCount).toBe(5);
 
-    const listRes = await request(testApp).get("/orders").expect(200);
+    const listRes = await get(testApp, "/orders");
+    expect(listRes.status).toBe(200);
     expect(listRes.body.items.length).toBe(5);
   });
 
   it("should apply idempotency to PATCH requests", async () => {
     const testApp = setupAppWithIdempotency();
 
-    const createRes = await request(testApp)
-      .post("/orders")
-      .send({ product: "Original", quantity: 1 })
-      .expect(201);
+    const createRes = await post(testApp, "/orders", { product: "Original", quantity: 1 });
+    expect(createRes.status).toBe(201);
 
     const orderId = createRes.body.id;
     const idempotencyKey = "update-order-12345678";
 
-    const res1 = await request(testApp)
-      .patch(`/orders/${orderId}`)
-      .set("idempotency-key", idempotencyKey)
-      .send({ quantity: 10 })
-      .expect(200);
+    const res1 = await patch(
+      testApp,
+      `/orders/${orderId}`,
+      { quantity: 10 },
+      { "idempotency-key": idempotencyKey }
+    );
+    expect(res1.status).toBe(200);
 
-    const res2 = await request(testApp)
-      .patch(`/orders/${orderId}`)
-      .set("idempotency-key", idempotencyKey)
-      .send({ quantity: 10 })
-      .expect(200);
+    const res2 = await patch(
+      testApp,
+      `/orders/${orderId}`,
+      { quantity: 10 },
+      { "idempotency-key": idempotencyKey }
+    );
+    expect(res2.status).toBe(200);
 
     expect(res1.body.quantity).toBe(res2.body.quantity);
     expect(res1.body.quantity).toBe(10);
   });
 
   it("should not cache server errors (5xx)", async () => {
-    const testApp = express();
-    testApp.use(express.json());
-    testApp.use(injectTestUser("test-user"));
-    testApp.use(
-      idempotencyMiddleware({
-        storage: kvStore,
-        ttlMs: 60000,
-      })
-    );
+    const testApp = createTestApp({
+      user: { id: "test-user" },
+      middleware: [
+        idempotencyMiddleware({
+          storage: kvStore,
+          ttlMs: 60000,
+        }),
+      ],
+    });
 
     let callCount = 0;
-    testApp.post("/flaky", (_req, res) => {
+    testApp.post("/flaky", (c) => {
       callCount++;
       if (callCount === 1) {
-        res.status(500).json({ error: "Server error" });
-      } else {
-        res.status(201).json({ success: true, attempt: callCount });
+        return c.json({ error: "Server error" }, 500);
       }
+      return c.json({ success: true, attempt: callCount }, 201);
     });
 
     const idempotencyKey = "flaky-operation-1234";
 
-    await request(testApp)
-      .post("/flaky")
-      .set("idempotency-key", idempotencyKey)
-      .expect(500);
+    const res1 = await post(testApp, "/flaky", undefined, {
+      "idempotency-key": idempotencyKey,
+    });
+    expect(res1.status).toBe(500);
 
-    const res2 = await request(testApp)
-      .post("/flaky")
-      .set("idempotency-key", idempotencyKey)
-      .expect(201);
+    const res2 = await post(testApp, "/flaky", undefined, {
+      "idempotency-key": idempotencyKey,
+    });
+    expect(res2.status).toBe(201);
 
     expect(res2.body.success).toBe(true);
     expect(res2.body.attempt).toBe(2);

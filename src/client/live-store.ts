@@ -41,6 +41,13 @@ export interface LiveQueryOptions {
 
 type SortFn<T> = (a: T, b: T) => number;
 
+interface OrderMarkers {
+  __appendedAt?: number;
+  __prependedAt?: number;
+}
+
+const markersOf = <T>(item: T): OrderMarkers => item as T & OrderMarkers;
+
 const createSortFn = <T>(orderBy?: string): SortFn<T> | null => {
   if (!orderBy) return null;
 
@@ -112,15 +119,15 @@ export const createLiveQuery = <T extends { id: string }>(
     const items = Array.from(cache.values());
 
     // Separate prepended, normal, and appended items
-    const prepended = items.filter(i => (i as any).__prependedAt);
-    const appended = items.filter(i => (i as any).__appendedAt);
-    const normal = items.filter(i => !(i as any).__prependedAt && !(i as any).__appendedAt);
+    const prepended = items.filter(i => markersOf(i).__prependedAt);
+    const appended = items.filter(i => markersOf(i).__appendedAt);
+    const normal = items.filter(i => !markersOf(i).__prependedAt && !markersOf(i).__appendedAt);
 
     // Sort each group
     if (sortFn) {
-      prepended.sort((a, b) => (b as any).__prependedAt - (a as any).__prependedAt); // newest first
+      prepended.sort((a, b) => (markersOf(b).__prependedAt ?? 0) - (markersOf(a).__prependedAt ?? 0)); // newest first
       normal.sort(sortFn);
-      appended.sort((a, b) => (a as any).__appendedAt - (b as any).__appendedAt); // oldest first
+      appended.sort((a, b) => (markersOf(a).__appendedAt ?? 0) - (markersOf(b).__appendedAt ?? 0)); // oldest first
     }
 
     return [...prepended, ...normal, ...appended];
@@ -177,11 +184,11 @@ export const createLiveQuery = <T extends { id: string }>(
           break;
         case "append":
           // Mark item to be placed at end
-          (item as any).__appendedAt = Date.now();
+          markersOf(item).__appendedAt = Date.now();
           break;
         case "prepend":
           // Mark item to be placed at start
-          (item as any).__prependedAt = Date.now();
+          markersOf(item).__prependedAt = Date.now();
           break;
         case "live":
           // Show everything (current behavior)
@@ -204,7 +211,7 @@ export const createLiveQuery = <T extends { id: string }>(
     }
 
     const mappedOptimisticId = Array.from(idMappings.entries()).find(
-      ([optId, serverId]) => serverId === item.id
+      ([, serverId]) => serverId === item.id
     )?.[0];
 
     if (mappedOptimisticId && cache.has(mappedOptimisticId)) {
@@ -396,13 +403,13 @@ export const createLiveQuery = <T extends { id: string }>(
       }
 
       // Also preserve internal markers (__appendedAt, __prependedAt)
-      const appendedAt = (existing as any).__appendedAt;
-      const prependedAt = (existing as any).__prependedAt;
+      const appendedAt = markersOf(existing).__appendedAt;
+      const prependedAt = markersOf(existing).__prependedAt;
       if (appendedAt !== undefined) {
-        (finalItem as any).__appendedAt = appendedAt;
+        markersOf(finalItem).__appendedAt = appendedAt;
       }
       if (prependedAt !== undefined) {
-        (finalItem as any).__prependedAt = prependedAt;
+        markersOf(finalItem).__prependedAt = prependedAt;
       }
     }
 
@@ -653,14 +660,6 @@ export const createLiveQuery = <T extends { id: string }>(
         }
       }
 
-      // Register the new IDs with the subscription for change tracking
-      if (subscription) {
-        const newIds = result.items.map(item => item.id);
-        // The subscription will now track these IDs for removed events
-        // Note: In a full implementation, we'd call a method to register these
-        // For now, they'll be picked up by added/changed events
-      }
-
       isLoadingMore = false;
       notify();
     } catch (err) {
@@ -693,7 +692,7 @@ export const createLiveQuery = <T extends { id: string }>(
     update: (id, data) => {
       const existing = cache.get(id);
       if (existing) {
-        let updated = { ...existing, ...data };
+        const updated = { ...existing, ...data };
 
         // Detect stale relations: if a foreign key is being changed, clear the corresponding relation
         // e.g., if categoryId is changing from "cat-1" to "cat-2", clear "category"

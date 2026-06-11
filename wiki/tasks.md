@@ -94,6 +94,32 @@ The handler receives a `TaskContext` with:
 | `startedAt` | `Date` | When execution started |
 | `workerId` | `string` | Processing worker ID |
 | `signal` | `AbortSignal` | For cancellation detection |
+| `reportProgress` | `(percent: number, message?: string) => Promise<void>` | Report progress (0–100, clamped); stored on the task and readable via the scheduler |
+
+### Reporting Progress
+
+Long-running tasks can report progress, which is persisted on the task record separately from the
+worker heartbeat:
+
+```typescript
+const importTask = defineTask({
+  name: "import-rows",
+  handler: async (ctx, input) => {
+    for (let i = 0; i < input.rows.length; i++) {
+      await importRow(input.rows[i]);
+      await ctx.reportProgress((i / input.rows.length) * 100, `row ${i}`);
+    }
+  },
+});
+
+// Elsewhere
+const task = await scheduler.getTask(taskId);
+task?.progress; // { percent, message?, updatedAt }
+```
+
+While a task runs, the worker also writes a heartbeat (`lastHeartbeatAt`) every `heartbeatMs`
+(default 10s) and extends its distributed lock; if the lock can no longer be extended, the task is
+aborted via `ctx.signal` and rescheduled.
 
 ### Task Options
 
@@ -117,7 +143,7 @@ const myTask = defineTask({
 
   // Execution limits
   timeout: 30000,        // 30 second timeout
-  maxConcurrency: 10,    // Max 10 parallel executions
+  maxConcurrency: 10,    // Enforced cap on parallel executions of this task type
   priority: 75,          // Higher = processed first (0-100)
 
   // Deduplication
@@ -128,8 +154,36 @@ const myTask = defineTask({
 
   // Idempotency
   idempotencyKey: (input) => `order-${input.orderId}`,
+  idempotencyRetentionMs: 24 * 60 * 60 * 1000, // how long the completion is remembered (default 24h)
+
+  // Result retention: how long a completed/failed task's result is kept before it is
+  // lazily expired (deleted on next read). Default 24h.
+  resultTtlMs: 60 * 60 * 1000,
 });
 ```
+
+### Result TTL
+
+A completed (or failed) task's record carries `resultExpiresAt = completedAt + resultTtlMs`
+(`resultTtlMs` defaults to 24 hours). Once expired, the task is deleted lazily the next time it is
+read via `scheduler.getTask`/`getTasks`, so old results don't accumulate. Dead tasks are not subject
+to this expiry — they live in the dead letter queue until purged.
+
+### Idempotency Enforcement
+
+When `idempotencyKey` is set, the first successful completion is recorded in the KV store
+keyed by that value. If another execution with the same key runs while the record is still
+within `idempotencyRetentionMs` (default 24 hours), it short-circuits and returns the stored
+result instead of running the handler again. This makes retries and accidental
+double-enqueues safe without bespoke dedupe logic. Use a distributed KV (Redis or the
+Durable Object KV) so the guarantee holds across workers and instances.
+
+### Concurrency Enforcement
+
+`maxConcurrency` is enforced, not just advisory. Workers reserve a slot via a distributed
+counter before running a task of that type and release it on completion; if the cap is
+already reached, the task is left for a worker with free capacity. This bounds how many
+instances of a given task run at once across the entire fleet.
 
 ## Scheduling Tasks
 
@@ -182,6 +236,24 @@ await scheduler.scheduleRecurring(weeklyDigestTask, { type: "digest" }, {
   timezone: "America/New_York",
 });
 ```
+
+#### Missed-Occurrence Catchup
+
+If the scheduler is down across one or more scheduled fire times (a deploy, a crash, a paused
+worker), the `catchup` policy decides what happens when it comes back:
+
+```typescript
+await scheduler.scheduleRecurring(generateReport, {}, {
+  cron: "0 * * * *",
+  catchup: "skip", // default
+});
+```
+
+| Policy | Behavior |
+|--------|----------|
+| `"skip"` (default) | Fire exactly once, for the current occurrence; missed occurrences are dropped |
+| `"last"` | Fire exactly once (run only the latest missed occurrence) |
+| `"all"` | Enqueue one task per missed occurrence, capped at 1000, to backfill the gap |
 
 ### Task Management
 
@@ -241,7 +313,13 @@ worker.pause();
 // Resume processing
 worker.resume();
 
-// Stop gracefully
+// Drain: stop claiming new tasks, wait up to timeoutMs for in-flight tasks to finish
+await worker.drain(30000);
+
+// Stop. Pass { drain: true } to drain in-flight tasks first (optionally with a timeout)
+await worker.stop({ drain: true, timeoutMs: 30000 });
+
+// Stop immediately (default)
 await worker.stop();
 
 // Get stats
@@ -255,6 +333,62 @@ console.log(stats);
 //   failedCount: 2,
 //   uptime: 3600000
 // }
+```
+
+## Cloudflare Queues
+
+On Cloudflare Workers there is no long-lived worker process to poll the KV queue. Instead, use the
+Cloudflare Queues adapter: enqueue tasks onto a Queue producer binding, and process them in a queue
+consumer handler. Retries are delegated to Cloudflare's native delivery (`message.retry()`), while
+idempotency, the dead letter queue, and result storage still use your KV.
+
+```typescript
+import {
+  createCloudflareQueueProducer,
+  createQueueConsumer,
+  getTaskRegistry,
+} from "@kahveciderin/concave/tasks";
+import { createDurableObjectKV } from "@kahveciderin/concave/kv";
+
+export default {
+  async fetch(req, env) {
+    const producer = createCloudflareQueueProducer(env.TASK_QUEUE);
+    const taskId = await producer.enqueue(sendEmailTask, { to: "a@b.com", subject: "Hi", body: "..." });
+    // producer.enqueueBatch(task, [input1, input2]) for batches
+    return new Response(taskId);
+  },
+
+  async queue(batch, env) {
+    const kv = createDurableObjectKV(env.KV_DO);
+    const consumer = createQueueConsumer({
+      kv,
+      registry: getTaskRegistry(),
+      onDlqEnqueue: async (entry) => { /* alert */ },
+    });
+    await consumer.process(batch);
+  },
+};
+```
+
+The producer honors `delay`/`at` scheduling by converting it to the queue's `delaySeconds`. The
+consumer runs each message through the registered task definition (with its `timeout`), caches
+idempotent completions, stores results with `resultTtlMs`, retries via `message.retry({ delaySeconds })`
+when the retry policy allows, and otherwise parks the task in the DLQ. Note that DLQ entries produced
+by the queue consumer are **not** auto-requeued — replay them yourself with `dlq.retry(...)` (or rely
+on a Cloudflare dead-letter queue binding).
+
+Wrangler bindings (illustrative — binding names are yours to choose):
+
+```toml
+[[queues.producers]]
+queue = "tasks"
+binding = "TASK_QUEUE"      # env.TASK_QUEUE -> createCloudflareQueueProducer(env.TASK_QUEUE)
+
+[[queues.consumers]]
+queue = "tasks"
+max_batch_size = 10
+max_retries = 3
+dead_letter_queue = "tasks-dlq"
 ```
 
 ## Retry Strategies
@@ -328,17 +462,52 @@ for (const entry of deadTasks) {
 // Get specific dead task
 const entry = await dlq.get(taskId);
 
-// Retry a dead task (creates new task)
-const newTaskId = await dlq.retry(taskId);
+// Retry a dead task (creates new task, optionally recording who replayed it)
+const newTaskId = await dlq.retry(taskId, "ops@example.com");
 
-// Retry all dead tasks
-const retriedCount = await dlq.retryAll();
+// Retry all dead tasks (default limit 100)
+const retriedCount = await dlq.retryAll({ limit: 100, replayedBy: "ops@example.com" });
 
 // Purge old entries (older than 7 days)
 const purgedCount = await dlq.purge(7 * 24 * 60 * 60 * 1000);
 
 // Count dead tasks
 const count = await dlq.count();
+
+// Replay lineage audit (most recent first)
+const auditEntries = await dlq.audit(100);
+// [{ originalTaskId, newTaskId, replayedAt, replayedBy?, replayCount }]
+```
+
+### Replay Lineage
+
+Replaying a dead task creates a fresh task (new id, reset attempts and runtime fields) while
+preserving lineage so you can trace it back to the original failure:
+
+- `originalTaskId` always points to the very first task, even across multiple replays.
+- `replayCount` increments on each replay.
+- `replayedFromDlqAt` and (if provided) `replayedBy` record when and by whom the replay happened.
+
+Each replay also appends a `DlqReplayAuditEntry` to a durable audit log, retrievable via `dlq.audit()`.
+
+### Alerting on Dead Tasks
+
+Provide an `onDlqEnqueue` callback to be notified the moment a task is parked in the DLQ — wire it to
+your alerting/paging system. It receives the full `DeadLetterEntry`. Callback failures never affect
+DLQ persistence (they are caught and swallowed).
+
+```typescript
+// On the worker config:
+await startTaskWorkers(kv, registry, 3, {
+  onDlqEnqueue: async (entry) => {
+    await alert(`Task ${entry.taskId} (${entry.task.name}) dead after ${entry.attempts} attempts: ${entry.reason}`);
+  },
+});
+
+// Or directly on the DLQ:
+const dlq = createDeadLetterQueue(kv, requeue, {
+  onDlqEnqueue: async (entry) => { /* ... */ },
+});
 ```
 
 ## Resource Integration
@@ -395,7 +564,9 @@ const hooks = composeHooks(taskHooks, {
 });
 
 // Use in resource
-app.use("/api/users", useResource(usersTable, {
+app.route("/api/users", useResource(usersTable, {
+  id: usersTable.id,
+  db,
   hooks,
 }));
 ```
@@ -539,8 +710,8 @@ stop();
 ## Full Example
 
 ```typescript
-import express from "express";
-import { useResource } from "@kahveciderin/concave";
+import { useResource, createConcave } from "@kahveciderin/concave";
+import { startServer } from "@kahveciderin/concave/node";
 import { createKV } from "@kahveciderin/concave/kv";
 import {
   defineTask,
@@ -553,7 +724,7 @@ import {
 } from "@kahveciderin/concave/tasks";
 import { z } from "zod";
 
-const app = express();
+const app = createConcave();
 
 // Initialize KV and tasks
 const kv = await createKV({ type: "redis", redis: { url: process.env.REDIS_URL } });
@@ -593,7 +764,9 @@ const userTaskHooks = createTaskTriggerHooks({
   }],
 });
 
-app.use("/api/users", useResource(usersTable, {
+app.route("/api/users", useResource(usersTable, {
+  id: usersTable.id,
+  db,
   hooks: userTaskHooks,
 }));
 
@@ -616,7 +789,7 @@ process.on("SIGTERM", async () => {
   // Workers will finish current tasks
 });
 
-app.listen(3000);
+await startServer(app, { port: 3000 });
 ```
 
 ## Best Practices

@@ -1,39 +1,28 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import { Server } from "http";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import type { ServerType } from "@hono/node-server";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
-import { eq, sql } from "drizzle-orm";
 import { useResource } from "../../src/resource/hook";
 import { createClient, ConcaveClient } from "../../src/client";
-import { allScope } from "../../src/auth/rsql";
-import { ScopeConfig } from "../../src/resource/types";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { createTestApp } from "../helpers/hono";
 
-// middleware to inject a fake test user for all requests
-const injectTestUser = (req: Request, res: Response, next: NextFunction) => {
-  (req as any).user = {
-    id: "test-user",
-    email: "test@test.com",
-    roles: ["admin"],
-    metadata: {},
-  };
-  next();
-};
-
-// error handler middleware
-const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err.statusCode || err.status || 500;
-  res.status(status).json({
-    error: {
-      message: err.message,
-      code: err.code || "INTERNAL_ERROR",
-    },
+const startServer = (app: Hono): Promise<{ server: ServerType; baseUrl: string }> =>
+  new Promise((resolve) => {
+    const server = serve({ fetch: app.fetch, port: 0 }, (info) => {
+      resolve({ server, baseUrl: `http://localhost:${info.port}` });
+    });
   });
-};
+
+const stopServer = (server: ServerType): Promise<void> =>
+  new Promise((resolve) => {
+    server.close(() => resolve());
+  });
 
 // test schema
 const usersTable = sqliteTable("users", {
@@ -46,15 +35,13 @@ const usersTable = sqliteTable("users", {
 });
 
 type User = typeof usersTable.$inferSelect;
-type NewUser = typeof usersTable.$inferInsert;
 
 describe("End-to-End: Full Request Cycle", () => {
-  let app: Express;
-  let server: Server;
+  let app: Hono;
+  let server: ServerType;
   let client: ConcaveClient;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
-  let baseUrl: string;
   let tempDir: string;
 
   beforeAll(async () => {
@@ -75,13 +62,11 @@ describe("End-to-End: Full Request Cycle", () => {
       )
     `);
 
-    // setup express app
-    app = express();
-    app.use(express.json());
-    app.use(injectTestUser);
+    // setup app with a fake admin test user injected for all requests
+    app = createTestApp({ user: { id: "test-user", email: "test@test.com" } });
 
     // setup resource
-    app.use(
+    app.route(
       "/users",
       useResource(usersTable, {
         id: usersTable.id,
@@ -91,30 +76,16 @@ describe("End-to-End: Full Request Cycle", () => {
       })
     );
 
-    // error handler for debugging
-    app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-      const status = err.statusCode || err.status || 500;
-      res.status(status).json({ error: { message: err.message, code: err.code || "INTERNAL_ERROR" } });
-    });
-
     // start server
-    await new Promise<void>((resolve) => {
-      server = app.listen(0, () => {
-        const addr = server.address();
-        const port = typeof addr === "object" && addr ? addr.port : 0;
-        baseUrl = `http://localhost:${port}`;
-        resolve();
-      });
-    });
+    const started = await startServer(app);
+    server = started.server;
 
     // create client
-    client = createClient({ baseUrl });
+    client = createClient({ baseUrl: started.baseUrl });
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
+    await stopServer(server);
     libsqlClient.close();
     try {
       rmSync(tempDir, { recursive: true, force: true });
@@ -409,8 +380,8 @@ describe("End-to-End: Full Request Cycle", () => {
 });
 
 describe("End-to-End: Concurrent Operations", () => {
-  let app: Express;
-  let server: Server;
+  let app: Hono;
+  let server: ServerType;
   let client: ConcaveClient;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
@@ -435,33 +406,23 @@ describe("End-to-End: Concurrent Operations", () => {
       )
     `);
 
-    app = express();
-    app.use(express.json());
-    app.use(injectTestUser);
-    app.use(
+    app = createTestApp({ user: { id: "test-user", email: "test@test.com" } });
+    app.route(
       "/users",
       useResource(concurrentUsersTable, {
         id: concurrentUsersTable.id,
         db,
       })
     );
-    app.use(errorHandler);
 
-    await new Promise<void>((resolve) => {
-      server = app.listen(0, () => {
-        const addr = server.address();
-        const port = typeof addr === "object" && addr ? addr.port : 0;
-        client = createClient({ baseUrl: `http://localhost:${port}` });
-        resolve();
-      });
-    });
+    const started = await startServer(app);
+    server = started.server;
+    client = createClient({ baseUrl: started.baseUrl });
   });
 
   afterAll(async () => {
     if (server) {
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      });
+      await stopServer(server);
     }
     if (libsqlClient) {
       libsqlClient.close();
@@ -511,8 +472,8 @@ describe("End-to-End: Concurrent Operations", () => {
 });
 
 describe("End-to-End: Multiple Resources", () => {
-  let app: Express;
-  let server: Server;
+  let app: Hono;
+  let server: ServerType;
   let client: ConcaveClient;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
@@ -537,26 +498,17 @@ describe("End-to-End: Multiple Resources", () => {
     await libsqlClient.execute(`CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`);
     await libsqlClient.execute(`CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, user_id INTEGER NOT NULL)`);
 
-    app = express();
-    app.use(express.json());
-    app.use(injectTestUser);
-    app.use("/users", useResource(multiUsersTable, { id: multiUsersTable.id, db }));
-    app.use("/posts", useResource(postsTable, { id: postsTable.id, db }));
+    app = createTestApp({ user: { id: "test-user", email: "test@test.com" } });
+    app.route("/users", useResource(multiUsersTable, { id: multiUsersTable.id, db }));
+    app.route("/posts", useResource(postsTable, { id: postsTable.id, db }));
 
-    await new Promise<void>((resolve) => {
-      server = app.listen(0, () => {
-        const addr = server.address();
-        const port = typeof addr === "object" && addr ? addr.port : 0;
-        client = createClient({ baseUrl: `http://localhost:${port}` });
-        resolve();
-      });
-    });
+    const started = await startServer(app);
+    server = started.server;
+    client = createClient({ baseUrl: started.baseUrl });
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
+    await stopServer(server);
     libsqlClient.close();
     try {
       rmSync(tempDir, { recursive: true, force: true });

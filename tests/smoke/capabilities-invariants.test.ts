@@ -1,6 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import request from "supertest";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
@@ -9,6 +7,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { useResource } from "@/resource/hook";
 import { ResourceCapabilities, FieldPolicies } from "@/resource/types";
+import { createTestApp, get, post, patch, del } from "../helpers/hono";
 
 const testUsersTable = sqliteTable("test_users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -19,22 +18,6 @@ const testUsersTable = sqliteTable("test_users", {
   internal_notes: text("internal_notes"),
   score: integer("score").default(0),
 });
-
-const injectTestUser = (req: Request, _res: Response, next: NextFunction) => {
-  (req as any).user = { id: "test-user", roles: ["user"] };
-  next();
-};
-
-const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err.statusCode || err.status || 500;
-  res.status(status).json({
-    type: err.type || "/__concave/problems/internal-error",
-    title: err.title || "Error",
-    status,
-    detail: err.message,
-    allowedFields: err.details?.allowedFields,
-  });
-};
 
 describe("Capabilities and Field Policy Invariant Tests", () => {
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
@@ -75,16 +58,14 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
 
   describe("Field Policies - Readable Fields", () => {
     it("should return fields in list response", async () => {
-      const app = express();
-      app.use(express.json());
-      app.use(injectTestUser);
+      const app = createTestApp({ user: { id: "test-user" } });
 
       const fields: FieldPolicies = {
         readable: ["id", "name", "email"],
         writable: ["name", "email", "password"],
       };
 
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -92,14 +73,12 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
           fields,
         })
       );
-      app.use(errorHandler);
 
-      await request(app)
-        .post("/users")
-        .send({ name: "Alice", email: "alice@test.com", password: "secret123" })
-        .expect(201);
+      const createRes = await post(app, "/users", { name: "Alice", email: "alice@test.com", password: "secret123" });
+      expect(createRes.status).toBe(201);
 
-      const listRes = await request(app).get("/users").expect(200);
+      const listRes = await get(app, "/users");
+      expect(listRes.status).toBe(200);
 
       const user = listRes.body.items[0];
       expect(user.id).toBeDefined();
@@ -109,16 +88,14 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
     });
 
     it("should return fields in get response", async () => {
-      const app = express();
-      app.use(express.json());
-      app.use(injectTestUser);
+      const app = createTestApp({ user: { id: "test-user" } });
 
       const fields: FieldPolicies = {
         readable: ["id", "name"],
         writable: ["name", "email", "password"],
       };
 
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -126,16 +103,14 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
           fields,
         })
       );
-      app.use(errorHandler);
 
-      const createRes = await request(app)
-        .post("/users")
-        .send({ name: "Bob", email: "bob@test.com", password: "pass456" })
-        .expect(201);
+      const createRes = await post(app, "/users", { name: "Bob", email: "bob@test.com", password: "pass456" });
+      expect(createRes.status).toBe(201);
 
       const userId = createRes.body.id;
 
-      const getRes = await request(app).get(`/users/${userId}`).expect(200);
+      const getRes = await get(app, `/users/${userId}`);
+      expect(getRes.status).toBe(200);
 
       expect(getRes.body.id).toBe(userId);
       expect(getRes.body.name).toBe("Bob");
@@ -143,16 +118,14 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
     });
 
     it("should respect select projection", async () => {
-      const app = express();
-      app.use(express.json());
-      app.use(injectTestUser);
+      const app = createTestApp({ user: { id: "test-user" } });
 
       const fields: FieldPolicies = {
         readable: ["id", "name", "email"],
         writable: ["name", "email", "password"],
       };
 
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -160,16 +133,12 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
           fields,
         })
       );
-      app.use(errorHandler);
 
-      await request(app)
-        .post("/users")
-        .send({ name: "Carol", email: "carol@test.com", password: "secret" })
-        .expect(201);
+      const createRes = await post(app, "/users", { name: "Carol", email: "carol@test.com", password: "secret" });
+      expect(createRes.status).toBe(201);
 
-      const listRes = await request(app)
-        .get("/users?select=id,name")
-        .expect(200);
+      const listRes = await get(app, "/users?select=id,name");
+      expect(listRes.status).toBe(200);
 
       const user = listRes.body.items[0];
       expect(user.id).toBeDefined();
@@ -180,17 +149,15 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
 
   describe("Field Policies - Filterable Fields", () => {
     it("should allow filtering on filterable fields", async () => {
-      const app = express();
-      app.use(express.json());
-      app.use(injectTestUser);
+      const app = createTestApp({ user: { id: "test-user" } });
 
       const fields: FieldPolicies = {
         readable: ["id", "name", "email", "role"],
-        writable: ["name", "email", "password"],
+        writable: ["name", "email", "password", "role"],
         filterable: ["name", "email", "role"],
       };
 
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -198,21 +165,15 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
           fields,
         })
       );
-      app.use(errorHandler);
 
-      await request(app)
-        .post("/users")
-        .send({ name: "Admin", email: "admin@test.com", password: "pwd", role: "admin" })
-        .expect(201);
+      const createRes1 = await post(app, "/users", { name: "Admin", email: "admin@test.com", password: "pwd", role: "admin" });
+      expect(createRes1.status).toBe(201);
 
-      await request(app)
-        .post("/users")
-        .send({ name: "User", email: "user@test.com", password: "pwd", role: "user" })
-        .expect(201);
+      const createRes2 = await post(app, "/users", { name: "User", email: "user@test.com", password: "pwd", role: "user" });
+      expect(createRes2.status).toBe(201);
 
-      const filterRes = await request(app)
-        .get('/users?filter=' + encodeURIComponent('role=="admin"'))
-        .expect(200);
+      const filterRes = await get(app, '/users?filter=' + encodeURIComponent('role=="admin"'));
+      expect(filterRes.status).toBe(200);
 
       expect(filterRes.body.items.length).toBe(1);
       expect(filterRes.body.items[0].name).toBe("Admin");
@@ -221,9 +182,7 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
 
   describe("Field Policies - Sortable Fields", () => {
     it("should allow sorting on sortable fields", async () => {
-      const app = express();
-      app.use(express.json());
-      app.use(injectTestUser);
+      const app = createTestApp({ user: { id: "test-user" } });
 
       const fields: FieldPolicies = {
         readable: ["id", "name", "email", "score"],
@@ -231,7 +190,7 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
         sortable: ["name", "score"],
       };
 
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -239,29 +198,24 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
           fields,
         })
       );
-      app.use(errorHandler);
 
-      await request(app)
-        .post("/users")
-        .send({ name: "Zara", email: "zara@test.com", password: "pwd", score: 100 })
-        .expect(201);
+      const createRes1 = await post(app, "/users", { name: "Zara", email: "zara@test.com", password: "pwd", score: 100 });
+      expect(createRes1.status).toBe(201);
 
-      await request(app)
-        .post("/users")
-        .send({ name: "Alice", email: "alice@test.com", password: "pwd", score: 200 })
-        .expect(201);
+      const createRes2 = await post(app, "/users", { name: "Alice", email: "alice@test.com", password: "pwd", score: 200 });
+      expect(createRes2.status).toBe(201);
 
-      await request(app)
-        .post("/users")
-        .send({ name: "Mike", email: "mike@test.com", password: "pwd", score: 50 })
-        .expect(201);
+      const createRes3 = await post(app, "/users", { name: "Mike", email: "mike@test.com", password: "pwd", score: 50 });
+      expect(createRes3.status).toBe(201);
 
-      const sortNameRes = await request(app).get("/users?orderBy=name:asc").expect(200);
+      const sortNameRes = await get(app, "/users?orderBy=name:asc");
+      expect(sortNameRes.status).toBe(200);
 
       const namesSorted = sortNameRes.body.items.map((u: any) => u.name);
       expect(namesSorted).toEqual(["Alice", "Mike", "Zara"]);
 
-      const sortScoreRes = await request(app).get("/users?orderBy=score:desc").expect(200);
+      const sortScoreRes = await get(app, "/users?orderBy=score:desc");
+      expect(sortScoreRes.status).toBe(200);
 
       const scores = sortScoreRes.body.items.map((u: any) => u.score);
       expect(scores).toEqual([200, 100, 50]);
@@ -270,15 +224,13 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
 
   describe("Capabilities - Disabled Operations", () => {
     it("should handle create operation with capabilities config", async () => {
-      const app = express();
-      app.use(express.json());
-      app.use(injectTestUser);
+      const app = createTestApp({ user: { id: "test-user" } });
 
       const capabilities: ResourceCapabilities = {
         enableCreate: false,
       };
 
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -286,26 +238,21 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
           capabilities,
         })
       );
-      app.use(errorHandler);
 
-      const res = await request(app)
-        .post("/users")
-        .send({ name: "Test", email: "test@test.com", password: "pwd" });
+      const res = await post(app, "/users", { name: "Test", email: "test@test.com", password: "pwd" });
 
       // Capability enforcement may or may not be implemented
       expect([201, 405]).toContain(res.status);
     });
 
     it("should handle update operation with capabilities config", async () => {
-      const app = express();
-      app.use(express.json());
-      app.use(injectTestUser);
+      const app = createTestApp({ user: { id: "test-user" } });
 
       const capabilities: ResourceCapabilities = {
         enableUpdate: false,
       };
 
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -313,33 +260,29 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
           capabilities,
         })
       );
-      app.use(errorHandler);
 
       await libsqlClient.execute(
         "INSERT INTO test_users (name, email, password) VALUES ('Test', 'test@test.com', 'pwd')"
       );
 
-      const listRes = await request(app).get("/users").expect(200);
+      const listRes = await get(app, "/users");
+      expect(listRes.status).toBe(200);
       const userId = listRes.body.items[0].id;
 
-      const res = await request(app)
-        .patch(`/users/${userId}`)
-        .send({ name: "Updated" });
+      const res = await patch(app, `/users/${userId}`, { name: "Updated" });
 
       // Capability enforcement may or may not be implemented
       expect([200, 405]).toContain(res.status);
     });
 
     it("should handle delete operation with capabilities config", async () => {
-      const app = express();
-      app.use(express.json());
-      app.use(injectTestUser);
+      const app = createTestApp({ user: { id: "test-user" } });
 
       const capabilities: ResourceCapabilities = {
         enableDelete: false,
       };
 
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -347,31 +290,29 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
           capabilities,
         })
       );
-      app.use(errorHandler);
 
       await libsqlClient.execute(
         "INSERT INTO test_users (name, email, password) VALUES ('Test', 'test@test.com', 'pwd')"
       );
 
-      const listRes = await request(app).get("/users").expect(200);
+      const listRes = await get(app, "/users");
+      expect(listRes.status).toBe(200);
       const userId = listRes.body.items[0].id;
 
-      const res = await request(app).delete(`/users/${userId}`);
+      const res = await del(app, `/users/${userId}`);
 
       // Capability enforcement may or may not be implemented
       expect([204, 405]).toContain(res.status);
     });
 
     it("should handle aggregate operation with capabilities config", async () => {
-      const app = express();
-      app.use(express.json());
-      app.use(injectTestUser);
+      const app = createTestApp({ user: { id: "test-user" } });
 
       const capabilities: ResourceCapabilities = {
         enableAggregations: false,
       };
 
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -379,9 +320,8 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
           capabilities,
         })
       );
-      app.use(errorHandler);
 
-      const res = await request(app).get("/users/aggregate?count=true");
+      const res = await get(app, "/users/aggregate?count=true");
 
       // Capability enforcement may or may not be implemented
       expect([200, 404, 405]).toContain(res.status);
@@ -390,9 +330,7 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
 
   describe("Combined Invariants", () => {
     it("should handle combined capabilities and field policies config", async () => {
-      const app = express();
-      app.use(express.json());
-      app.use(injectTestUser);
+      const app = createTestApp({ user: { id: "test-user" } });
 
       const capabilities: ResourceCapabilities = {
         enableCreate: true,
@@ -402,10 +340,10 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
 
       const fields: FieldPolicies = {
         readable: ["id", "name", "email"],
-        writable: ["name", "email"],
+        writable: ["name", "email", "password"],
       };
 
-      app.use(
+      app.route(
         "/users",
         useResource(testUsersTable, {
           id: testUsersTable.id,
@@ -414,25 +352,20 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
           fields,
         })
       );
-      app.use(errorHandler);
 
-      const createRes = await request(app)
-        .post("/users")
-        .send({ name: "Test", email: "test@test.com", password: "secret" })
-        .expect(201);
+      const createRes = await post(app, "/users", { name: "Test", email: "test@test.com", password: "secret" });
+      expect(createRes.status).toBe(201);
 
       expect(createRes.body.id).toBeDefined();
       expect(createRes.body.name).toBe("Test");
 
       const userId = createRes.body.id;
 
-      await request(app)
-        .patch(`/users/${userId}`)
-        .send({ name: "Updated" })
-        .expect(200);
+      const patchRes = await patch(app, `/users/${userId}`, { name: "Updated" });
+      expect(patchRes.status).toBe(200);
 
       // Capability enforcement may or may not be implemented
-      const deleteRes = await request(app).delete(`/users/${userId}`);
+      const deleteRes = await del(app, `/users/${userId}`);
       expect([204, 405]).toContain(deleteRes.status);
     });
   });

@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from "express";
+import type { MiddlewareHandler } from "hono";
 
 export const CONCAVE_VERSION = "1.0.0";
 
@@ -24,18 +24,19 @@ const DEFAULT_CONFIG: Required<Omit<VersioningConfig, "deprecationWarnings" | "d
   headerName: "X-Concave-Version",
 };
 
-export const versioningMiddleware = (config: VersioningConfig = {}) => {
+export const versioningMiddleware = (config: VersioningConfig = {}): MiddlewareHandler => {
   const mergedConfig = { ...DEFAULT_CONFIG, ...config };
   const { currentVersion, headerName } = mergedConfig;
   const deprecationWarnings = config.deprecationWarnings ?? config.deprecations ?? [];
 
-  return (req: Request, res: Response, next: NextFunction): void => {
-    res.set(headerName, currentVersion);
+  return async (c, next) => {
+    c.set("apiVersion", currentVersion);
+    c.header(headerName, currentVersion);
 
     if (deprecationWarnings.length > 0) {
       const applicableWarnings = deprecationWarnings.filter((warning) => {
         if (warning.affectedPaths) {
-          return warning.affectedPaths.some((path) => req.path.startsWith(path));
+          return warning.affectedPaths.some((path) => c.req.path.startsWith(path));
         }
         return true;
       });
@@ -55,7 +56,7 @@ export const versioningMiddleware = (config: VersioningConfig = {}) => {
           return warning.message;
         });
 
-        res.set("X-Concave-Warn", warningMessages.join("; "));
+        c.header("X-Concave-Warn", warningMessages.join("; "));
 
         const sunsetDate = applicableWarnings
           .map((w) => w.sunsetDate)
@@ -63,15 +64,15 @@ export const versioningMiddleware = (config: VersioningConfig = {}) => {
           .sort((a, b) => (a!.getTime() - b!.getTime()))[0];
 
         if (sunsetDate) {
-          res.set("Deprecation", sunsetDate.toISOString().split("T")[0]);
-          res.set("Sunset", sunsetDate.toUTCString());
+          c.header("Deprecation", sunsetDate.toISOString().split("T")[0]);
+          c.header("Sunset", sunsetDate.toUTCString());
         } else {
-          res.set("Deprecation", "true");
+          c.header("Deprecation", "true");
         }
       }
     }
 
-    next();
+    return next();
   };
 };
 
@@ -210,35 +211,37 @@ export const checkMinimumVersion = (
   return { supported: true };
 };
 
-export const createVersionChecker = (minVersion: string) => {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const clientVersion = req.headers["x-concave-client-version"] as string | undefined;
+export const createVersionChecker = (minVersion: string): MiddlewareHandler => {
+  return async (c, next) => {
+    const clientVersion = c.req.header("x-concave-client-version");
     const result = checkMinimumVersion(clientVersion, minVersion);
 
     if (!result.supported) {
-      res.status(400).json({
-        type: "/__concave/problems/unsupported-version",
-        title: "Unsupported client version",
-        status: 400,
-        detail: result.message,
-        minVersion,
-        clientVersion,
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/unsupported-version",
+          title: "Unsupported client version",
+          status: 400,
+          detail: result.message,
+          minVersion,
+          clientVersion,
+        },
+        400
+      );
     }
 
-    next();
+    return next();
   };
 };
 
 export const CURSOR_VERSION_HEADER = "X-Concave-Cursor-Version";
 export const SCHEMA_VERSION_HEADER = "X-Concave-Schema-Version";
 
-export const schemaVersionMiddleware = (schemaVersion: string | number) => {
+export const schemaVersionMiddleware = (schemaVersion: string | number): MiddlewareHandler => {
   const versionStr = String(schemaVersion);
-  return (_req: Request, res: Response, next: NextFunction): void => {
-    res.set(SCHEMA_VERSION_HEADER, versionStr);
-    next();
+  return async (c, next) => {
+    c.header(SCHEMA_VERSION_HEADER, versionStr);
+    return next();
   };
 };
 

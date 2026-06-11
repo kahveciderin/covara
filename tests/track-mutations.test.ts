@@ -367,6 +367,77 @@ describe("Mutation Tracking", () => {
       expect(mutations[0].type).toBe("create");
       expect(mutations[1].type).toBe("update");
     });
+
+    it("should NOT emit changelog entries when a transaction rolls back", async () => {
+      const mutations: ChangelogEntry[] = [];
+      const trackedDb = trackMutations(db, {
+        todos: { table: todosTable, id: todosTable.id },
+      }, {
+        onMutation: (entry) => { mutations.push(entry); },
+        pushToSubscriptions: false,
+      });
+
+      await expect(
+        trackedDb.transaction(async (tx) => {
+          await tx.insert(todosTable).values({ id: "rollback-1", title: "Phantom" }).returning();
+          throw new Error("force rollback");
+        })
+      ).rejects.toThrow("force rollback");
+
+      expect(mutations).toHaveLength(0);
+      const entries = await changelog.getEntriesSince("todos", 0);
+      expect(entries.filter((e) => e.objectId === "rollback-1")).toHaveLength(0);
+    });
+
+    it("should emit changelog entries only after a transaction commits", async () => {
+      const emittedBeforeCommit: boolean[] = [];
+      const mutations: ChangelogEntry[] = [];
+      const trackedDb = trackMutations(db, {
+        todos: { table: todosTable, id: todosTable.id },
+      }, {
+        onMutation: (entry) => { mutations.push(entry); },
+        pushToSubscriptions: false,
+      });
+
+      await trackedDb.transaction(async (tx) => {
+        await tx.insert(todosTable).values({ id: "commit-1", title: "Committed" }).returning();
+        // Side effects must not have fired yet — the transaction is still open.
+        emittedBeforeCommit.push(mutations.length > 0);
+      });
+
+      expect(emittedBeforeCommit).toEqual([false]);
+      expect(mutations).toHaveLength(1);
+      expect(mutations[0].type).toBe("create");
+      expect(mutations[0].objectId).toBe("commit-1");
+    });
+  });
+
+  describe("Batch Tracking (db.batch)", () => {
+    it("should detect mutations inside db.batch() and record coarse invalidations", async () => {
+      const rawMutations: { resource: string; type: string }[] = [];
+      const trackedDb = trackMutations(db, {
+        todos: { table: todosTable, id: todosTable.id },
+      }, {
+        onRawSqlMutation: (resource, type) => { rawMutations.push({ resource, type }); },
+        pushToSubscriptions: false,
+      });
+
+      await trackedDb.batch([
+        trackedDb.insert(todosTable).values({ id: "b1", title: "Batch 1" }),
+        trackedDb.insert(todosTable).values({ id: "b2", title: "Batch 2" }),
+      ]);
+
+      // Two insert statements detected as create mutations.
+      const creates = rawMutations.filter((m) => m.resource === "todos" && m.type === "create");
+      expect(creates.length).toBe(2);
+
+      const entries = await changelog.getEntriesSince("todos", 0);
+      expect(entries.filter((e) => e.objectId === "*" && e.type === "create").length).toBe(2);
+
+      // Rows were actually written.
+      const rows = await db.select().from(todosTable);
+      expect(rows.map((r) => r.id).sort()).toEqual(["b1", "b2"]);
+    });
   });
 
   describe("Configuration Options", () => {
@@ -572,6 +643,14 @@ describe("Query Caching", () => {
         userId TEXT
       )
     `);
+
+    await db.run(sql`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT
+      )
+    `);
   });
 
   afterAll(async () => {
@@ -584,6 +663,7 @@ describe("Query Caching", () => {
     await clearAllSubscriptions();
     await invalidateAllCache();
     await db.run(sql`DELETE FROM todos`);
+    await db.run(sql`DELETE FROM users`);
   });
 
   describe("Cache Behavior", () => {
@@ -620,6 +700,35 @@ describe("Query Caching", () => {
 
       const result2 = await trackedDb.select().from(todosTable);
       expect(result2).toHaveLength(2);
+    });
+
+    it("should invalidate a cached JOIN query when a joined table mutates", async () => {
+      const trackedDb = trackMutations(db, {
+        todos: { table: todosTable, id: todosTable.id },
+        users: { table: usersTable, id: usersTable.id },
+      }, {
+        cache: { enabled: true },
+        pushToSubscriptions: false,
+      });
+
+      await db.insert(usersTable).values({ id: "u1", name: "Original" });
+      await db.insert(todosTable).values({ id: "1", title: "Task", userId: "u1" });
+
+      const joinQuery = () =>
+        trackedDb
+          .select({ title: todosTable.title, userName: usersTable.name })
+          .from(todosTable)
+          .leftJoin(usersTable, eq(todosTable.userId, usersTable.id));
+
+      const before = await joinQuery();
+      expect(before[0].userName).toBe("Original");
+
+      // Mutating the JOINED table (users) must invalidate the cached join,
+      // even though the query's FROM table is todos.
+      await trackedDb.update(usersTable).set({ name: "Renamed" }).where(eq(usersTable.id, "u1")).returning();
+
+      const after = await joinQuery();
+      expect(after[0].userName).toBe("Renamed");
     });
 
     it("should invalidate cache on update", async () => {

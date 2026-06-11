@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { Router, Request, Response } from "express";
-import { createHash } from "crypto";
+import { Hono } from "hono";
+import { createHash } from "node:crypto";
+import { readEnv } from "@/server/env";
 
 type ProcessedEnvVarConfig<Public extends boolean> = {
   public?: Public;
@@ -76,7 +77,7 @@ const recursivelyParseSchema = <T>(
 
   if (isZodType(toProcess)) {
     const key = path.join("_");
-    const parsed = toProcess.safeParse(process.env[key]);
+    const parsed = toProcess.safeParse(readEnv(key));
     if (!parsed.success) {
       throw new Error(
         `Environment variable validation error for ${key}: ${parsed.error.message}`
@@ -253,39 +254,38 @@ const computeETag = (value: unknown): string => {
 export const usePublicEnv = (
   env: EnvWithPublicGetter,
   config?: PublicEnvConfig
-): Router => {
-  const router = Router();
+): Hono => {
+  const router = new Hono();
   const publicEnv = env.getPublicEnvironmentVariables();
   const publicEnvJson = JSON.stringify(publicEnv);
   const etag = computeETag(publicEnv);
   const cacheControl = config?.cacheControl ?? "public, max-age=3600";
   const exposeSchema = config?.exposeSchema ?? true;
 
-  router.get("/", (req: Request, res: Response) => {
-    const ifNoneMatch = req.headers["if-none-match"];
+  router.get("/", (c) => {
+    const ifNoneMatch = c.req.header("if-none-match");
     if (ifNoneMatch === etag) {
-      res.status(304).end();
-      return;
+      return c.body(null, 304);
     }
 
-    res.setHeader("Cache-Control", cacheControl);
-    res.setHeader("ETag", etag);
+    c.header("Cache-Control", cacheControl);
+    c.header("ETag", etag);
     if (config?.headers) {
       for (const [key, value] of Object.entries(config.headers)) {
-        res.setHeader(key, value);
+        c.header(key, value);
       }
     }
-    res.setHeader("Content-Type", "application/json");
-    res.send(publicEnvJson);
+    c.header("Content-Type", "application/json");
+    return c.body(publicEnvJson);
   });
 
   if (exposeSchema) {
-    router.get("/schema", (_req: Request, res: Response) => {
+    router.get("/schema", (c) => {
       const schema: PublicEnvSchema = {
         fields: extractSchemaFromValue(publicEnv),
         timestamp: new Date().toISOString(),
       };
-      res.json(schema);
+      return c.json(schema);
     });
   }
 

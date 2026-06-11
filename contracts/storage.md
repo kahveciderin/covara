@@ -20,6 +20,11 @@
 - **Lazy initialization**: AWS SDK is loaded only when first operation is performed
 - **Configurable expiry**: Presigned URL expiration is configurable via `presignedUrlExpiry`
 
+### R2 Storage Adapter
+- **Two modes**: Bindings mode (Workers R2 binding) or S3 mode (account credentials); `binding` presence selects the mode
+- **S3-mode presigned URLs**: S3 mode supports presigned upload/download; bindings mode streams through the Worker
+- **Workers-friendly**: The recommended object store on Cloudflare Workers, where local filesystem storage is unavailable
+
 ### Memory Storage Adapter
 - **In-memory only**: Data is not persisted between restarts
 - **No presigned URLs**: Returns null for presigned URL methods
@@ -29,6 +34,8 @@
 - **Multipart parsing**: Accepts multipart/form-data uploads with a single `file` field
 - **MIME type validation**: Rejects files with disallowed MIME types (400 error)
 - **Size validation**: Rejects files exceeding `maxFileSize` (400 error)
+- **Validation option**: The `validation` option (`maxSize`/`allowedTypes`/`blockedTypes`) is enforced on both direct uploads and presigned-URL requests, before any bytes are persisted
+- **Orphan cleanup on delete**: `DELETE /:id` and `DELETE /batch` remove the blob from storage before deleting the database row
 - **Auth scope enforcement**: All operations respect configured auth scopes
 - **Database + storage consistency**: Files are only created in database after successful storage upload
 

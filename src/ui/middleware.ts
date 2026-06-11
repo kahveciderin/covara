@@ -1,24 +1,24 @@
-import { Router, Request, Response } from "express";
+import { Hono, type Context } from "hono";
 import { eq, and, count, getTableColumns } from "drizzle-orm";
 import { getResourceSchema, getSchemaInfo, getAllResourcesForDisplay } from "./schema-registry";
 import { createResourceFilter } from "@/resource/filter";
 import { createPagination, decodeCursorLegacy, parseOrderBy } from "@/resource/pagination";
+import { readJsonBody } from "@/server/request";
+import { readEnv } from "@/server/env";
 import {
   createAdminAuthMiddleware,
   AdminSecurityConfig,
-  AdminUser,
   getAdminAuditLog,
-  getAdminUser,
   detectEnvironment,
-  EnvironmentMode,
+  setAdminAuditSink,
 } from "./admin-auth";
 import { createDataExplorerRoutes, DataExplorerConfig } from "./data-explorer";
 import { createTaskMonitorRoutes, TaskMonitorConfig } from "./task-monitor";
 import { createKVInspectorRoutes, KVInspectorConfig } from "./kv-inspector";
 import { layout } from "./html/layout";
 import * as pages from "./html/pages";
-import { html, escapeHtml, formatRelativeTime, formatDuration, formatJson } from "./html/utils";
-import { badge, emptyState, card } from "./html/components";
+import { html, escapeHtml } from "./html/utils";
+import { emptyState } from "./html/components";
 
 export interface AdminUIConfig {
   basePath?: string;
@@ -78,6 +78,7 @@ interface ErrorLog {
 const requestLogs: RequestLog[] = [];
 const errorLogs: ErrorLog[] = [];
 const MAX_LOGS = 500;
+const MAX_AUDIT_EXPORT = 1000;
 
 export const logRequest = (log: RequestLog) => {
   requestLogs.unshift(log);
@@ -89,8 +90,8 @@ export const logError = (log: ErrorLog) => {
   if (errorLogs.length > MAX_LOGS) errorLogs.pop();
 };
 
-export const createAdminUI = (config: AdminUIConfig = {}): Router => {
-  const router = Router();
+export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
+  const router = new Hono();
   const basePath = config.basePath || "/__concave";
   const title = config.title || "Concave Admin";
   const mode = config.security?.mode ?? detectEnvironment();
@@ -98,18 +99,35 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
   // Admin auth middleware for protected routes
   const adminAuth = createAdminAuthMiddleware(config.security ?? {});
 
+  if (config.security?.auditSink) {
+    setAdminAuditSink(config.security.auditSink);
+  }
+
+  // Gate the entire admin surface (UI pages, partials, and JSON APIs) behind
+  // the admin auth check so it cannot be reached without passing authn/authz.
+  router.use("/ui", adminAuth);
+  router.use("/ui/*", adminAuth);
+  router.use("/api", adminAuth);
+  router.use("/api/*", adminAuth);
+  router.use("/admin", adminAuth);
+  router.use("/admin/*", adminAuth);
+
   // Mount sub-routers for new features
   if (config.dataExplorer?.enabled !== false) {
     const dataExplorerRouter = createDataExplorerRoutes(
       config.dataExplorer ?? {},
       config.security ?? {}
     );
-    router.use("/api/explorer", adminAuth, dataExplorerRouter);
+    router.use("/api/explorer", adminAuth);
+    router.use("/api/explorer/*", adminAuth);
+    router.route("/api/explorer", dataExplorerRouter);
   }
 
   if (config.taskMonitor?.enabled) {
     const taskMonitorRouter = createTaskMonitorRoutes(config.taskMonitor);
-    router.use("/api/tasks", adminAuth, taskMonitorRouter);
+    router.use("/api/tasks", adminAuth);
+    router.use("/api/tasks/*", adminAuth);
+    router.route("/api/tasks", taskMonitorRouter);
   }
 
   if (config.kvInspector?.enabled) {
@@ -117,20 +135,22 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       config.kvInspector,
       config.security ?? {}
     );
-    router.use("/api/kv", adminAuth, kvInspectorRouter);
+    router.use("/api/kv", adminAuth);
+    router.use("/api/kv/*", adminAuth);
+    router.route("/api/kv", kvInspectorRouter);
   }
 
   // Admin audit log endpoint
-  router.get("/api/admin-audit", adminAuth, (req: Request, res: Response) => {
-    const limit = parseInt(String(req.query.limit)) || 100;
-    const offset = parseInt(String(req.query.offset)) || 0;
+  router.get("/api/admin-audit", adminAuth, (c) => {
+    const limit = parseInt(String(c.req.query("limit"))) || 100;
+    const offset = parseInt(String(c.req.query("offset"))) || 0;
     const entries = getAdminAuditLog(limit, offset);
-    res.json({ entries, mode });
+    return c.json({ entries, mode });
   });
 
   // Admin audit export endpoint
-  router.get("/api/admin-audit/export", adminAuth, (req: Request, res: Response) => {
-    const format = req.query.format || 'json';
+  router.get("/api/admin-audit/export", adminAuth, (c) => {
+    const format = c.req.query("format") || 'json';
     const entries = getAdminAuditLog(1000, 0);
 
     if (format === 'csv') {
@@ -145,25 +165,31 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
         });
         csvRows.push(row.join(','));
       }
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', 'attachment; filename="audit-log.csv"');
-      res.send(csvRows.join('\n'));
+      c.header('Content-Type', 'text/csv');
+      c.header('Content-Disposition', 'attachment; filename="audit-log.csv"');
+      return c.body(csvRows.join('\n'));
     } else {
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Content-Disposition', 'attachment; filename="audit-log.json"');
-      res.json(entries);
+      c.header('Content-Disposition', 'attachment; filename="audit-log.json"');
+      return c.json(entries);
     }
   });
 
+  // Canonical JSON audit export endpoint (authz-gated via /admin/* router.use above)
+  router.get("/admin/audit/export", adminAuth, (c) => {
+    const entries = getAdminAuditLog(MAX_AUDIT_EXPORT, 0);
+    c.header("Content-Disposition", 'attachment; filename="audit-log.json"');
+    return c.json({ entries, mode, exportedAt: new Date().toISOString() });
+  });
+
   // Environment info endpoint
-  router.get("/api/environment", (_req: Request, res: Response) => {
+  router.get("/api/environment", (c) => {
     const dataExplorerEnabled = config.dataExplorer?.enabled !== false;
     const dataExplorerReadOnly =
       config.dataExplorer?.readOnly ?? (mode === "production" ? true : false);
 
-    res.json({
+    return c.json({
       mode,
-      version: process.env.npm_package_version ?? "unknown",
+      version: readEnv("npm_package_version") ?? "unknown",
       features: {
         dataExplorer: dataExplorerEnabled,
         dataExplorerReadOnly,
@@ -175,213 +201,207 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
   });
 
   // API endpoints
-  router.get("/api/resources", (_req: Request, res: Response) => {
+  router.get("/api/resources", (c) => {
     const resources = getAllResourcesForDisplay();
-    res.json({ resources });
+    return c.json({ resources });
   });
 
-  router.get("/api/metrics", (_req: Request, res: Response) => {
+  router.get("/api/metrics", (c) => {
     if (!config.metricsCollector) {
-      res.json({ metrics: [], enabled: false });
-      return;
+      return c.json({ metrics: [], enabled: false });
     }
     const recent = config.metricsCollector.getRecent(200);
     const slow = config.metricsCollector.getSlow(500);
-    res.json({ metrics: recent, slowQueries: slow, enabled: true });
+    return c.json({ metrics: recent, slowQueries: slow, enabled: true });
   });
 
-  router.get("/api/requests", (_req: Request, res: Response) => {
-    res.json({ requests: requestLogs.slice(0, 200) });
+  router.get("/api/requests", (c) => {
+    return c.json({ requests: requestLogs.slice(0, 200) });
   });
 
-  router.get("/api/errors", (_req: Request, res: Response) => {
-    res.json({ errors: errorLogs.slice(0, 100) });
+  router.get("/api/errors", (c) => {
+    return c.json({ errors: errorLogs.slice(0, 100) });
   });
 
-  router.get("/api/changelog", async (_req: Request, res: Response) => {
+  router.get("/api/changelog", async (c) => {
     if (!config.changelog) {
-      res.json({ entries: [], currentSeq: 0, enabled: false });
-      return;
+      return c.json({ entries: [], currentSeq: 0, enabled: false });
     }
     try {
       const currentSeq = await config.changelog.getCurrentSequence();
       const entries = await config.changelog.getEntries(Math.max(0, currentSeq - 50), 50);
-      res.json({ entries, currentSeq, enabled: true });
+      return c.json({ entries, currentSeq, enabled: true });
     } catch {
-      res.json({ entries: [], currentSeq: 0, enabled: false });
+      return c.json({ entries: [], currentSeq: 0, enabled: false });
     }
   });
 
-  router.get("/api/subscriptions", (_req: Request, res: Response) => {
+  router.get("/api/subscriptions", (c) => {
     if (!config.getActiveSubscriptions) {
-      res.json({ subscriptions: [], enabled: false });
-      return;
+      return c.json({ subscriptions: [], enabled: false });
     }
-    res.json({ subscriptions: config.getActiveSubscriptions(), enabled: true });
+    return c.json({ subscriptions: config.getActiveSubscriptions(), enabled: true });
   });
 
-  router.post("/api/query", async (req: Request, res: Response) => {
-    const { resource, filter, limit = 10 } = req.body;
+  router.post("/api/query", async (c) => {
+    const { resource, filter, limit = 10 } = (await readJsonBody(c)) as {
+      resource?: string;
+      filter?: string;
+      limit?: number;
+    };
     try {
       const url = `${resource}?filter=${encodeURIComponent(filter || "")}&limit=${limit}`;
-      res.json({ url, note: "Execute this query via the main API" });
+      return c.json({ url, note: "Execute this query via the main API" });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      return c.json({ error: e.message }, 400);
     }
   });
 
   // User management API endpoints
-  router.get("/api/users", async (req: Request, res: Response) => {
+  router.get("/api/users", async (c) => {
     if (!config.userManager) {
-      res.json({ users: [], total: 0, enabled: false });
-      return;
+      return c.json({ users: [], total: 0, enabled: false });
     }
     try {
-      const limit = parseInt(String(req.query.limit)) || 50;
-      const offset = parseInt(String(req.query.offset)) || 0;
+      const limit = parseInt(String(c.req.query("limit"))) || 50;
+      const offset = parseInt(String(c.req.query("offset"))) || 0;
       const result = await config.userManager.listUsers(limit, offset);
-      res.json({ ...result, enabled: true });
+      return c.json({ ...result, enabled: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      return c.json({ error: e.message }, 500);
     }
   });
 
-  router.get("/api/users/:id", async (req: Request, res: Response) => {
+  router.get("/api/users/:id", async (c) => {
     if (!config.userManager) {
-      res.status(501).json({ error: "User management not configured" });
-      return;
+      return c.json({ error: "User management not configured" }, 501);
     }
     try {
-      const userId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const userId = c.req.param("id");
       const user = await config.userManager.getUser(userId);
       if (!user) {
-        res.status(404).json({ error: "User not found" });
-        return;
+        return c.json({ error: "User not found" }, 404);
       }
-      res.json({ user });
+      return c.json({ user });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      return c.json({ error: e.message }, 500);
     }
   });
 
-  router.post("/api/users", async (req: Request, res: Response) => {
+  router.post("/api/users", async (c) => {
     if (!config.userManager) {
-      res.status(501).json({ error: "User management not configured" });
-      return;
+      return c.json({ error: "User management not configured" }, 501);
     }
     try {
-      const user = await config.userManager.createUser(req.body);
-      res.status(201).json({ user });
+      const body = (await readJsonBody(c)) as { email: string; name?: string; metadata?: any };
+      const user = await config.userManager.createUser(body);
+      return c.json({ user }, 201);
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      return c.json({ error: e.message }, 400);
     }
   });
 
-  router.patch("/api/users/:id", async (req: Request, res: Response) => {
+  router.patch("/api/users/:id", async (c) => {
     if (!config.userManager) {
-      res.status(501).json({ error: "User management not configured" });
-      return;
+      return c.json({ error: "User management not configured" }, 501);
     }
     try {
-      const userId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-      const user = await config.userManager.updateUser(userId, req.body);
-      res.json({ user });
+      const userId = c.req.param("id");
+      const body = (await readJsonBody(c)) as { email?: string; name?: string; metadata?: any };
+      const user = await config.userManager.updateUser(userId, body);
+      return c.json({ user });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      return c.json({ error: e.message }, 400);
     }
   });
 
-  router.delete("/api/users/:id", async (req: Request, res: Response) => {
+  router.delete("/api/users/:id", async (c) => {
     if (!config.userManager) {
-      res.status(501).json({ error: "User management not configured" });
-      return;
+      return c.json({ error: "User management not configured" }, 501);
     }
     try {
-      const userId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const userId = c.req.param("id");
       await config.userManager.deleteUser(userId);
-      res.status(204).send();
+      return c.body(null, 204);
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      return c.json({ error: e.message }, 400);
     }
   });
 
   // Session management API endpoints
-  router.get("/api/sessions", async (req: Request, res: Response) => {
+  router.get("/api/sessions", async (c) => {
     if (!config.sessionManager) {
-      res.json({ sessions: [], enabled: false });
-      return;
+      return c.json({ sessions: [], enabled: false });
     }
     try {
-      const limit = parseInt(String(req.query.limit)) || 50;
+      const limit = parseInt(String(c.req.query("limit"))) || 50;
       const sessions = await config.sessionManager.listSessions(limit);
-      res.json({ sessions, enabled: true });
+      return c.json({ sessions, enabled: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      return c.json({ error: e.message }, 500);
     }
   });
 
-  router.get("/api/sessions/user/:userId", async (req: Request, res: Response) => {
+  router.get("/api/sessions/user/:userId", async (c) => {
     if (!config.sessionManager) {
-      res.status(501).json({ error: "Session management not configured" });
-      return;
+      return c.json({ error: "Session management not configured" }, 501);
     }
     try {
-      const userId = Array.isArray(req.params.userId) ? req.params.userId[0] : req.params.userId;
+      const userId = c.req.param("userId");
       const sessions = await config.sessionManager.getSessionsByUser(userId);
-      res.json({ sessions });
+      return c.json({ sessions });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      return c.json({ error: e.message }, 500);
     }
   });
 
-  router.post("/api/sessions", async (req: Request, res: Response) => {
+  router.post("/api/sessions", async (c) => {
     if (!config.sessionManager) {
-      res.status(501).json({ error: "Session management not configured" });
-      return;
+      return c.json({ error: "Session management not configured" }, 501);
     }
     try {
-      const { userId, expiresIn } = req.body;
+      const { userId, expiresIn } = (await readJsonBody(c)) as {
+        userId?: string;
+        expiresIn?: number;
+      };
       if (!userId) {
-        res.status(400).json({ error: "userId is required" });
-        return;
+        return c.json({ error: "userId is required" }, 400);
       }
       const session = await config.sessionManager.createSession(userId, expiresIn);
-      res.status(201).json({ session });
+      return c.json({ session }, 201);
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      return c.json({ error: e.message }, 400);
     }
   });
 
-  router.delete("/api/sessions/:id", async (req: Request, res: Response) => {
+  router.delete("/api/sessions/:id", async (c) => {
     if (!config.sessionManager) {
-      res.status(501).json({ error: "Session management not configured" });
-      return;
+      return c.json({ error: "Session management not configured" }, 501);
     }
     try {
-      const sessionId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const sessionId = c.req.param("id");
       await config.sessionManager.revokeSession(sessionId);
-      res.status(204).send();
+      return c.body(null, 204);
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      return c.json({ error: e.message }, 400);
     }
   });
 
-  router.delete("/api/sessions/user/:userId", async (req: Request, res: Response) => {
+  router.delete("/api/sessions/user/:userId", async (c) => {
     if (!config.sessionManager) {
-      res.status(501).json({ error: "Session management not configured" });
-      return;
+      return c.json({ error: "Session management not configured" }, 501);
     }
     try {
-      const userId = Array.isArray(req.params.userId) ? req.params.userId[0] : req.params.userId;
+      const userId = c.req.param("userId");
       const count = await config.sessionManager.revokeAllUserSessions(userId);
-      res.json({ revokedCount: count });
+      return c.json({ revokedCount: count });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      return c.json({ error: e.message }, 400);
     }
   });
 
   // Problem details documentation
-  router.get("/problems/:type", (req: Request, res: Response) => {
+  router.get("/problems/:type", (c) => {
     const problemDocs: Record<string, { title: string; description: string; solutions: string[] }> = {
       "not-found": {
         title: "Resource Not Found",
@@ -525,14 +545,14 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       }
     };
 
-    const problemType = Array.isArray(req.params.type) ? req.params.type[0] : req.params.type;
+    const problemType = c.req.param("type");
     const doc = problemDocs[problemType] || {
       title: "Unknown Error",
       description: "An unrecognized error type.",
       solutions: ["Check the API documentation", "Review server logs"]
     };
 
-    res.json(doc);
+    return c.json(doc);
   });
 
   // Helper to get layout props
@@ -543,16 +563,14 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
   });
 
   // Helper to check if this is an HTMX request
-  const isHtmxRequest = (req: Request) => req.headers['hx-request'] === 'true';
+  const isHtmxRequest = (c: Context) => c.req.header('hx-request') === 'true';
 
   // Helper to send HTML response (full page or fragment for HTMX)
-  const sendHtml = (req: Request, res: Response, activePage: string, content: string) => {
-    res.setHeader("Content-Type", "text/html");
-    if (isHtmxRequest(req)) {
-      res.send(content);
-    } else {
-      res.send(layout(getLayoutProps(activePage), content));
+  const sendHtml = (c: Context, activePage: string, content: string) => {
+    if (isHtmxRequest(c)) {
+      return c.html(content);
     }
+    return c.html(layout(getLayoutProps(activePage), content));
   };
 
   // ============================================
@@ -560,7 +578,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
   // ============================================
 
   // Dashboard
-  router.get("/ui", async (req: Request, res: Response) => {
+  router.get("/ui", async (c) => {
     const resources = getAllResourcesForDisplay();
     const recentRequests = requestLogs.slice(0, 10).map(r => ({
       id: r.id,
@@ -594,23 +612,23 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       mode,
     });
 
-    sendHtml(req, res, 'dashboard', content);
+    return sendHtml(c, 'dashboard', content);
   });
 
-  router.get("/ui/dashboard", async (req: Request, res: Response) => {
+  router.get("/ui/dashboard", (c) => {
     // Redirect to main UI
-    res.redirect(`${basePath}/ui`);
+    return c.redirect(`${basePath}/ui`, 302);
   });
 
   // Resources
-  router.get("/ui/resources", (req: Request, res: Response) => {
+  router.get("/ui/resources", (c) => {
     const resources = getAllResourcesForDisplay();
     const content = pages.resourcesPage({ resources });
-    sendHtml(req, res, 'resources', content);
+    return sendHtml(c, 'resources', content);
   });
 
   // Data Explorer
-  router.get("/ui/data-explorer", (req: Request, res: Response) => {
+  router.get("/ui/data-explorer", (c) => {
     const resources = getAllResourcesForDisplay().map(r => r.name);
     const readOnly = config.dataExplorer?.readOnly ?? (mode === "production");
 
@@ -620,11 +638,11 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       mode,
     });
 
-    sendHtml(req, res, 'data-explorer', content);
+    return sendHtml(c, 'data-explorer', content);
   });
 
   // Requests
-  router.get("/ui/requests", (req: Request, res: Response) => {
+  router.get("/ui/requests", (c) => {
     const requests = requestLogs.slice(0, 200).map(r => ({
       id: r.id,
       method: r.method,
@@ -636,11 +654,11 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
     }));
 
     const content = pages.requestsPage({ requests });
-    sendHtml(req, res, 'requests', content);
+    return sendHtml(c, 'requests', content);
   });
 
   // Errors
-  router.get("/ui/errors", (req: Request, res: Response) => {
+  router.get("/ui/errors", (c) => {
     const errors = errorLogs.slice(0, 100).map(e => ({
       id: e.id,
       status: e.statusCode,
@@ -651,11 +669,11 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
     }));
 
     const content = pages.errorsPage({ errors });
-    sendHtml(req, res, 'errors', content);
+    return sendHtml(c, 'errors', content);
   });
 
   // Users
-  router.get("/ui/users", async (req: Request, res: Response) => {
+  router.get("/ui/users", async (c) => {
     let users: any[] = [];
     let totalCount = 0;
 
@@ -668,11 +686,11 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
     }
 
     const content = pages.usersPage({ users, totalCount });
-    sendHtml(req, res, 'users', content);
+    return sendHtml(c, 'users', content);
   });
 
   // Sessions
-  router.get("/ui/sessions", async (req: Request, res: Response) => {
+  router.get("/ui/sessions", async (c) => {
     let sessions: any[] = [];
 
     if (config.sessionManager) {
@@ -686,11 +704,11 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       totalCount: sessions.length,
     });
 
-    sendHtml(req, res, 'sessions', content);
+    return sendHtml(c, 'sessions', content);
   });
 
   // Subscriptions
-  router.get("/ui/subscriptions", (req: Request, res: Response) => {
+  router.get("/ui/subscriptions", (c) => {
     const subscriptions = config.getActiveSubscriptions?.() || [];
 
     const byResource: Record<string, number> = {};
@@ -707,13 +725,13 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       },
     });
 
-    sendHtml(req, res, 'subscriptions', content);
+    return sendHtml(c, 'subscriptions', content);
   });
 
   // Changelog
-  router.get("/ui/changelog", async (req: Request, res: Response) => {
+  router.get("/ui/changelog", async (c) => {
     let entries: any[] = [];
-    let stats = { total: 0, creates: 0, updates: 0, deletes: 0, currentSeq: 0 };
+    const stats = { total: 0, creates: 0, updates: 0, deletes: 0, currentSeq: 0 };
 
     if (config.changelog) {
       try {
@@ -729,11 +747,11 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
     }
 
     const content = pages.changelogPage({ entries, stats });
-    sendHtml(req, res, 'changelog', content);
+    return sendHtml(c, 'changelog', content);
   });
 
   // Tasks
-  router.get("/ui/tasks", async (req: Request, res: Response) => {
+  router.get("/ui/tasks", async (c) => {
     const content = pages.tasksPage({
       stats: { pending: 0, scheduled: 0, running: 0, completed: 0, failed: 0, dlq: 0 },
       scheduled: [],
@@ -741,36 +759,36 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       workers: [],
     });
 
-    sendHtml(req, res, 'tasks', content);
+    return sendHtml(c, 'tasks', content);
   });
 
   // KV Inspector
-  router.get("/ui/kv-inspector", (req: Request, res: Response) => {
+  router.get("/ui/kv-inspector", (c) => {
     const enabled = config.kvInspector?.enabled ?? false;
     const readOnly = config.kvInspector?.readOnly ?? (mode === "production");
 
     const content = pages.kvInspectorPage({ enabled, readOnly, mode });
-    sendHtml(req, res, 'kv-inspector', content);
+    return sendHtml(c, 'kv-inspector', content);
   });
 
   // Admin Audit
-  router.get("/ui/admin-audit", (req: Request, res: Response) => {
+  router.get("/ui/admin-audit", (c) => {
     const entries = getAdminAuditLog(100, 0);
 
     const content = pages.adminAuditPage({ entries });
-    sendHtml(req, res, 'admin-audit', content);
+    return sendHtml(c, 'admin-audit', content);
   });
 
   // Filter Tester
-  router.get("/ui/filter-tester", (req: Request, res: Response) => {
+  router.get("/ui/filter-tester", (c) => {
     const resources = getAllResourcesForDisplay().map(r => r.name);
 
     const content = pages.filterTesterPage({ resources });
-    sendHtml(req, res, 'filter-tester', content);
+    return sendHtml(c, 'filter-tester', content);
   });
 
   // API Explorer
-  router.get("/ui/api-explorer", (req: Request, res: Response) => {
+  router.get("/ui/api-explorer", (c) => {
     const resources = getAllResourcesForDisplay();
     const endpoints: pages.EndpointInfo[] = [];
 
@@ -830,7 +848,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
     }
 
     const content = pages.apiExplorerPage({ endpoints, baseUrl: '' });
-    sendHtml(req, res, 'api-explorer', content);
+    return sendHtml(c, 'api-explorer', content);
   });
 
   // ============================================
@@ -838,18 +856,17 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
   // ============================================
 
   // Empty fragment (for closing modals, etc.)
-  router.get("/ui/empty", (_req: Request, res: Response) => {
-    res.setHeader("Content-Type", "text/html");
-    res.send('');
+  router.get("/ui/empty", (c) => {
+    return c.html('');
   });
 
   // Request list partial
-  router.get("/ui/requests/list", (req: Request, res: Response) => {
+  router.get("/ui/requests/list", (c) => {
     let requests = requestLogs.slice(0, 200);
 
-    const method = req.query.method as string;
-    const status = req.query.status as string;
-    const path = req.query.path as string;
+    const method = c.req.query("method");
+    const status = c.req.query("status");
+    const path = c.req.query("path");
 
     if (method) {
       requests = requests.filter(r => r.method === method);
@@ -873,23 +890,19 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       error: r.error,
     }));
 
-    res.setHeader("Content-Type", "text/html");
-    res.send(pages.requestList(mapped));
+    return c.html(pages.requestList(mapped));
   });
 
   // Request detail partial
-  router.get("/ui/requests/:id", (req: Request, res: Response) => {
-    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  router.get("/ui/requests/:id", (c) => {
+    const id = c.req.param("id");
     const request = requestLogs.find(r => r.id === id);
 
     if (!request) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(emptyState('\u2715', 'Request not found', 'The request may have been purged from logs'));
-      return;
+      return c.html(emptyState('✕', 'Request not found', 'The request may have been purged from logs'));
     }
 
-    res.setHeader("Content-Type", "text/html");
-    res.send(pages.requestDetail({
+    return c.html(pages.requestDetail({
       request: {
         id: request.id,
         method: request.method,
@@ -906,15 +919,13 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
   });
 
   // Users list partial
-  router.get("/ui/users/list", async (req: Request, res: Response) => {
+  router.get("/ui/users/list", async (c) => {
     if (!config.userManager) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.usersList([]));
-      return;
+      return c.html(pages.usersList([]));
     }
 
     try {
-      const search = req.query.search as string;
+      const search = c.req.query("search");
       const result = await config.userManager.listUsers(50, 0);
       let users = result.users;
 
@@ -926,36 +937,29 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
         );
       }
 
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.usersList(users));
+      return c.html(pages.usersList(users));
     } catch (e: any) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
+      return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
     }
   });
 
   // User create form partial
-  router.get("/ui/users/new", (_req: Request, res: Response) => {
-    res.setHeader("Content-Type", "text/html");
-    res.send(pages.userForm());
+  router.get("/ui/users/new", (c) => {
+    return c.html(pages.userForm());
   });
 
   // User detail partial
-  router.get("/ui/users/:id", async (req: Request, res: Response) => {
+  router.get("/ui/users/:id", async (c) => {
     if (!config.userManager) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(emptyState('\u2715', 'User management not configured', ''));
-      return;
+      return c.html(emptyState('✕', 'User management not configured', ''));
     }
 
     try {
-      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const id = c.req.param("id");
       const user = await config.userManager.getUser(id);
 
       if (!user) {
-        res.setHeader("Content-Type", "text/html");
-        res.send(emptyState('\u2715', 'User not found', ''));
-        return;
+        return c.html(emptyState('✕', 'User not found', ''));
       }
 
       let sessions: any[] = [];
@@ -965,16 +969,14 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
         } catch {}
       }
 
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.userDetail({ user: { ...user, sessions } }));
+      return c.html(pages.userDetail({ user: { ...user, sessions } }));
     } catch (e: any) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
+      return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
     }
   });
 
   // Session create form partial
-  router.get("/ui/sessions/new", async (_req: Request, res: Response) => {
+  router.get("/ui/sessions/new", async (c) => {
     let users: { id: string; email: string }[] = [];
 
     if (config.userManager) {
@@ -984,46 +986,38 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       } catch {}
     }
 
-    res.setHeader("Content-Type", "text/html");
-    res.send(pages.sessionForm({ users }));
+    return c.html(pages.sessionForm({ users }));
   });
 
   // Sessions list partial
-  router.get("/ui/sessions/list", async (_req: Request, res: Response) => {
+  router.get("/ui/sessions/list", async (c) => {
     if (!config.sessionManager) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.sessionsList([]));
-      return;
+      return c.html(pages.sessionsList([]));
     }
 
     try {
       const sessions = await config.sessionManager.listSessions(100);
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.sessionsList(sessions));
+      return c.html(pages.sessionsList(sessions));
     } catch (e: any) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
+      return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
     }
   });
 
   // Subscriptions list partial
-  router.get("/ui/subscriptions/list", (_req: Request, res: Response) => {
+  router.get("/ui/subscriptions/list", (c) => {
     const subscriptions = config.getActiveSubscriptions?.() || [];
-    res.setHeader("Content-Type", "text/html");
-    res.send(pages.subscriptionsList(subscriptions));
+    return c.html(pages.subscriptionsList(subscriptions));
   });
 
   // Changelog list partial
-  router.get("/ui/changelog/list", async (req: Request, res: Response) => {
+  router.get("/ui/changelog/list", async (c) => {
     if (!config.changelog) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.changelogList([]));
-      return;
+      return c.html(pages.changelogList([]));
     }
 
     try {
-      const resource = req.query.resource as string;
-      const fromSeq = parseInt(req.query.fromSeq as string) || 0;
+      const resource = c.req.query("resource");
+      const fromSeq = parseInt(c.req.query("fromSeq") ?? "") || 0;
 
       const currentSeq = await config.changelog.getCurrentSequence();
       let entries = await config.changelog.getEntries(fromSeq || Math.max(0, currentSeq - 100), 100);
@@ -1032,47 +1026,39 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
         entries = entries.filter((e: any) => e.resource?.includes(resource));
       }
 
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.changelogList(entries));
+      return c.html(pages.changelogList(entries));
     } catch (e: any) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
+      return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
     }
   });
 
   // Changelog detail partial
-  router.get("/ui/changelog/:seq", async (req: Request, res: Response) => {
+  router.get("/ui/changelog/:seq", async (c) => {
     if (!config.changelog) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(emptyState('\u2715', 'Changelog not configured', ''));
-      return;
+      return c.html(emptyState('✕', 'Changelog not configured', ''));
     }
 
     try {
-      const seq = parseInt(Array.isArray(req.params.seq) ? req.params.seq[0] : req.params.seq);
+      const seq = parseInt(c.req.param("seq"));
       const entries = await config.changelog.getEntries(seq, 1);
       const entry = entries[0];
 
       if (!entry) {
-        res.setHeader("Content-Type", "text/html");
-        res.send(emptyState('\u2715', 'Entry not found', ''));
-        return;
+        return c.html(emptyState('✕', 'Entry not found', ''));
       }
 
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.changelogDetail({ entry }));
+      return c.html(pages.changelogDetail({ entry }));
     } catch (e: any) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
+      return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
     }
   });
 
   // Audit list partial
-  router.get("/ui/audit/list", (req: Request, res: Response) => {
+  router.get("/ui/audit/list", (c) => {
     let entries = getAdminAuditLog(100, 0);
 
-    const operation = req.query.operation as string;
-    const user = req.query.user as string;
+    const operation = c.req.query("operation");
+    const user = c.req.query("user");
 
     if (operation) {
       entries = entries.filter(e => e.operation?.includes(operation));
@@ -1084,57 +1070,46 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       );
     }
 
-    res.setHeader("Content-Type", "text/html");
-    res.send(pages.auditList(entries));
+    return c.html(pages.auditList(entries));
   });
 
   // Audit detail partial
-  router.get("/ui/audit/:index", (req: Request, res: Response) => {
-    const index = parseInt(Array.isArray(req.params.index) ? req.params.index[0] : req.params.index);
+  router.get("/ui/audit/:index", (c) => {
+    const index = parseInt(c.req.param("index"));
     const entries = getAdminAuditLog(100, 0);
     const entry = entries[index];
 
     if (!entry) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(emptyState('\u2715', 'Entry not found', ''));
-      return;
+      return c.html(emptyState('✕', 'Entry not found', ''));
     }
 
-    res.setHeader("Content-Type", "text/html");
-    res.send(pages.auditDetail({ entry }));
+    return c.html(pages.auditDetail({ entry }));
   });
 
   // KV keys partial
-  router.get("/ui/kv/keys", async (req: Request, res: Response) => {
+  router.get("/ui/kv/keys", (c) => {
     if (!config.kvInspector?.enabled) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(emptyState('\u26C1', 'KV Inspector Disabled', ''));
-      return;
+      return c.html(emptyState('⛁', 'KV Inspector Disabled', ''));
     }
 
-    const pattern = req.query.pattern as string || '*';
     const readOnly = config.kvInspector?.readOnly ?? (mode === "production");
 
     // This would need to be implemented with actual KV access
     // For now, return empty
-    res.setHeader("Content-Type", "text/html");
-    res.send(pages.kvKeysList({ keys: [], readOnly }));
+    return c.html(pages.kvKeysList({ keys: [], readOnly }));
   });
 
   // KV value partial
-  router.get("/ui/kv/value/:key", async (req: Request, res: Response) => {
+  router.get("/ui/kv/value/:key", (c) => {
     if (!config.kvInspector?.enabled) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(emptyState('\u26C1', 'KV Inspector Disabled', ''));
-      return;
+      return c.html(emptyState('⛁', 'KV Inspector Disabled', ''));
     }
 
-    const key = decodeURIComponent(Array.isArray(req.params.key) ? req.params.key[0] : req.params.key);
+    const key = decodeURIComponent(c.req.param("key"));
     const readOnly = config.kvInspector?.readOnly ?? (mode === "production");
 
     // This would need to be implemented with actual KV access
-    res.setHeader("Content-Type", "text/html");
-    res.send(pages.kvValueView({
+    return c.html(pages.kvValueView({
       key,
       type: 'string',
       value: '',
@@ -1143,37 +1118,32 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
   });
 
   // Data explorer partials
-  router.get("/ui/data/resources", (_req: Request, res: Response) => {
+  router.get("/ui/data/resources", (c) => {
     const resources = getAllResourcesForDisplay().map(r => r.name);
     const readOnly = config.dataExplorer?.readOnly ?? (mode === "production");
 
-    res.setHeader("Content-Type", "text/html");
-    res.send(pages.resourceSelector({ resources, readOnly }));
+    return c.html(pages.resourceSelector({ resources, readOnly }));
   });
 
   // Data table partial for a resource
-  router.get("/ui/data/:resource/table", async (req: Request, res: Response) => {
-    const resource = Array.isArray(req.params.resource) ? req.params.resource[0] : req.params.resource;
-    const filter = req.query.filter as string || '';
-    const limit = parseInt(req.query.limit as string) || 50;
-    const cursor = req.query.cursor as string || '';
-    const orderBy = req.query.orderBy as string || '';
+  router.get("/ui/data/:resource/table", async (c) => {
+    const resource = c.req.param("resource");
+    const filter = c.req.query("filter") || '';
+    const limit = parseInt(c.req.query("limit") ?? "") || 50;
+    const cursor = c.req.query("cursor") || '';
+    const orderBy = c.req.query("orderBy") || '';
     const readOnly = config.dataExplorer?.readOnly ?? (mode === "production");
 
     try {
       const schemaInfo = getSchemaInfo(resource);
 
       if (!schemaInfo) {
-        res.setHeader("Content-Type", "text/html");
-        res.send(emptyState('\u2715', 'Resource not found', `Resource '${resource}' is not registered`));
-        return;
+        return c.html(emptyState('✕', 'Resource not found', `Resource '${resource}' is not registered`));
       }
 
       const entry = getResourceSchema(resource);
       if (!entry) {
-        res.setHeader("Content-Type", "text/html");
-        res.send(emptyState('\u2715', 'Resource not found', ''));
-        return;
+        return c.html(emptyState('✕', 'Resource not found', ''));
       }
 
       const db = entry.db;
@@ -1214,7 +1184,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       }
 
       query = query.limit(limit + 1);
-      let items = await query;
+      const items = await query;
 
       // Get total count
       const [countResult] = await db
@@ -1231,8 +1201,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
         totalCount
       );
 
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.dataTable({
+      return c.html(pages.dataTable({
         resource,
         schema: schemaInfo,
         items: result.items,
@@ -1245,22 +1214,19 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
         readOnly,
       }));
     } catch (e: any) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
+      return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
     }
   });
 
   // Row detail partial
-  router.get("/ui/data/:resource/row/:id", async (req: Request, res: Response) => {
-    const resource = Array.isArray(req.params.resource) ? req.params.resource[0] : req.params.resource;
-    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  router.get("/ui/data/:resource/row/:id", async (c) => {
+    const resource = c.req.param("resource");
+    const id = c.req.param("id");
 
     try {
       const entry = getResourceSchema(resource);
       if (!entry) {
-        res.setHeader("Content-Type", "text/html");
-        res.send(emptyState('\u2715', 'Resource not found', ''));
-        return;
+        return c.html(emptyState('✕', 'Resource not found', ''));
       }
 
       const db = entry.db;
@@ -1271,38 +1237,30 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       const [item] = await db.select().from(schema).where(eq(idColumn, id));
 
       if (!item) {
-        res.setHeader("Content-Type", "text/html");
-        res.send(emptyState('\u2715', 'Record not found', ''));
-        return;
+        return c.html(emptyState('✕', 'Record not found', ''));
       }
 
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.recordDetail({ resource, item: item as Record<string, unknown> }));
+      return c.html(pages.recordDetail({ resource, item: item as Record<string, unknown> }));
     } catch (e: any) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
+      return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
     }
   });
 
   // Edit form partial
-  router.get("/ui/data/:resource/edit/:id", async (req: Request, res: Response) => {
-    const resource = Array.isArray(req.params.resource) ? req.params.resource[0] : req.params.resource;
-    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  router.get("/ui/data/:resource/edit/:id", async (c) => {
+    const resource = c.req.param("resource");
+    const id = c.req.param("id");
     const readOnly = config.dataExplorer?.readOnly ?? (mode === "production");
 
     if (readOnly) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(emptyState('\u26A0', 'Read-only mode', 'Data editing is disabled in this environment'));
-      return;
+      return c.html(emptyState('⚠', 'Read-only mode', 'Data editing is disabled in this environment'));
     }
 
     try {
       const entry = getResourceSchema(resource);
       const schemaInfo = getSchemaInfo(resource);
       if (!entry || !schemaInfo) {
-        res.setHeader("Content-Type", "text/html");
-        res.send(emptyState('\u2715', 'Resource not found', ''));
-        return;
+        return c.html(emptyState('✕', 'Resource not found', ''));
       }
 
       const db = entry.db;
@@ -1313,65 +1271,54 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       const [item] = await db.select().from(schema).where(eq(idColumn, id));
 
       if (!item) {
-        res.setHeader("Content-Type", "text/html");
-        res.send(emptyState('\u2715', 'Record not found', ''));
-        return;
+        return c.html(emptyState('✕', 'Record not found', ''));
       }
 
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.recordForm({
+      return c.html(pages.recordForm({
         resource,
         schema: schemaInfo,
         item: item as Record<string, unknown>,
         isEdit: true,
       }));
     } catch (e: any) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
+      return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
     }
   });
 
   // New record form partial
-  router.get("/ui/data/new", (req: Request, res: Response) => {
-    const resource = req.query.resource as string;
+  router.get("/ui/data/new", (c) => {
+    const resource = c.req.query("resource");
     const readOnly = config.dataExplorer?.readOnly ?? (mode === "production");
 
     if (readOnly) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(emptyState('\u26A0', 'Read-only mode', 'Data editing is disabled in this environment'));
-      return;
+      return c.html(emptyState('⚠', 'Read-only mode', 'Data editing is disabled in this environment'));
     }
 
     if (!resource) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(emptyState('\u26A0', 'No resource selected', 'Select a resource first'));
-      return;
+      return c.html(emptyState('⚠', 'No resource selected', 'Select a resource first'));
     }
 
     try {
       const schemaInfo = getSchemaInfo(resource);
 
       if (!schemaInfo) {
-        res.setHeader("Content-Type", "text/html");
-        res.send(emptyState('\u2715', 'Resource not found', ''));
-        return;
+        return c.html(emptyState('✕', 'Resource not found', ''));
       }
 
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.recordForm({
+      return c.html(pages.recordForm({
         resource,
         schema: schemaInfo,
         isEdit: false,
       }));
     } catch (e: any) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
+      return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
     }
   });
 
   // Filter tester parse partial
-  router.post("/ui/filter/parse", (req: Request, res: Response) => {
-    const filter = req.body.filter || '';
+  router.post("/ui/filter/parse", async (c) => {
+    const body = await c.req.parseBody();
+    const filter = typeof body.filter === "string" ? body.filter : '';
 
     try {
       // Use createResourceFilter with a minimal dummy to parse the filter
@@ -1381,17 +1328,15 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
       // compile() returns the parsed AST and throws on syntax errors
       const ast = filterer.compile(filter);
 
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.filterParseResult({ filter, ast: ast.toString() }));
+      return c.html(pages.filterParseResult({ filter, ast: ast.toString() }));
     } catch (e: any) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(pages.filterParseResult({ filter, error: e.message }));
+      return c.html(pages.filterParseResult({ filter, error: e.message }));
     }
   });
 
   // API explorer endpoint detail partial
-  router.get("/ui/api-explorer/endpoint/:index", (req: Request, res: Response) => {
-    const index = parseInt(Array.isArray(req.params.index) ? req.params.index[0] : req.params.index);
+  router.get("/ui/api-explorer/endpoint/:index", (c) => {
+    const index = parseInt(c.req.param("index"));
     const resources = getAllResourcesForDisplay();
     const endpoints: pages.EndpointInfo[] = [];
 
@@ -1448,13 +1393,10 @@ export const createAdminUI = (config: AdminUIConfig = {}): Router => {
 
     const endpoint = endpoints[index];
     if (!endpoint) {
-      res.setHeader("Content-Type", "text/html");
-      res.send(emptyState('\u2715', 'Endpoint not found', ''));
-      return;
+      return c.html(emptyState('✕', 'Endpoint not found', ''));
     }
 
-    res.setHeader("Content-Type", "text/html");
-    res.send(pages.endpointDetail({ endpoint, baseUrl: '' }));
+    return c.html(pages.endpointDetail({ endpoint, baseUrl: '' }));
   });
 
   return router;

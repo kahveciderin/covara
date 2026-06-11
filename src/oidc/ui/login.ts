@@ -1,5 +1,6 @@
-import { Router, Request, Response } from "express";
-import * as crypto from "crypto";
+import { Hono } from "hono";
+import { setCookie } from "hono/cookie";
+import * as crypto from "node:crypto";
 import {
   AuthBackend,
   AuthorizationCode,
@@ -7,6 +8,9 @@ import {
   OIDCProviderStores,
 } from "../types";
 import { SessionStore } from "@/auth/types";
+import { isProduction } from "@/server/env";
+import { readFormBody } from "../body";
+import { escapeHtml } from "../util";
 
 const defaultLoginTemplate = (
   error?: string,
@@ -40,11 +44,11 @@ const defaultLoginTemplate = (
 <body>
   <div class="container">
     <h1>Sign In</h1>
-    ${error ? `<div class="error">${error}</div>` : ""}
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
     <form method="POST">
       <div>
         <label for="email">Email</label>
-        <input type="email" id="email" name="email" value="${loginHint ?? ""}" required autofocus />
+        <input type="email" id="email" name="email" value="${escapeHtml(loginHint ?? "")}" required autofocus />
       </div>
       <div>
         <label for="password">Password</label>
@@ -57,7 +61,7 @@ const defaultLoginTemplate = (
         ? `
     <div class="divider"><span>or continue with</span></div>
     <div class="providers">
-      ${providers.map((p) => `<a href="${p.authUrl}" class="provider">${p.name}</a>`).join("")}
+      ${providers.map((p) => `<a href="${escapeHtml(p.authUrl)}" class="provider">${escapeHtml(p.name)}</a>`).join("")}
     </div>
     `
         : ""
@@ -79,26 +83,26 @@ export const createLoginHandler = ({
   stores,
   backends,
   sessionStore,
-}: LoginHandlerConfig): Router => {
-  const router = Router();
+}: LoginHandlerConfig): Hono => {
+  const router = new Hono();
 
   const emailPasswordBackend = backends.find((b) => b.name === "email-password");
   const externalProviders = backends.flatMap((b) => b.getExternalProviders?.() ?? []);
 
-  router.get("/", async (req: Request, res: Response) => {
-    const interactionId = req.query.interaction as string;
+  router.get("/", async (c) => {
+    const interactionId = c.req.query("interaction");
 
     if (!interactionId) {
-      return res.status(400).send("Missing interaction parameter");
+      return c.html("Missing interaction parameter", 400);
     }
 
     const interaction = await stores.interactions.get(interactionId);
     if (!interaction) {
-      return res.status(400).send("Invalid or expired interaction");
+      return c.html("Invalid or expired interaction", 400);
     }
 
     if (config.ui?.customLoginHandler) {
-      return config.ui.customLoginHandler(req, res, interaction);
+      return config.ui.customLoginHandler(c, interaction);
     }
 
     const template =
@@ -112,39 +116,40 @@ export const createLoginHandler = ({
         }))
       );
 
-    res.send(template);
+    return c.html(template);
   });
 
-  router.post("/", async (req: Request, res: Response) => {
-    const interactionId = req.query.interaction as string;
+  router.post("/", async (c) => {
+    const interactionId = c.req.query("interaction");
 
     if (!interactionId) {
-      return res.status(400).send("Missing interaction parameter");
+      return c.html("Missing interaction parameter", 400);
     }
 
     const interaction = await stores.interactions.get(interactionId);
     if (!interaction) {
-      return res.status(400).send("Invalid or expired interaction");
+      return c.html("Invalid or expired interaction", 400);
     }
 
     if (!emailPasswordBackend) {
-      return res.status(400).send("Email/password authentication not configured");
+      return c.html("Email/password authentication not configured", 400);
     }
 
-    const result = await emailPasswordBackend.authenticate(req, res);
+    const result = await emailPasswordBackend.authenticate(c);
 
     if (!result.success || !result.user) {
+      const body = await readFormBody(c);
       const template =
         config.ui?.templates?.login ??
         defaultLoginTemplate(
           result.error ?? "Invalid credentials",
-          req.body.email,
+          body.email,
           externalProviders.map((p) => ({
             ...p,
             authUrl: `${p.authUrl}?interaction=${interactionId}`,
           }))
         );
-      return res.status(401).send(template);
+      return c.html(template, 401);
     }
 
     const sessionId = crypto.randomUUID();
@@ -160,11 +165,11 @@ export const createLoginHandler = ({
       24 * 60 * 60 * 1000
     );
 
-    res.cookie("oidc_session", sessionId, {
+    setCookie(c, "oidc_session", sessionId, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: isProduction(),
       sameSite: "lax",
-      maxAge: 24 * 60 * 60 * 1000,
+      maxAge: 24 * 60 * 60,
       path: "/",
     });
 
@@ -193,7 +198,7 @@ export const createLoginHandler = ({
         config.baseUrl ?? config.issuer
       );
       consentUrl.searchParams.set("interaction", newInteractionId);
-      return res.redirect(consentUrl.toString());
+      return c.redirect(consentUrl.toString(), 302);
     }
 
     const code = crypto.randomBytes(32).toString("hex");
@@ -216,7 +221,7 @@ export const createLoginHandler = ({
     redirectUrl.searchParams.set("code", code);
     redirectUrl.searchParams.set("state", authRequest.state);
 
-    res.redirect(redirectUrl.toString());
+    return c.redirect(redirectUrl.toString(), 302);
   });
 
   return router;

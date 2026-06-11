@@ -1,4 +1,4 @@
-import { TableConfig, InferSelectModel, Table } from "drizzle-orm";
+import { TableConfig, Table } from "drizzle-orm";
 import { LifecycleHooks, ProcedureContext } from "@/resource/types";
 import { TaskDefinition, ScheduleOptions } from "./types";
 import { TaskScheduler, getTaskScheduler } from "./scheduler";
@@ -100,7 +100,7 @@ export const composeHooks = <TConfig extends TableConfig>(
       return (async (ctx: ProcedureContext<TConfig>, data: unknown) => {
         let result = data;
         for (const fn of fns) {
-          const transformed = await (fn as Function)(ctx, result);
+          const transformed = await (fn as (...args: unknown[]) => unknown)(ctx, result);
           if (transformed !== undefined) {
             result = transformed;
           }
@@ -111,7 +111,7 @@ export const composeHooks = <TConfig extends TableConfig>(
 
     return (async (ctx: ProcedureContext<TConfig>, ...args: unknown[]) => {
       for (const fn of fns) {
-        await (fn as Function)(ctx, ...args);
+        await (fn as (...args: unknown[]) => unknown)(ctx, ...args);
       }
     }) as LifecycleHooks<TConfig>[T];
   };

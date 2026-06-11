@@ -1,18 +1,19 @@
-import { Request, Response } from "express";
+import type { Context } from "hono";
 import {
   AuthBackend,
   AuthBackendResult,
   EmailPasswordBackendConfig,
 } from "../types";
+import { readFormBody } from "../body";
 
 export const createEmailPasswordBackend = (
   config: EmailPasswordBackendConfig
 ): AuthBackend => ({
   name: "email-password",
 
-  async authenticate(req: unknown, _res: unknown): Promise<AuthBackendResult> {
-    const request = req as Request;
-    const { email, password } = request.body;
+  async authenticate(c: Context): Promise<AuthBackendResult> {
+    const body = await readFormBody(c);
+    const { email, password } = body;
 
     if (!email || !password) {
       return { success: false, error: "Email and password are required" };

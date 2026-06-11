@@ -6,13 +6,20 @@
 - **Automatic availability**: `/search` endpoint is available on all resources when a global search adapter is configured
 - **Zero-config default**: All fields are searchable by default without explicit configuration
 - **Query required**: Search endpoint requires a `q` parameter and returns 400 if missing
-- **Graceful degradation**: Returns 501 if no search adapter configured (not an error in production)
+- **Graceful degradation**: Returns 404 if no search adapter configured (search simply isn't available; not an error in production)
 
 ### Auto-Indexing
 - **Create → index**: New documents are indexed immediately after successful database insert
 - **Update → re-index**: Modified documents are re-indexed after successful database update
 - **Delete → remove**: Documents are removed from index after successful database delete
 - **Index errors don't fail mutations**: If indexing fails, the database mutation still succeeds (logged as error)
+
+### Transactional Outbox (opt-in via `search.outbox: true`)
+- **At-least-once convergence**: When the outbox is enabled, every index/delete op is persisted to a durable KV queue at mutation time and retried until it succeeds or is parked, guaranteeing the index eventually converges with the database (no silent drops on transient backend failure)
+- **Exponential backoff**: Failed ops are retried with `base * 2^attempts` backoff, capped at 5 minutes (default base 1s)
+- **Dead set**: Ops that exceed `maxAttempts` (default 10) are moved to a dead set and logged, never silently discarded; inspect via `getSearchOutboxStats()`
+- **Requires a global KV**: With no global KV registered, enabling `outbox` is a no-op
+- **Drainer**: On Node a background `setInterval` drains the queue automatically; on Workers the application must call `drainSearchOutbox()` from a scheduled/queue handler (no long-lived process)
 
 ### Field Configuration
 - **Array fields**: When `fields` is an array, only those fields are searched
@@ -32,8 +39,8 @@
 - ❌ **Offline search**: Memory adapter data is lost on restart
 
 ### Data Consistency (What We Don't Promise)
-- ❌ **Index-database sync**: Index may briefly be out of sync with database
-- ❌ **Transactional indexing**: Index updates are not part of database transaction
+- ❌ **Index-database sync**: Index may briefly be out of sync with database. With `search.outbox` enabled, the index converges at-least-once; without it, a failed inline index op is dropped (one immediate retry) and the index can stay stale until the row is touched again
+- ❌ **Transactional indexing**: Index updates are not part of the database transaction even with the outbox — the outbox provides eventual at-least-once convergence, not atomic index+DB commits
 - ❌ **Automatic reindexing**: Existing data is not automatically indexed on startup
 
 ### Performance (What We Don't Promise)

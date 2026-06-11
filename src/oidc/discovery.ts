@@ -33,7 +33,7 @@ export const generateDiscoveryDocument = (
   const customClaims = config.claims?.map((c) => c.name) ?? [];
   const allClaims = [...new Set([...defaultClaims, ...customClaims])];
 
-  return {
+  const doc: OIDCDiscoveryDocument = {
     issuer: config.issuer,
     authorization_endpoint: `${baseUrl}/authorize`,
     token_endpoint: `${baseUrl}/token`,
@@ -66,4 +66,10 @@ export const generateDiscoveryDocument = (
     request_parameter_supported: false,
     request_uri_parameter_supported: false,
   };
+
+  if (config.registration?.enabled) {
+    doc.registration_endpoint = `${baseUrl}/register`;
+  }
+
+  return doc;
 };

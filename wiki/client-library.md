@@ -88,11 +88,12 @@ const client = getOrCreateClient({
 | `baseUrl` | `string` | Base URL of your API server |
 | `credentials` | `RequestCredentials` | Fetch credentials mode (`"include"`, `"same-origin"`, `"omit"`) |
 | `headers` | `Record<string, string>` | Default headers for all requests |
-| `timeout` | `number` | Request timeout in milliseconds |
+| `timeout` | `number` | Default request timeout in milliseconds (aborts the request when exceeded) |
 | `offline` | `boolean \| OfflineConfig` | Enable offline support (see below) |
 | `onError` | `(error: Error) => void` | Called when a mutation fails to sync |
 | `onSyncComplete` | `() => void` | Called when offline sync completes |
 | `authCheckUrl` | `string` | URL for auth status check (default: `/api/auth/me`) |
+| `parseDates` | `boolean \| DateFieldRegistry` | Convert ISO date strings in responses to `Date` (see [Working with Dates](#working-with-dates)) |
 
 ### Offline Configuration
 
@@ -110,15 +111,70 @@ const client = createClient({
   baseUrl: "/api",
   offline: {
     enabled: true,
-    storage: new LocalStorageOfflineStorage("my-app"),
+    // Pick the best durable backend (IndexedDB -> LocalStorage -> in-memory),
+    // or pass a specific one like new IndexedDBOfflineStorage().
+    storage: createOfflineStorage(),
     maxRetries: 5,
     retryDelay: 2000,
+    // Field-level merge: server wins only on fields both sides changed.
+    conflictResolution: "merge", // "server-wins" (default) | "client-wins" | "merge" | "manual"
+    // Coordinate optimistic mutations + queue flushing across browser tabs.
+    tabSync: true, // opt-in; no-op outside the browser
     onIdRemapped: (optimisticId, serverId) => {
       console.log(`ID changed: ${optimisticId} -> ${serverId}`);
     },
   },
 });
 ```
+
+**Storage backends** (`@kahveciderin/concave/client`):
+- `InMemoryOfflineStorage` — non-durable, for tests / no-DOM environments
+- `LocalStorageOfflineStorage` — browser, small queues
+- `IndexedDBOfflineStorage` — browser, larger queues (feature-detected)
+- `createOfflineStorage()` — auto-selects the best available backend
+
+**Conflict resolution** — set `conflictResolution`:
+- `server-wins` (default): discard the client mutation on conflict
+- `client-wins`: retry with client data
+- `merge`: field-level three-way merge (server wins only on co-edited fields; applies to updates)
+- `manual`: defer to the `onConflict` handler
+
+**Multi-tab coherence** — set `tabSync: true` (or a channel-name string). Uses
+`BroadcastChannel`: only the leader tab flushes the shared queue (no double-sends),
+and id-remaps / invalidations propagate to other tabs. Feature-detected — a no-op
+in React Native / Node.
+
+## Resilience & Transport
+
+The client transport is built for unreliable networks:
+
+- **Request timeouts & cancellation** — Set a default `timeout` on the client; each request aborts via an internal `AbortController` when it elapses. The low-level transport also accepts a per-request `signal` (your own `AbortSignal`) and `timeoutMs`, which are combined so either can cancel the request.
+- **Automatic 401 refresh-and-retry** — When a request returns `401` and the client has auth configured (OIDC `auth` or `jwt`), the transport refreshes the token once and retries the request transparently. If the refresh fails, the original `401` surfaces.
+- **SSE reconnect with jitter** — Subscriptions reconnect with exponential backoff plus randomized jitter, so a server restart doesn't cause a synchronized reconnect stampede from many clients. Reconnection also resumes from the last received sequence number (see [Subscriptions](./subscriptions.md)).
+
+## Working with Dates
+
+API responses carry dates as ISO 8601 **strings** by default, so wire types stay JSON-safe.
+You have two ways to get `Date` objects:
+
+```typescript
+import { toDate, toDateOrNull } from "@kahveciderin/concave/client";
+
+// 1. Convert at the point of use
+const created = toDate(todo.createdAt);          // Date
+const due = toDateOrNull(todo.dueAt);            // Date | null
+
+// 2. Opt into automatic conversion on the transport
+const client = createClient({
+  baseUrl: "/api",
+  parseDates: true,                               // convert every ISO-looking string
+  // or scope it: parseDates: { "/api/todos": ["createdAt", "dueAt"] }
+});
+```
+
+Generated types mark date columns as the branded `ISODateString` (a `string` subtype), so
+the compiler steers you toward `toDate(...)` rather than using the value as a `Date`
+directly.
 
 ## Client Methods
 
@@ -179,6 +235,89 @@ if (user) {
 } else {
   console.log("Not authenticated");
 }
+```
+
+### invalidate
+
+Mark matching cached LiveQuery stores stale and refetch them. Accepts a resource
+path / prefix string, or a predicate over `(path, options)`. Returns the number of
+cached queries that were refreshed. When `offline.tabSync` is enabled, string
+invalidations also propagate to other tabs.
+
+```typescript
+// By path / prefix
+client.invalidate("/api/todos");
+
+// By predicate (e.g. only the "completed" filter)
+client.invalidate((path, options) => options.filter === "completed==true");
+```
+
+### prefetch
+
+Warm the LiveQuery cache for a resource so a later `useLiveList` reads from cache
+immediately (no loading flash). Resolves once the initial fetch completes.
+
+```typescript
+await client.prefetch("/api/todos", { orderBy: "createdAt:desc", limit: 20 });
+// Later, in a component:
+const { items, isLoading } = useLiveList<Todo>("/api/todos", { orderBy: "createdAt:desc", limit: 20 });
+// isLoading is already false — data was warmed.
+```
+
+## React Hooks
+
+### useInvalidate
+
+Returns a stable `invalidate(target)` function (same semantics as `client.invalidate`).
+
+```typescript
+import { useInvalidate } from "@kahveciderin/concave/client/react";
+
+const invalidate = useInvalidate();
+await saveSomething();
+invalidate("/api/todos");
+```
+
+### useInfiniteList
+
+Cursor-paginated live list. Pages accumulate into `items` and the list stays
+realtime-aware (new items still arrive via the subscription).
+
+```typescript
+import { useInfiniteList } from "@kahveciderin/concave/client/react";
+
+const { items, fetchNextPage, hasNextPage, isFetchingNextPage } =
+  useInfiniteList<Todo>("/api/todos", { limit: 20, orderBy: "createdAt:desc" });
+
+<button disabled={!hasNextPage || isFetchingNextPage} onClick={fetchNextPage}>
+  Load more
+</button>
+```
+
+### useMutation
+
+Standalone mutation hook usable outside a list. Integrates with optimistic updates
++ the offline queue (via the resource repository) and the invalidation API. Pass a
+resource path for create/update/replace/delete dispatch, or a custom async function.
+
+```typescript
+import { useMutation } from "@kahveciderin/concave/client/react";
+
+const { mutate, mutateAsync, status, error, reset } = useMutation<Todo>("/api/todos", {
+  invalidates: ["/api/todos"],
+  onSuccess: (todo) => toast(`Created ${todo.id}`),
+  onError: (err) => toast(err.message),
+});
+
+mutate({ kind: "create", data: { title: "New" } });
+mutate({ kind: "update", id: "1", data: { completed: true } });
+mutate({ kind: "delete", id: "2" });
+
+// Custom function form
+const remove = useMutation(async ({ id }: { id: string }, ctx) => {
+  await ctx.resource.delete(id);
+  ctx.invalidate("/api/todos");
+}, { resource: "/api/todos" });
 ```
 
 ## Resource Operations
@@ -323,6 +462,44 @@ const activeUsers = await users
   .limit(10)
   .list();
 ```
+
+### Filter Helper (`q`)
+
+Instead of hand-writing RSQL strings, build them with the `q` helper — values are escaped automatically:
+
+```typescript
+import { q } from "@kahveciderin/concave/client";
+
+const filter = q.and(
+  q.gte("age", 18),
+  q.or(q.eq("role", "user"), q.eq("role", "admin")),
+  q.contains("name", "jo"),          // =contains=
+);
+
+const adults = await users.query().filter(filter).list();
+```
+
+Available builders: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like` (`%=`), `notLike` (`!%=`), `ilike` (`=ilike=`), `in`, `out`, `isNull`, `isNotNull`, `startsWith`, `endsWith`, `contains`, `icontains`, `between`, `and`, `or`, `raw`.
+
+There is no `q.not` — the filter grammar has no NOT combinator. Use the negated operators (`neq`, `out`, `notLike`, `isNotNull`) instead.
+
+#### Typed Filter Builder (`f<T>()`)
+
+For compile-time checking of field names and value types, use `createTypedFilter` (aliased
+as `f`). Field names are validated against `keyof T` and values against the field's type,
+with `raw()` as an escape hatch:
+
+```typescript
+import { f } from "@kahveciderin/concave/client";
+
+const filter = f<Todo>().and(
+  f<Todo>().eq("completed", false),  // ✓ "completed" must be a boolean field of Todo
+  f<Todo>().gte("createdAt", since),
+);
+// f<Todo>().eq("complted", false)  // ✗ Type error: not a key of Todo
+```
+
+It emits the same RSQL strings as `q`, so the result drops straight into `query().filter(...)`.
 
 ### Single Item Operations
 
@@ -799,8 +976,17 @@ main();
 
 ### CLI Usage
 
+`createTypegenCLI` powers a simple script entry point:
+
+```typescript
+// scripts/typegen.ts
+import { createTypegenCLI } from "@kahveciderin/concave/client";
+
+await createTypegenCLI(process.argv.slice(2));
+```
+
 ```bash
-npx concave typegen --server http://localhost:3000 --output ./src/generated/api-types.ts
+tsx scripts/typegen.ts http://localhost:3000 typescript > src/generated/api-types.ts
 ```
 
 ### Generated Types
@@ -815,7 +1001,9 @@ export interface Todo { id: string; title: string; completed: boolean; ... }
 export interface User { id: string; name: string; email: string; ... }
 
 // Input/Update types
-export type TodoInput = Omit<Todo, 'id'>;
+// Auto-increment fields are excluded; primary keys, nullable fields,
+// and fields with database defaults are optional.
+export type TodoInput = { title: string; note?: string | null; /* ... */ };
 export type TodoUpdate = Partial<TodoInput>;
 
 // Field metadata types (for type-safe queries)

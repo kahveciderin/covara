@@ -1,4 +1,4 @@
-import { html, escapeHtml, formatRelativeTime, formatDuration } from '../utils';
+import { html, escapeHtml, formatRelativeTime } from '../utils';
 import { card, badge, button, emptyState, statCard, grid } from '../components';
 
 export interface SubscriptionInfo {

@@ -1,14 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import request from "supertest";
+import { Hono } from "hono";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import http from "http";
 import { useResource } from "@/resource/hook";
+import { createTestApp, get, post, patch, del, SSECollector, flushAsync } from "../helpers/hono";
 
 const testItemsTable = sqliteTable("test_items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -18,85 +17,12 @@ const testItemsTable = sqliteTable("test_items", {
   active: integer("active", { mode: "boolean" }).default(true),
 });
 
-const injectTestUser = (req: Request, _res: Response, next: NextFunction) => {
-  (req as any).user = { id: "test-user", roles: ["admin"] };
-  next();
-};
-
-const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err.statusCode || err.status || 500;
-  res.status(status).json({
-    type: err.type || "/__concave/problems/internal-error",
-    title: err.title || "Error",
-    status,
-    detail: err.message,
-  });
-};
-
-interface SSEEvent {
-  event: string;
-  data: any;
-}
-
-const collectSSEEvents = (
-  baseUrl: string,
-  path: string,
-  timeout: number = 2000
-): Promise<SSEEvent[]> => {
-  return new Promise((resolve) => {
-    const events: SSEEvent[] = [];
-    const url = new URL(path, baseUrl);
-
-    const req = http.get(url, (res) => {
-      let buffer = "";
-
-      res.on("data", (chunk) => {
-        buffer += chunk.toString();
-
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
-
-        for (const block of lines) {
-          if (!block.trim()) continue;
-
-          const eventMatch = block.match(/event:\s*(.+)/);
-          const dataMatch = block.match(/data:\s*(.+)/);
-
-          if (eventMatch && dataMatch) {
-            try {
-              events.push({
-                event: eventMatch[1].trim(),
-                data: JSON.parse(dataMatch[1].trim()),
-              });
-            } catch {
-              events.push({
-                event: eventMatch[1].trim(),
-                data: dataMatch[1].trim(),
-              });
-            }
-          }
-        }
-      });
-    });
-
-    req.on("error", () => {
-      resolve(events);
-    });
-
-    setTimeout(() => {
-      req.destroy();
-      resolve(events);
-    }, timeout);
-  });
-};
-
 describe("Subscribe While Mutate Tests", () => {
-  let app: Express;
-  let server: http.Server;
-  let baseUrl: string;
+  let app: Hono;
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
   let db: ReturnType<typeof drizzle>;
   let tempDir: string;
+  let collectors: SSECollector[];
 
   beforeAll(() => {
     tempDir = mkdtempSync(join(tmpdir(), "concave-subscribe-mutate-"));
@@ -109,6 +35,7 @@ describe("Subscribe While Mutate Tests", () => {
   });
 
   beforeEach(async () => {
+    collectors = [];
     libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, `test-${Date.now()}.db`)}` });
     db = drizzle(libsqlClient);
 
@@ -123,155 +50,131 @@ describe("Subscribe While Mutate Tests", () => {
       )
     `);
 
-    app = express();
-    app.use(express.json());
-    app.use(injectTestUser);
-    app.use(
+    app = createTestApp({ user: {} });
+    app.route(
       "/items",
       useResource(testItemsTable, {
         id: testItemsTable.id,
         db,
       })
     );
-    app.use(errorHandler);
-
-    server = app.listen(0);
-    const address = server.address();
-    if (address && typeof address !== "string") {
-      baseUrl = `http://localhost:${address.port}`;
-    }
   });
 
   afterEach(async () => {
-    if (server) {
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      });
+    for (const collector of collectors) {
+      collector.close();
     }
+    await flushAsync();
     if (libsqlClient) {
       libsqlClient.close();
     }
   });
 
+  const connect = async (path: string) => {
+    const { collector, response } = await SSECollector.connect(app, path);
+    if (collector) collectors.push(collector);
+    return { collector, response };
+  };
+
   it("should connect to SSE endpoint", async () => {
-    const eventsPromise = collectSSEEvents(baseUrl, "/items/subscribe", 500);
+    const { collector, response } = await connect("/items/subscribe");
 
-    const events = await eventsPromise;
+    expect(response.status).toBe(200);
 
-    expect(Array.isArray(events)).toBe(true);
+    const connected = await collector.next();
+    expect(connected?.event).toBe("connected");
+    expect(Array.isArray(collector.events)).toBe(true);
   });
 
   it("should receive events during concurrent mutations", async () => {
-    const eventsPromise = collectSSEEvents(baseUrl, "/items/subscribe", 2000);
-
-    await new Promise((r) => setTimeout(r, 100));
+    const { collector } = await connect("/items/subscribe");
+    await collector.next();
 
     const createPromises = Array.from({ length: 5 }, (_, i) =>
-      request(app)
-        .post("/items")
-        .send({ name: `Item${i}`, category: "Test", price: i * 10 })
+      post(app, "/items", { name: `Item${i}`, category: "Test", price: i * 10 })
     );
 
     const results = await Promise.all(createPromises);
     const successCount = results.filter((r) => r.status === 201).length;
     expect(successCount).toBe(5);
 
-    const events = await eventsPromise;
+    await flushAsync(200);
 
-    expect(Array.isArray(events)).toBe(true);
+    expect(Array.isArray(collector.events)).toBe(true);
   });
 
   it("should handle mutations and subscription without data loss", async () => {
     for (let i = 0; i < 3; i++) {
-      await request(app)
-        .post("/items")
-        .send({ name: `PreExisting${i}`, category: "Initial", price: 100 })
-        .expect(201);
+      const res = await post(app, "/items", { name: `PreExisting${i}`, category: "Initial", price: 100 });
+      expect(res.status).toBe(201);
     }
 
-    const eventsPromise = collectSSEEvents(baseUrl, "/items/subscribe", 2000);
+    const { collector } = await connect("/items/subscribe");
+    await collector.next();
 
-    await new Promise((r) => setTimeout(r, 100));
+    const createRes = await post(app, "/items", { name: "NewItem", category: "New", price: 50 });
+    expect(createRes.status).toBe(201);
 
-    await request(app)
-      .post("/items")
-      .send({ name: "NewItem", category: "New", price: 50 })
-      .expect(201);
+    await collector.waitFor((e) => e.data?.type === "added" && e.data?.object?.name === "NewItem", 2000);
+    await flushAsync();
 
-    const events = await eventsPromise;
-
-    const hasEvents = events.length > 0;
+    const hasEvents = collector.events.length > 0;
     expect(hasEvents).toBe(true);
   });
 
   it("should maintain data integrity during subscribe/mutate cycle", async () => {
-    const createRes = await request(app)
-      .post("/items")
-      .send({ name: "TestItem", category: "Category1", price: 100 })
-      .expect(201);
+    const createRes = await post(app, "/items", { name: "TestItem", category: "Category1", price: 100 });
+    expect(createRes.status).toBe(201);
 
     const itemId = createRes.body.id;
 
-    const eventsPromise = collectSSEEvents(baseUrl, "/items/subscribe", 1500);
+    const { collector } = await connect("/items/subscribe");
+    await collector.next();
 
-    await new Promise((r) => setTimeout(r, 100));
+    const patchRes = await patch(app, `/items/${itemId}`, { name: "UpdatedItem" });
+    expect(patchRes.status).toBe(200);
 
-    await request(app)
-      .patch(`/items/${itemId}`)
-      .send({ name: "UpdatedItem" })
-      .expect(200);
+    const deleteRes = await del(app, `/items/${itemId}`);
+    expect(deleteRes.status).toBe(204);
 
-    await request(app).delete(`/items/${itemId}`).expect(204);
+    await flushAsync(200);
 
-    const events = await eventsPromise;
+    expect(Array.isArray(collector.events)).toBe(true);
 
-    expect(Array.isArray(events)).toBe(true);
-
-    const listRes = await request(app).get("/items").expect(200);
+    const listRes = await get(app, "/items");
+    expect(listRes.status).toBe(200);
     const item = listRes.body.items.find((i: any) => i.id === itemId);
     expect(item).toBeUndefined();
   });
 
   it("should filter events by category when filter is provided", async () => {
-    await request(app)
-      .post("/items")
-      .send({ name: "Electronics1", category: "Electronics", price: 100 })
-      .expect(201);
+    const res1 = await post(app, "/items", { name: "Electronics1", category: "Electronics", price: 100 });
+    expect(res1.status).toBe(201);
 
-    await request(app)
-      .post("/items")
-      .send({ name: "Clothing1", category: "Clothing", price: 50 })
-      .expect(201);
+    const res2 = await post(app, "/items", { name: "Clothing1", category: "Clothing", price: 50 });
+    expect(res2.status).toBe(201);
 
     const filter = encodeURIComponent('category=="Clothing"');
-    const eventsPromise = collectSSEEvents(
-      baseUrl,
-      `/items/subscribe?filter=${filter}`,
-      1500
+    const { collector } = await connect(`/items/subscribe?filter=${filter}`);
+    await collector.next();
+
+    const res3 = await post(app, "/items", { name: "Clothing2", category: "Clothing", price: 60 });
+    expect(res3.status).toBe(201);
+
+    const res4 = await post(app, "/items", { name: "Electronics2", category: "Electronics", price: 200 });
+    expect(res4.status).toBe(201);
+
+    await collector.waitFor(
+      (e) => e.data?.type === "added" && e.data?.object?.name === "Clothing2",
+      2000
     );
+    await flushAsync(200);
 
-    await new Promise((r) => setTimeout(r, 100));
-
-    await request(app)
-      .post("/items")
-      .send({ name: "Clothing2", category: "Clothing", price: 60 })
-      .expect(201);
-
-    await request(app)
-      .post("/items")
-      .send({ name: "Electronics2", category: "Electronics", price: 200 })
-      .expect(201);
-
-    const events = await eventsPromise;
-
-    const itemEvents = events.filter((e) => e.data?.item);
-    const categories = itemEvents.map((e) => e.data.item.category);
+    const itemEvents = collector.events.filter((e) => e.data?.object);
+    const categories = itemEvents.map((e) => e.data.object.category);
 
     categories.forEach((cat) => {
-      if (cat === "Electronics") {
-        expect(false).toBe(true);
-      }
+      expect(cat).not.toBe("Electronics");
     });
   });
 });
-

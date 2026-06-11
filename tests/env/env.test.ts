@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import express, { Express } from "express";
-import request from "supertest";
+import { Hono } from "hono";
 import { z } from "zod";
 import { createEnv, envVariable, usePublicEnv } from "../../src/env";
+import { createTestApp, get } from "../helpers/hono";
 
 describe("Environment Variables", () => {
   const originalEnv = process.env;
@@ -327,10 +327,10 @@ describe("Environment Variables", () => {
   });
 
   describe("usePublicEnv", () => {
-    let app: Express;
+    let app: Hono;
 
     beforeEach(() => {
-      app = express();
+      app = createTestApp();
     });
 
     it("should return public environment variables as JSON", async () => {
@@ -340,9 +340,10 @@ describe("Environment Variables", () => {
         PUBLIC_API_URL: z.string(),
       });
 
-      app.use("/env", usePublicEnv(env));
+      app.route("/env", usePublicEnv(env));
 
-      const response = await request(app).get("/env").expect(200);
+      const response = await get(app, "/env");
+      expect(response.status).toBe(200);
 
       expect(response.body).toEqual({
         PUBLIC_API_URL: "https://api.example.com",
@@ -356,11 +357,12 @@ describe("Environment Variables", () => {
         PUBLIC_VAR: z.string(),
       });
 
-      app.use("/env", usePublicEnv(env));
+      app.route("/env", usePublicEnv(env));
 
-      const response = await request(app).get("/env").expect(200);
+      const response = await get(app, "/env");
+      expect(response.status).toBe(200);
 
-      expect(response.headers["cache-control"]).toBe("public, max-age=3600");
+      expect(response.headers.get("cache-control")).toBe("public, max-age=3600");
     });
 
     it("should allow custom Cache-Control header", async () => {
@@ -370,16 +372,17 @@ describe("Environment Variables", () => {
         PUBLIC_VAR: z.string(),
       });
 
-      app.use(
+      app.route(
         "/env",
         usePublicEnv(env, {
           cacheControl: "public, max-age=86400",
         })
       );
 
-      const response = await request(app).get("/env").expect(200);
+      const response = await get(app, "/env");
+      expect(response.status).toBe(200);
 
-      expect(response.headers["cache-control"]).toBe("public, max-age=86400");
+      expect(response.headers.get("cache-control")).toBe("public, max-age=86400");
     });
 
     it("should allow custom headers", async () => {
@@ -389,7 +392,7 @@ describe("Environment Variables", () => {
         PUBLIC_VAR: z.string(),
       });
 
-      app.use(
+      app.route(
         "/env",
         usePublicEnv(env, {
           headers: {
@@ -399,10 +402,11 @@ describe("Environment Variables", () => {
         })
       );
 
-      const response = await request(app).get("/env").expect(200);
+      const response = await get(app, "/env");
+      expect(response.status).toBe(200);
 
-      expect(response.headers["x-custom-header"]).toBe("custom-value");
-      expect(response.headers["x-another"]).toBe("another-value");
+      expect(response.headers.get("x-custom-header")).toBe("custom-value");
+      expect(response.headers.get("x-another")).toBe("another-value");
     });
 
     it("should work with nested public variables using explicit public: true", async () => {
@@ -413,9 +417,10 @@ describe("Environment Variables", () => {
         },
       });
 
-      app.use("/env", usePublicEnv(env));
+      app.route("/env", usePublicEnv(env));
 
-      const response = await request(app).get("/env").expect(200);
+      const response = await get(app, "/env");
+      expect(response.status).toBe(200);
 
       expect(response.body).toEqual({
         CONFIG: {
@@ -432,9 +437,10 @@ describe("Environment Variables", () => {
         PRIVATE_VAR: z.string(),
       });
 
-      app.use("/env", usePublicEnv(env));
+      app.route("/env", usePublicEnv(env));
 
-      const response = await request(app).get("/env").expect(200);
+      const response = await get(app, "/env");
+      expect(response.status).toBe(200);
 
       expect(response.body).toEqual({});
     });
@@ -446,9 +452,10 @@ describe("Environment Variables", () => {
         PUBLIC_VAR: z.string(),
       });
 
-      app.use("/api/config", usePublicEnv(env));
+      app.route("/api/config", usePublicEnv(env));
 
-      const response = await request(app).get("/api/config").expect(200);
+      const response = await get(app, "/api/config");
+      expect(response.status).toBe(200);
 
       expect(response.body).toEqual({
         PUBLIC_VAR: "value",
@@ -462,11 +469,12 @@ describe("Environment Variables", () => {
         PUBLIC_VAR: z.string(),
       });
 
-      app.use("/env", usePublicEnv(env));
+      app.route("/env", usePublicEnv(env));
 
-      const response = await request(app).get("/env").expect(200);
+      const response = await get(app, "/env");
+      expect(response.status).toBe(200);
 
-      expect(response.headers["content-type"]).toMatch(/application\/json/);
+      expect(response.headers.get("content-type")).toMatch(/application\/json/);
     });
   });
 
@@ -527,10 +535,10 @@ describe("Environment Variables", () => {
   });
 
   describe("ETag cache validation", () => {
-    let app: Express;
+    let app: Hono;
 
     beforeEach(() => {
-      app = express();
+      app = createTestApp();
     });
 
     it("should return ETag header", async () => {
@@ -540,12 +548,13 @@ describe("Environment Variables", () => {
         PUBLIC_VAR: z.string(),
       });
 
-      app.use("/env", usePublicEnv(env));
+      app.route("/env", usePublicEnv(env));
 
-      const response = await request(app).get("/env").expect(200);
+      const response = await get(app, "/env");
+      expect(response.status).toBe(200);
 
-      expect(response.headers["etag"]).toBeDefined();
-      expect(response.headers["etag"]).toMatch(/^"[a-f0-9]+"$/);
+      expect(response.headers.get("etag")).toBeDefined();
+      expect(response.headers.get("etag")).toMatch(/^"[a-f0-9]+"$/);
     });
 
     it("should return 304 when If-None-Match matches ETag", async () => {
@@ -555,17 +564,16 @@ describe("Environment Variables", () => {
         PUBLIC_VAR: z.string(),
       });
 
-      app.use("/env", usePublicEnv(env));
+      app.route("/env", usePublicEnv(env));
 
-      const firstResponse = await request(app).get("/env").expect(200);
-      const etag = firstResponse.headers["etag"];
+      const firstResponse = await get(app, "/env");
+      expect(firstResponse.status).toBe(200);
+      const etag = firstResponse.headers.get("etag")!;
 
-      const secondResponse = await request(app)
-        .get("/env")
-        .set("If-None-Match", etag)
-        .expect(304);
+      const secondResponse = await get(app, "/env", { "If-None-Match": etag });
+      expect(secondResponse.status).toBe(304);
 
-      expect(secondResponse.body).toEqual({});
+      expect(secondResponse.body).toBeUndefined();
     });
 
     it("should return 200 when If-None-Match does not match", async () => {
@@ -575,12 +583,12 @@ describe("Environment Variables", () => {
         PUBLIC_VAR: z.string(),
       });
 
-      app.use("/env", usePublicEnv(env));
+      app.route("/env", usePublicEnv(env));
 
-      const response = await request(app)
-        .get("/env")
-        .set("If-None-Match", '"different-etag"')
-        .expect(200);
+      const response = await get(app, "/env", {
+        "If-None-Match": '"different-etag"',
+      });
+      expect(response.status).toBe(200);
 
       expect(response.body).toEqual({
         PUBLIC_VAR: "value",
@@ -594,12 +602,14 @@ describe("Environment Variables", () => {
         PUBLIC_VAR: z.string(),
       });
 
-      app.use("/env", usePublicEnv(env));
+      app.route("/env", usePublicEnv(env));
 
-      const response1 = await request(app).get("/env").expect(200);
-      const response2 = await request(app).get("/env").expect(200);
+      const response1 = await get(app, "/env");
+      expect(response1.status).toBe(200);
+      const response2 = await get(app, "/env");
+      expect(response2.status).toBe(200);
 
-      expect(response1.headers["etag"]).toBe(response2.headers["etag"]);
+      expect(response1.headers.get("etag")).toBe(response2.headers.get("etag"));
     });
 
     it("should return different ETag for different values", async () => {
@@ -609,10 +619,11 @@ describe("Environment Variables", () => {
         PUBLIC_VAR1: z.string(),
       });
 
-      const app1 = express();
-      app1.use("/env", usePublicEnv(env1));
+      const app1 = createTestApp();
+      app1.route("/env", usePublicEnv(env1));
 
-      const response1 = await request(app1).get("/env").expect(200);
+      const response1 = await get(app1, "/env");
+      expect(response1.status).toBe(200);
 
       process.env.PUBLIC_VAR2 = "value2";
 
@@ -620,12 +631,13 @@ describe("Environment Variables", () => {
         PUBLIC_VAR2: z.string(),
       });
 
-      const app2 = express();
-      app2.use("/env", usePublicEnv(env2));
+      const app2 = createTestApp();
+      app2.route("/env", usePublicEnv(env2));
 
-      const response2 = await request(app2).get("/env").expect(200);
+      const response2 = await get(app2, "/env");
+      expect(response2.status).toBe(200);
 
-      expect(response1.headers["etag"]).not.toBe(response2.headers["etag"]);
+      expect(response1.headers.get("etag")).not.toBe(response2.headers.get("etag"));
     });
   });
 

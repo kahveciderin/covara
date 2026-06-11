@@ -1,17 +1,25 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import { Server } from "http";
-import request from "supertest";
+import { describe, it, expect, beforeAll, afterEach } from "vitest";
+import { Hono, type MiddlewareHandler } from "hono";
 import { createAdminUI, AdminUIConfig } from "../src/ui/middleware";
+import {
+  setAdminAuditSink,
+  logAdminAction,
+  clearAdminAuditLog,
+  type AdminAuditEntry,
+} from "../src/ui/admin-auth";
+import { get, post, patch, del } from "./helpers/hono";
 
-const injectTestUser = (req: Request, _res: Response, next: NextFunction) => {
-  (req as any).user = { id: "test-user", email: "test@test.com", roles: ["admin"] };
-  next();
+const injectTestUser: MiddlewareHandler = async (c, next) => {
+  c.set("user", {
+    id: "test-user",
+    email: "test@test.com",
+    roles: ["admin"],
+  } as any);
+  await next();
 };
 
 describe("Admin UI Tests", () => {
-  let app: Express;
-  let server: Server;
+  let app: Hono;
 
   const mockUsers = [
     { id: "1", email: "user1@test.com", name: "User 1" },
@@ -69,253 +77,257 @@ describe("Admin UI Tests", () => {
     security: { mode: "development", auth: { disabled: true } },
   };
 
-  beforeAll(async () => {
-    app = express();
-    app.use(express.json());
-    app.use(injectTestUser);
-    app.use("/__concave", createAdminUI(config));
-
-    await new Promise<void>((resolve) => {
-      server = app.listen(0, () => resolve());
-    });
-  });
-
-  afterAll(async () => {
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
+  beforeAll(() => {
+    app = new Hono();
+    app.use("*", injectTestUser);
+    app.route("/__concave", createAdminUI(config));
   });
 
   describe("Full Page Routes", () => {
     it("should serve dashboard page", async () => {
-      const res = await request(app).get("/__concave/ui").expect(200);
-      expect(res.text).toContain("Dashboard");
-      expect(res.text).toContain("<!DOCTYPE html>");
-      expect(res.text).toContain("htmx");
+      const res = await get(app, "/__concave/ui");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Dashboard");
+      expect(res.body).toContain("<!DOCTYPE html>");
+      expect(res.body).toContain("htmx");
     });
 
     it("should serve resources page", async () => {
-      const res = await request(app).get("/__concave/ui/resources").expect(200);
-      expect(res.text).toContain("Resources");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/resources");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Resources");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve data explorer page", async () => {
-      const res = await request(app).get("/__concave/ui/data-explorer").expect(200);
-      expect(res.text).toContain("Data Explorer");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/data-explorer");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Data Explorer");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve requests page", async () => {
-      const res = await request(app).get("/__concave/ui/requests").expect(200);
-      expect(res.text).toContain("Requests");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/requests");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Requests");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve errors page", async () => {
-      const res = await request(app).get("/__concave/ui/errors").expect(200);
-      expect(res.text).toContain("Errors");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/errors");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Errors");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve users page", async () => {
-      const res = await request(app).get("/__concave/ui/users").expect(200);
-      expect(res.text).toContain("Users");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/users");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Users");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve sessions page", async () => {
-      const res = await request(app).get("/__concave/ui/sessions").expect(200);
-      expect(res.text).toContain("Sessions");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/sessions");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Sessions");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve subscriptions page", async () => {
-      const res = await request(app).get("/__concave/ui/subscriptions").expect(200);
-      expect(res.text).toContain("Subscriptions");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/subscriptions");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Subscriptions");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve changelog page", async () => {
-      const res = await request(app).get("/__concave/ui/changelog").expect(200);
-      expect(res.text).toContain("Changelog");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/changelog");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Changelog");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve tasks page", async () => {
-      const res = await request(app).get("/__concave/ui/tasks").expect(200);
-      expect(res.text).toContain("Task Queue");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/tasks");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Task Queue");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve kv-inspector page", async () => {
-      const res = await request(app).get("/__concave/ui/kv-inspector").expect(200);
-      expect(res.text).toContain("KV Inspector");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/kv-inspector");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("KV Inspector");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve admin-audit page", async () => {
-      const res = await request(app).get("/__concave/ui/admin-audit").expect(200);
-      expect(res.text).toContain("Admin Audit");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/admin-audit");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Admin Audit");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve filter-tester page", async () => {
-      const res = await request(app).get("/__concave/ui/filter-tester").expect(200);
-      expect(res.text).toContain("Filter Tester");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/filter-tester");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Filter Tester");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
 
     it("should serve api-explorer page", async () => {
-      const res = await request(app).get("/__concave/ui/api-explorer").expect(200);
-      expect(res.text).toContain("API Explorer");
-      expect(res.text).toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/api-explorer");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("API Explorer");
+      expect(res.body).toContain("<!DOCTYPE html>");
     });
   });
 
   describe("HTMX Partial Routes", () => {
     it("should return content fragment for HTMX requests", async () => {
-      const res = await request(app)
-        .get("/__concave/ui/resources")
-        .set("HX-Request", "true")
-        .expect(200);
-
-      expect(res.text).toContain("Resources");
-      expect(res.text).not.toContain("<!DOCTYPE html>");
+      const res = await get(app, "/__concave/ui/resources", {
+        "HX-Request": "true",
+      });
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Resources");
+      expect(res.body).not.toContain("<!DOCTYPE html>");
     });
 
     it("should return empty for /ui/empty", async () => {
-      const res = await request(app).get("/__concave/ui/empty").expect(200);
-      expect(res.text).toBe("");
+      const res = await app.request("/__concave/ui/empty");
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("");
     });
 
     it("should return request list partial", async () => {
-      const res = await request(app)
-        .get("/__concave/ui/requests/list")
-        .expect(200);
-      expect(res.text).toContain("card");
+      const res = await get(app, "/__concave/ui/requests/list");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("card");
     });
 
     it("should return users list partial", async () => {
-      const res = await request(app)
-        .get("/__concave/ui/users/list")
-        .expect(200);
-      expect(res.text).toContain("user1@test.com");
+      const res = await get(app, "/__concave/ui/users/list");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("user1@test.com");
     });
 
     it("should return sessions list partial", async () => {
-      const res = await request(app)
-        .get("/__concave/ui/sessions/list")
-        .expect(200);
-      expect(res.text).toContain("sess-1");
+      const res = await get(app, "/__concave/ui/sessions/list");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("sess-1");
     });
 
     it("should return subscriptions list partial", async () => {
-      const res = await request(app)
-        .get("/__concave/ui/subscriptions/list")
-        .expect(200);
-      expect(res.text).toBeDefined();
+      const res = await get(app, "/__concave/ui/subscriptions/list");
+      expect(res.status).toBe(200);
+      expect(res.body).toBeDefined();
     });
 
     it("should return changelog list partial", async () => {
-      const res = await request(app)
-        .get("/__concave/ui/changelog/list")
-        .expect(200);
-      expect(res.text).toBeDefined();
+      const res = await get(app, "/__concave/ui/changelog/list");
+      expect(res.status).toBe(200);
+      expect(res.body).toBeDefined();
     });
 
     it("should return audit list partial", async () => {
-      const res = await request(app)
-        .get("/__concave/ui/audit/list")
-        .expect(200);
-      expect(res.text).toBeDefined();
+      const res = await get(app, "/__concave/ui/audit/list");
+      expect(res.status).toBe(200);
+      expect(res.body).toBeDefined();
     });
   });
 
   describe("API Routes", () => {
     describe("User Management", () => {
       it("should list users", async () => {
-        const res = await request(app).get("/__concave/api/users").expect(200);
+        const res = await get(app, "/__concave/api/users");
+        expect(res.status).toBe(200);
         expect(res.body.users).toBeDefined();
         expect(res.body.total).toBe(2);
         expect(res.body.enabled).toBe(true);
       });
 
       it("should get single user", async () => {
-        const res = await request(app).get("/__concave/api/users/1").expect(200);
+        const res = await get(app, "/__concave/api/users/1");
+        expect(res.status).toBe(200);
         expect(res.body.user.email).toBe("user1@test.com");
       });
 
       it("should return 404 for non-existent user", async () => {
-        await request(app).get("/__concave/api/users/999").expect(404);
+        const res = await get(app, "/__concave/api/users/999");
+        expect(res.status).toBe(404);
       });
 
       it("should create user", async () => {
-        const res = await request(app)
-          .post("/__concave/api/users")
-          .send({ email: "new@test.com", name: "New User" })
-          .expect(201);
+        const res = await post(app, "/__concave/api/users", {
+          email: "new@test.com",
+          name: "New User",
+        });
+        expect(res.status).toBe(201);
         expect(res.body.user.email).toBe("new@test.com");
       });
 
       it("should update user", async () => {
-        const res = await request(app)
-          .patch("/__concave/api/users/1")
-          .send({ name: "Updated Name" })
-          .expect(200);
+        const res = await patch(app, "/__concave/api/users/1", {
+          name: "Updated Name",
+        });
+        expect(res.status).toBe(200);
         expect(res.body.user.name).toBe("Updated Name");
       });
 
       it("should delete user", async () => {
         const initialCount = mockUsers.length;
-        await request(app).delete("/__concave/api/users/1").expect(204);
+        const res = await del(app, "/__concave/api/users/1");
+        expect(res.status).toBe(204);
         expect(mockUsers.length).toBe(initialCount - 1);
       });
     });
 
     describe("Session Management", () => {
       it("should list sessions", async () => {
-        const res = await request(app).get("/__concave/api/sessions").expect(200);
+        const res = await get(app, "/__concave/api/sessions");
+        expect(res.status).toBe(200);
         expect(res.body.sessions).toBeDefined();
         expect(res.body.enabled).toBe(true);
       });
 
       it("should get sessions by user", async () => {
-        const res = await request(app).get("/__concave/api/sessions/user/2").expect(200);
+        const res = await get(app, "/__concave/api/sessions/user/2");
+        expect(res.status).toBe(200);
         expect(res.body.sessions).toBeDefined();
       });
 
       it("should create session", async () => {
-        const res = await request(app)
-          .post("/__concave/api/sessions")
-          .send({ userId: "2", expiresIn: 3600 })
-          .expect(201);
+        const res = await post(app, "/__concave/api/sessions", {
+          userId: "2",
+          expiresIn: 3600,
+        });
+        expect(res.status).toBe(201);
         expect(res.body.session.token).toBeDefined();
         expect(res.body.session.expiresAt).toBeDefined();
       });
 
       it("should require userId for session creation", async () => {
-        await request(app)
-          .post("/__concave/api/sessions")
-          .send({})
-          .expect(400);
+        const res = await post(app, "/__concave/api/sessions", {});
+        expect(res.status).toBe(400);
       });
 
       it("should revoke session", async () => {
-        await request(app).delete("/__concave/api/sessions/sess-2").expect(204);
+        const res = await del(app, "/__concave/api/sessions/sess-2");
+        expect(res.status).toBe(204);
       });
 
       it("should revoke all user sessions", async () => {
-        const res = await request(app)
-          .delete("/__concave/api/sessions/user/2")
-          .expect(200);
+        const res = await del(app, "/__concave/api/sessions/user/2");
+        expect(res.status).toBe(200);
         expect(res.body.revokedCount).toBeDefined();
       });
     });
 
     describe("Resources API", () => {
       it("should return resources list", async () => {
-        const res = await request(app).get("/__concave/api/resources").expect(200);
+        const res = await get(app, "/__concave/api/resources");
+        expect(res.status).toBe(200);
         expect(res.body.resources).toBeDefined();
         expect(Array.isArray(res.body.resources)).toBe(true);
       });
@@ -323,7 +335,8 @@ describe("Admin UI Tests", () => {
 
     describe("Environment API", () => {
       it("should return environment info", async () => {
-        const res = await request(app).get("/__concave/api/environment").expect(200);
+        const res = await get(app, "/__concave/api/environment");
+        expect(res.status).toBe(200);
         expect(res.body.mode).toBe("development");
         expect(res.body.features).toBeDefined();
         expect(res.body.features.dataExplorer).toBe(true);
@@ -333,36 +346,37 @@ describe("Admin UI Tests", () => {
 
     describe("Admin Audit API", () => {
       it("should return audit log", async () => {
-        const res = await request(app).get("/__concave/api/admin-audit").expect(200);
+        const res = await get(app, "/__concave/api/admin-audit");
+        expect(res.status).toBe(200);
         expect(res.body.entries).toBeDefined();
         expect(res.body.mode).toBe("development");
       });
 
       it("should export audit log as JSON", async () => {
-        const res = await request(app)
-          .get("/__concave/api/admin-audit/export?format=json")
-          .expect(200);
-        expect(res.headers["content-type"]).toContain("application/json");
+        const res = await get(app, "/__concave/api/admin-audit/export?format=json");
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toContain("application/json");
       });
 
       it("should export audit log as CSV", async () => {
-        const res = await request(app)
-          .get("/__concave/api/admin-audit/export?format=csv")
-          .expect(200);
-        expect(res.headers["content-type"]).toContain("text/csv");
+        const res = await get(app, "/__concave/api/admin-audit/export?format=csv");
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toContain("text/csv");
       });
     });
 
     describe("Problem Details", () => {
       it("should return problem documentation", async () => {
-        const res = await request(app).get("/__concave/problems/not-found").expect(200);
+        const res = await get(app, "/__concave/problems/not-found");
+        expect(res.status).toBe(200);
         expect(res.body.title).toBe("Resource Not Found");
         expect(res.body.description).toBeDefined();
         expect(res.body.solutions).toBeDefined();
       });
 
       it("should return unknown error for invalid type", async () => {
-        const res = await request(app).get("/__concave/problems/invalid-type").expect(200);
+        const res = await get(app, "/__concave/problems/invalid-type");
+        expect(res.status).toBe(200);
         expect(res.body.title).toBe("Unknown Error");
       });
     });
@@ -370,117 +384,235 @@ describe("Admin UI Tests", () => {
 
   describe("Navigation", () => {
     it("should have correct active class for dashboard", async () => {
-      const res = await request(app).get("/__concave/ui").expect(200);
-      expect(res.text).toMatch(/class="nav-item[^"]*active[^"]*"[^>]*href="[^"]*\/ui"/);
+      const res = await get(app, "/__concave/ui");
+      expect(res.status).toBe(200);
+      expect(res.body).toMatch(/class="nav-item[^"]*active[^"]*"[^>]*href="[^"]*\/ui"/);
     });
 
     it("should have correct active class for resources", async () => {
-      const res = await request(app).get("/__concave/ui/resources").expect(200);
-      expect(res.text).toMatch(/class="nav-item[^"]*active[^"]*"[^>]*href="[^"]*\/ui\/resources"/);
+      const res = await get(app, "/__concave/ui/resources");
+      expect(res.status).toBe(200);
+      expect(res.body).toMatch(/class="nav-item[^"]*active[^"]*"[^>]*href="[^"]*\/ui\/resources"/);
     });
 
     it("should include all navigation sections", async () => {
-      const res = await request(app).get("/__concave/ui").expect(200);
-      expect(res.text).toContain("Overview");
-      expect(res.text).toContain("Data");
-      expect(res.text).toContain("Tools");
-      expect(res.text).toContain("System");
+      const res = await get(app, "/__concave/ui");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Overview");
+      expect(res.body).toContain("Data");
+      expect(res.body).toContain("Tools");
+      expect(res.body).toContain("System");
     });
 
     it("should include all navigation items", async () => {
-      const res = await request(app).get("/__concave/ui").expect(200);
-      expect(res.text).toContain("Dashboard");
-      expect(res.text).toContain("Resources");
-      expect(res.text).toContain("Requests");
-      expect(res.text).toContain("Errors");
-      expect(res.text).toContain("Data Explorer");
-      expect(res.text).toContain("Admin Audit");
-      expect(res.text).toContain("Filter Tester");
-      expect(res.text).toContain("Subscriptions");
-      expect(res.text).toContain("Changelog");
-      expect(res.text).toContain("API Explorer");
-      expect(res.text).toContain("Users");
-      expect(res.text).toContain("Sessions");
-      expect(res.text).toContain("Task Queue");
-      expect(res.text).toContain("KV Inspector");
+      const res = await get(app, "/__concave/ui");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("Dashboard");
+      expect(res.body).toContain("Resources");
+      expect(res.body).toContain("Requests");
+      expect(res.body).toContain("Errors");
+      expect(res.body).toContain("Data Explorer");
+      expect(res.body).toContain("Admin Audit");
+      expect(res.body).toContain("Filter Tester");
+      expect(res.body).toContain("Subscriptions");
+      expect(res.body).toContain("Changelog");
+      expect(res.body).toContain("API Explorer");
+      expect(res.body).toContain("Users");
+      expect(res.body).toContain("Sessions");
+      expect(res.body).toContain("Task Queue");
+      expect(res.body).toContain("KV Inspector");
     });
   });
 
   describe("Theme Support", () => {
     it("should include theme toggle script", async () => {
-      const res = await request(app).get("/__concave/ui").expect(200);
-      expect(res.text).toContain("toggleTheme");
-      expect(res.text).toContain("data-theme");
+      const res = await get(app, "/__concave/ui");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("toggleTheme");
+      expect(res.body).toContain("data-theme");
     });
 
     it("should include dark mode CSS variables", async () => {
-      const res = await request(app).get("/__concave/ui").expect(200);
-      expect(res.text).toContain('[data-theme="dark"]');
+      const res = await get(app, "/__concave/ui");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain('[data-theme="dark"]');
     });
   });
 
   describe("Environment Badge", () => {
     it("should show DEV badge in development mode", async () => {
-      const res = await request(app).get("/__concave/ui").expect(200);
-      expect(res.text).toContain("DEV");
-      expect(res.text).toContain("env-dev");
+      const res = await get(app, "/__concave/ui");
+      expect(res.status).toBe(200);
+      expect(res.body).toContain("DEV");
+      expect(res.body).toContain("env-dev");
     });
   });
 });
 
 describe("Admin UI Without Managers", () => {
-  let app: Express;
-  let server: Server;
+  let app: Hono;
 
-  beforeAll(async () => {
-    app = express();
-    app.use(express.json());
-    app.use("/__concave", createAdminUI({}));
-
-    await new Promise<void>((resolve) => {
-      server = app.listen(0, () => resolve());
-    });
-  });
-
-  afterAll(async () => {
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
+  beforeAll(() => {
+    app = new Hono();
+    app.route("/__concave", createAdminUI({}));
   });
 
   it("should return empty users when no userManager", async () => {
-    const res = await request(app).get("/__concave/api/users").expect(200);
+    const res = await get(app, "/__concave/api/users");
+    expect(res.status).toBe(200);
     expect(res.body.users).toEqual([]);
     expect(res.body.enabled).toBe(false);
   });
 
   it("should return 501 for user operations without userManager", async () => {
-    await request(app).get("/__concave/api/users/1").expect(501);
-    await request(app).post("/__concave/api/users").send({}).expect(501);
-    await request(app).patch("/__concave/api/users/1").send({}).expect(501);
-    await request(app).delete("/__concave/api/users/1").expect(501);
+    expect((await get(app, "/__concave/api/users/1")).status).toBe(501);
+    expect((await post(app, "/__concave/api/users", {})).status).toBe(501);
+    expect((await patch(app, "/__concave/api/users/1", {})).status).toBe(501);
+    expect((await del(app, "/__concave/api/users/1")).status).toBe(501);
   });
 
   it("should return empty sessions when no sessionManager", async () => {
-    const res = await request(app).get("/__concave/api/sessions").expect(200);
+    const res = await get(app, "/__concave/api/sessions");
+    expect(res.status).toBe(200);
     expect(res.body.sessions).toEqual([]);
     expect(res.body.enabled).toBe(false);
   });
 
   it("should return 501 for session operations without sessionManager", async () => {
-    await request(app).get("/__concave/api/sessions/user/1").expect(501);
-    await request(app).post("/__concave/api/sessions").send({}).expect(501);
-    await request(app).delete("/__concave/api/sessions/1").expect(501);
-    await request(app).delete("/__concave/api/sessions/user/1").expect(501);
+    expect((await get(app, "/__concave/api/sessions/user/1")).status).toBe(501);
+    expect((await post(app, "/__concave/api/sessions", {})).status).toBe(501);
+    expect((await del(app, "/__concave/api/sessions/1")).status).toBe(501);
+    expect((await del(app, "/__concave/api/sessions/user/1")).status).toBe(501);
   });
 
   it("should still serve UI pages", async () => {
-    const res = await request(app).get("/__concave/ui").expect(200);
-    expect(res.text).toContain("Dashboard");
+    const res = await get(app, "/__concave/ui");
+    expect(res.status).toBe(200);
+    expect(res.body).toContain("Dashboard");
   });
 
   it("should show disabled KV inspector when not configured", async () => {
-    const res = await request(app).get("/__concave/ui/kv-inspector").expect(200);
-    expect(res.text).toContain("KV Inspector Disabled");
+    const res = await get(app, "/__concave/ui/kv-inspector");
+    expect(res.status).toBe(200);
+    expect(res.body).toContain("KV Inspector Disabled");
+  });
+});
+
+describe("Admin UI App-Auth Gating", () => {
+  const injectUser = (user: any): MiddlewareHandler => async (c, next) => {
+    if (user !== null) c.set("user", user as any);
+    await next();
+  };
+
+  const buildApp = (security: any, user: any) => {
+    const app = new Hono();
+    if (user !== undefined) app.use("*", injectUser(user));
+    app.route("/__concave", createAdminUI({ security }));
+    return app;
+  };
+
+  it("denies anonymous access to UI pages when requireRole is set (401)", async () => {
+    const app = buildApp({ mode: "production", requireRole: "admin" }, null);
+    const res = await get(app, "/__concave/ui");
+    expect(res.status).toBe(401);
+  });
+
+  it("denies an unauthorized logged-in user (403)", async () => {
+    const app = buildApp(
+      { mode: "production", requireRole: "admin" },
+      { id: "u1", email: "u1@test.com", roles: ["viewer"] }
+    );
+    const res = await get(app, "/__concave/ui");
+    expect(res.status).toBe(403);
+  });
+
+  it("allows an authorized logged-in user", async () => {
+    const app = buildApp(
+      { mode: "production", requireRole: "admin" },
+      { id: "u1", email: "u1@test.com", roles: ["admin"] }
+    );
+    const res = await get(app, "/__concave/ui");
+    expect(res.status).toBe(200);
+    expect(res.body).toContain("Dashboard");
+  });
+
+  it("gates JSON API routes with the same check", async () => {
+    const denied = buildApp({ mode: "production", requireRole: "admin" }, null);
+    expect((await get(denied, "/__concave/api/resources")).status).toBe(401);
+
+    const allowed = buildApp(
+      { mode: "production", requireRole: "admin" },
+      { id: "u1", email: "u1@test.com", roles: ["admin"] }
+    );
+    expect((await get(allowed, "/__concave/api/resources")).status).toBe(200);
+  });
+
+  it("fails closed in production with no auth configured", async () => {
+    const app = buildApp({ mode: "production" }, undefined);
+    expect((await get(app, "/__concave/ui")).status).toBe(401);
+    expect((await get(app, "/__concave/api/resources")).status).toBe(401);
+  });
+
+  it("falls back to env-style apiKey when no app auth is configured", async () => {
+    const app = buildApp({ mode: "production", auth: { apiKey: "secret" } }, undefined);
+    expect((await get(app, "/__concave/api/resources")).status).toBe(401);
+    expect(
+      (await get(app, "/__concave/api/resources", { "X-Admin-API-Key": "secret" })).status
+    ).toBe(200);
+  });
+});
+
+describe("Admin UI Audit Sink + Export", () => {
+  afterEach(() => {
+    setAdminAuditSink(null);
+    clearAdminAuditLog();
+  });
+
+  it("registers the configured auditSink and forwards entries", () => {
+    const received: AdminAuditEntry[] = [];
+    const app = new Hono();
+    app.route(
+      "/__concave",
+      createAdminUI({
+        security: {
+          mode: "development",
+          auth: { disabled: true },
+          auditSink: (e) => {
+            received.push(e);
+          },
+        },
+      })
+    );
+
+    logAdminAction({ userId: "u1", userEmail: "u1@test.com", operation: "delete" });
+    expect(received).toHaveLength(1);
+    expect(received[0].operation).toBe("delete");
+  });
+
+  it("serves the JSON audit export endpoint gated by authz", async () => {
+    const app = new Hono();
+    app.route(
+      "/__concave",
+      createAdminUI({ security: { mode: "development", auth: { disabled: true } } })
+    );
+
+    logAdminAction({ userId: "u1", userEmail: "u1@test.com", operation: "create" });
+
+    const res = await get(app, "/__concave/admin/audit/export");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(res.headers.get("content-disposition")).toContain("audit-log.json");
+    expect(Array.isArray(res.body.entries)).toBe(true);
+    expect(res.body.entries.some((e: any) => e.operation === "create")).toBe(true);
+  });
+
+  it("denies the export endpoint to anonymous users when authz is required", async () => {
+    const app = new Hono();
+    app.route(
+      "/__concave",
+      createAdminUI({ security: { mode: "production", requireRole: "admin" } })
+    );
+    const res = await get(app, "/__concave/admin/audit/export");
+    expect(res.status).toBe(401);
   });
 });

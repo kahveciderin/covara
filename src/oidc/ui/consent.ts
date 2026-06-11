@@ -1,12 +1,16 @@
-import { Router, Request, Response } from "express";
-import * as crypto from "crypto";
+import { Hono, type Context } from "hono";
+import { getCookie } from "hono/cookie";
+import * as crypto from "node:crypto";
 import {
   AuthorizationCode,
+  DEFAULT_CONSENT_TTL_SECONDS,
   OIDCClient,
   OIDCProviderConfig,
   OIDCProviderStores,
   OIDCUser,
 } from "../types";
+import { readFormBody } from "../body";
+import { SessionStore } from "@/auth/types";
 
 const defaultConsentTemplate = (
   client: OIDCClient,
@@ -90,63 +94,94 @@ interface ConsentHandlerConfig {
   config: OIDCProviderConfig;
   stores: OIDCProviderStores;
   findUserById: (id: string) => Promise<OIDCUser | null>;
+  sessionStore?: SessionStore;
 }
 
 export const createConsentHandler = ({
   config,
   stores,
   findUserById,
-}: ConsentHandlerConfig): Router => {
-  const router = Router();
+  sessionStore,
+}: ConsentHandlerConfig): Hono => {
+  const router = new Hono();
 
-  router.get("/", async (req: Request, res: Response) => {
-    const interactionId = req.query.interaction as string;
+  const resolveUserId = async (c: Context): Promise<string | null> => {
+    const sessionId = getCookie(c, "oidc_session");
+    if (!sessionId || !sessionStore) return null;
+    const session = await sessionStore.get(sessionId);
+    return session?.userId ?? null;
+  };
+
+  const revokeHandler = async (c: Context) => {
+    const userId = await resolveUserId(c);
+    if (!userId) {
+      return c.json({ error: "unauthorized", error_description: "No active session" }, 401);
+    }
+
+    const body = await readFormBody(c);
+    const clientId = body.client_id ?? body.clientId;
+
+    if (clientId) {
+      await stores.consent.delete(userId, clientId);
+    } else {
+      await stores.consent.deleteByUserId(userId);
+    }
+
+    return c.json({ success: true });
+  };
+
+  router.post("/revoke", (c) => revokeHandler(c));
+  router.delete("/revoke", (c) => revokeHandler(c));
+
+  router.get("/", async (c) => {
+    const interactionId = c.req.query("interaction");
 
     if (!interactionId) {
-      return res.status(400).send("Missing interaction parameter");
+      return c.html("Missing interaction parameter", 400);
     }
 
     const interaction = await stores.interactions.get(interactionId);
     if (!interaction || !interaction.userId) {
-      return res.status(400).send("Invalid or expired interaction");
+      return c.html("Invalid or expired interaction", 400);
     }
 
     const client = await stores.clients.get(interaction.authRequest.clientId);
     if (!client) {
-      return res.status(400).send("Unknown client");
+      return c.html("Unknown client", 400);
     }
 
     const user = await findUserById(interaction.userId);
     if (!user) {
-      return res.status(400).send("User not found");
+      return c.html("User not found", 400);
     }
 
     if (config.ui?.customConsentHandler) {
-      return config.ui.customConsentHandler(req, res, interaction, client, user);
+      return config.ui.customConsentHandler(c, interaction, client, user);
     }
 
     const scopes = interaction.authRequest.scope.split(" ");
     const template =
       config.ui?.templates?.consent ?? defaultConsentTemplate(client, user, scopes);
 
-    res.send(template);
+    return c.html(template);
   });
 
-  router.post("/", async (req: Request, res: Response) => {
-    const interactionId = req.query.interaction as string;
+  router.post("/", async (c) => {
+    const interactionId = c.req.query("interaction");
 
     if (!interactionId) {
-      return res.status(400).send("Missing interaction parameter");
+      return c.html("Missing interaction parameter", 400);
     }
 
     const interaction = await stores.interactions.get(interactionId);
     if (!interaction || !interaction.userId) {
-      return res.status(400).send("Invalid or expired interaction");
+      return c.html("Invalid or expired interaction", 400);
     }
 
     await stores.interactions.delete(interactionId);
 
-    const action = req.body.action;
+    const body = await readFormBody(c);
+    const action = body.action;
     const authRequest = interaction.authRequest;
 
     if (action === "deny") {
@@ -154,15 +189,19 @@ export const createConsentHandler = ({
       redirectUrl.searchParams.set("error", "access_denied");
       redirectUrl.searchParams.set("error_description", "User denied the request");
       redirectUrl.searchParams.set("state", authRequest.state);
-      return res.redirect(redirectUrl.toString());
+      return c.redirect(redirectUrl.toString(), 302);
     }
 
     const scopes = authRequest.scope.split(" ");
+    const ttlSeconds =
+      config.security?.consent?.ttlSeconds ?? DEFAULT_CONSENT_TTL_SECONDS;
+    const grantedAt = Date.now();
     await stores.consent.set({
       userId: interaction.userId,
       clientId: authRequest.clientId,
       scopes,
-      grantedAt: Date.now(),
+      grantedAt,
+      expiresAt: grantedAt + ttlSeconds * 1000,
     });
 
     if (config.hooks?.onConsentGranted) {
@@ -189,7 +228,7 @@ export const createConsentHandler = ({
     redirectUrl.searchParams.set("code", code);
     redirectUrl.searchParams.set("state", authRequest.state);
 
-    res.redirect(redirectUrl.toString());
+    return c.redirect(redirectUrl.toString(), 302);
   });
 
   return router;

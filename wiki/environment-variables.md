@@ -84,10 +84,10 @@ const publicEnv = env.getPublicEnvironmentVariables();
 Use `usePublicEnv` to expose public environment variables through an HTTP endpoint:
 
 ```typescript
-import express from "express";
+import { Hono } from "hono";
 import { createEnv, usePublicEnv } from "@kahveciderin/concave";
 
-const app = express();
+const app = new Hono();
 
 const env = createEnv({
   PUBLIC_API_URL: z.string(),
@@ -96,7 +96,7 @@ const env = createEnv({
 });
 
 // Serves public env vars at /api/env
-app.use("/api/env", usePublicEnv(env));
+app.route("/api/env", usePublicEnv(env));
 ```
 
 This creates two endpoints:
@@ -106,7 +106,7 @@ This creates two endpoints:
 #### Configuration Options
 
 ```typescript
-app.use("/api/env", usePublicEnv(env, {
+app.route("/api/env", usePublicEnv(env, {
   cacheControl: "public, max-age=3600", // Default cache header
   headers: {
     "X-Custom-Header": "value",
@@ -208,8 +208,15 @@ const { env, isLoading, error, refetch } = usePublicEnv<MyPublicEnv>({
 
 The typegen tool automatically generates TypeScript types for your public environment variables:
 
+```typescript
+// scripts/typegen.ts
+import { createTypegenCLI } from "@kahveciderin/concave/client";
+
+await createTypegenCLI(process.argv.slice(2));
+```
+
 ```bash
-npx concave-typegen http://localhost:3000
+tsx scripts/typegen.ts http://localhost:3000
 ```
 
 This generates types including:
@@ -267,7 +274,7 @@ const env = createEnv({
 5. **Cache on the client**: Use the `cacheControl` option to enable browser caching of public env vars:
 
 ```typescript
-app.use("/api/env", usePublicEnv(env, {
+app.route("/api/env", usePublicEnv(env, {
   cacheControl: "public, max-age=86400", // Cache for 24 hours
 }));
 ```
@@ -296,7 +303,7 @@ envVariable(process.env.MY_VAR, z.string(), { public: true })
 
 #### `usePublicEnv(env, config?)`
 
-Creates an Express router that serves public environment variables.
+Creates a Hono router that serves public environment variables.
 
 ### Client-Side
 

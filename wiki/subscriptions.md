@@ -203,9 +203,9 @@ Concave uses a changelog-based approach for reliable subscriptions:
 3. On reconnection, clients can resume from their last sequence
 4. If too many changes occurred, an invalidate event is sent
 
-### Mutations in Custom Express Routes
+### Mutations in Custom Routes
 
-Mutations made via `useResource` endpoints are automatically recorded to the changelog. For custom Express routes, wrap your database with `trackMutations` to ensure mutations are tracked:
+Mutations made via `useResource` endpoints are automatically recorded to the changelog. For custom Hono routes, wrap your database with `trackMutations` to ensure mutations are tracked:
 
 ```typescript
 import { trackMutations } from "@kahveciderin/concave";
@@ -215,11 +215,12 @@ const db = trackMutations(baseDb, {
 });
 
 // Custom route - mutations automatically tracked and push to subscribers
-app.post("/api/custom-action", async (req, res) => {
+app.post("/api/custom-action", async (c) => {
+  const body = await c.req.json<{ title: string }>();
   const [todo] = await db.insert(todosTable)
-    .values({ title: req.body.title })
+    .values({ title: body.title })
     .returning();
-  res.json(todo);
+  return c.json(todo);
 });
 ```
 
@@ -255,9 +256,40 @@ Subscriptions respect auth scopes. If a user's auth expires:
 ## Connection Management
 
 The subscription manager handles:
-- Automatic reconnection with exponential backoff
+- Automatic reconnection with exponential backoff (with jitter to avoid thundering-herd reconnects)
 - Heartbeat to detect connection issues
 - Cleanup on page unload
+
+## Backpressure (Slow Consumers)
+
+Each SSE connection has a bounded outbound queue. When a consumer can't keep up and the
+queue fills, the server applies the resource's backpressure policy instead of buffering
+without limit:
+
+```typescript
+useResource(todos, {
+  db,
+  id: todos.id,
+  sse: {
+    maxQueueBytes: 65536,          // outbound buffer high-water mark (default 64 KB)
+    onBackpressure: "invalidate",  // "invalidate" (default) | "disconnect" | "drop"
+  },
+});
+```
+
+- `"invalidate"` (default) — send a single `invalidate` event so the client refetches and resumes from a consistent state.
+- `"disconnect"` — close the connection; the client reconnects and resumes from its last sequence.
+- `"drop"` — silently skip the event for this connection (it may miss updates until the next full sync).
+
+`maxSubscriptionsPerUser`, `maxSubscriptionsPerIP`, `maxTotalSubscriptions`, and
+`heartbeatMs` are also configurable under `sse`.
+
+## Multiple Instances
+
+Subscriptions work across instances when every instance shares a distributed KV store
+(Redis or the Durable Object KV) and the store is initialized with `initializeKV` — which
+auto-wires cross-process event fan-out, so a mutation on one instance reaches subscribers
+connected to another. See [Deployment → Scaling Across Instances](./deployment.md#scaling-across-instances).
 
 ## Paginated Subscriptions with Subscription Modes
 

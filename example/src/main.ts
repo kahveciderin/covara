@@ -1,26 +1,20 @@
-import express from "express";
-import cookieParser from "cookie-parser";
 import { eq, count, desc, max } from "drizzle-orm";
 import { randomUUID, createHash } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
+import { serveStatic } from "@hono/node-server/serve-static";
 
 import {
-  useResource,
-  errorMiddleware,
-  notFoundHandler,
   rsql,
   createMetricsCollector,
-  observabilityMiddleware,
   createAdminUI,
-  createConcaveRouter,
+  createConcave,
   createPassportAdapter,
   useAuth,
   UnauthorizedError,
   ValidationError,
   changelog,
   initializeKV,
-  createHealthEndpoints,
   getGlobalKV,
   usePublicEnv,
   setGlobalSearch,
@@ -28,6 +22,7 @@ import {
   initializeStorage,
   useFileResource,
 } from "@kahveciderin/concave";
+import { startServer } from "@kahveciderin/concave/node";
 
 import { env } from "./config/config";
 import {
@@ -54,13 +49,13 @@ initializeStorage({
 });
 
 if (env.searchConfig.opensearchUrl) {
-  setGlobalSearch(await createOpenSearchAdapter({
-    node: env.searchConfig.opensearchUrl,
-    indexPrefix: "todoapp_",
-  }));
+  setGlobalSearch(
+    await createOpenSearchAdapter({
+      node: env.searchConfig.opensearchUrl,
+      indexPrefix: "todoapp_",
+    })
+  );
 }
-
-const app = express();
 
 const hashPassword = (password: string): string => {
   return createHash("sha256").update(password).digest("hex");
@@ -69,27 +64,6 @@ const hashPassword = (password: string): string => {
 const metricsCollector = createMetricsCollector({
   maxMetrics: 1000,
 });
-
-app.use(express.json());
-app.use(cookieParser());
-app.use(observabilityMiddleware({ metrics: metricsCollector }));
-
-// Public environment variables endpoint
-app.use("/api/env", usePublicEnv(env));
-
-// Health endpoints for Kubernetes probes
-app.use(
-  createHealthEndpoints({
-    version: "1.0.0",
-    checks: {
-      kv: getGlobalKV(),
-    },
-    thresholds: {
-      eventLoopLagMs: 100,
-      memoryPercent: 90,
-    },
-  })
-);
 
 const authAdapter = createPassportAdapter({
   getUserById: async (id) => {
@@ -102,7 +76,7 @@ const authAdapter = createPassportAdapter({
   },
 });
 
-const { router: authRouter, middleware: authMiddleware } = useAuth({
+const auth = useAuth({
   adapter: authAdapter,
   login: {
     validateCredentials: async (email, password) => {
@@ -146,12 +120,21 @@ const { router: authRouter, middleware: authMiddleware } = useAuth({
   },
 });
 
-app.use("/api/auth", authRouter);
-app.use(authMiddleware);
-
-app.use(
-  "/api/categories",
-  useResource(categoriesTable, {
+const app = createConcave({
+  observability: { metrics: metricsCollector },
+  auth,
+  health: {
+    version: "1.0.0",
+    checks: {
+      kv: getGlobalKV(),
+    },
+    thresholds: {
+      eventLoopLagMs: 100,
+      memoryPercent: 90,
+    },
+  },
+})
+  .resource("/categories", categoriesTable, {
     id: categoriesTable.id,
     db,
     auth: {
@@ -173,11 +156,7 @@ app.use(
       },
     },
   })
-);
-
-app.use(
-  "/api/tags",
-  useResource(tagsTable, {
+  .resource("/tags", tagsTable, {
     id: tagsTable.id,
     db,
     auth: {
@@ -199,11 +178,7 @@ app.use(
       },
     },
   })
-);
-
-app.use(
-  "/api/todos",
-  useResource(todosTable, {
+  .resource("/todos", todosTable, {
     id: todosTable.id,
     db,
     pagination: { defaultLimit: 100, maxLimit: 500 },
@@ -271,10 +246,11 @@ app.use(
         updatedAt: new Date(),
       }),
     },
-  })
-);
+  });
 
-app.use(
+app.route("/api/env", usePublicEnv(env));
+
+app.route(
   "/api/files",
   useFileResource(filesTable, {
     db,
@@ -290,9 +266,15 @@ app.use(
   })
 );
 
-app.use("/uploads", express.static(uploadsDir));
-
 app.use(
+  "/uploads/*",
+  serveStatic({
+    root: uploadsDir,
+    rewriteRequestPath: (p) => p.replace(/^\/uploads/, ""),
+  })
+);
+
+app.route(
   "/__concave",
   createAdminUI({
     title: "Todo App Admin",
@@ -420,31 +402,29 @@ app.use(
   })
 );
 
-// Auto-discover resources from schema registry (paths captured on first request)
-app.use("/__concave", createConcaveRouter());
-
 const publicDir = path.join(__dirname, "../public");
-app.use(express.static(publicDir));
+app.use("*", serveStatic({ root: publicDir }));
 
-app.get("/{*splat}", (req, res, next) => {
-  if (req.path.startsWith("/api") || req.path.startsWith("/__concave")) {
+const spaFallback = serveStatic({ root: publicDir, path: "index.html" });
+app.get("*", (c, next) => {
+  if (c.req.path.startsWith("/api") || c.req.path.startsWith("/__concave")) {
     return next();
   }
-  res.sendFile(path.join(publicDir, "index.html"));
+  return spaFallback(c, next);
 });
 
-app.use(notFoundHandler);
-app.use(errorMiddleware);
-
-app.listen(env.serverConfig.port, () => {
-  console.log(`
+await startServer(app, {
+  port: env.serverConfig.port,
+  onListen: ({ port }) => {
+    console.log(`
 =============================================
   Todo App (powered by Concave)
 =============================================
-  App:   http://localhost:${env.serverConfig.port}
-  Admin: http://localhost:${env.serverConfig.port}/__concave/ui
+  App:   http://localhost:${port}
+  Admin: http://localhost:${port}/__concave/ui
 =============================================
   `);
+  },
 });
 
 process.on("SIGTERM", () => process.exit(0));

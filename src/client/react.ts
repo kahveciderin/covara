@@ -1,7 +1,9 @@
 import { useSyncExternalStore, useRef, useEffect, useCallback, useState, useMemo } from "react";
-import type { LiveListResourceClient, SearchableResourceClient, ConcaveClient, SearchResponse, SearchOptions, LiveQueryLike } from "./types";
+import type { LiveListResourceClient, SearchableResourceClient, SearchResponse, SearchOptions, LiveQueryLike, ResourceClient } from "./types";
 import { getClient, getAuthErrorHandler } from "./globals";
 import { createLiveQuery, LiveQuery, LiveQueryOptions, LiveQueryState, LiveQueryMutations, statusLabel } from "./live-store";
+import { createMutation, resourceMutationFn, MutationOptions, MutationState, ResourceMutationVars } from "./mutation";
+import type { InvalidateTarget } from "./query-cache";
 
 export type LiveStatus = "loading" | "live" | "reconnecting" | "offline" | "error";
 
@@ -83,7 +85,7 @@ function isLiveQueryLike<T extends { id: string }>(
 }
 
 // Overload: Accept LiveQueryLike for fluent API with type-safe includes and select
-export function useLiveList<T extends { id: string }, Included = {}, Selected extends keyof T = keyof T>(
+export function useLiveList<T extends { id: string }, Included = unknown, Selected extends keyof T = keyof T>(
   query: LiveQueryLike<T, Included, Selected>,
   options?: Omit<UseLiveListOptions<T>, "filter" | "orderBy" | "limit" | "select" | "include">
 ): UseLiveListResult<T, Pick<T, Selected> & Included>;
@@ -137,9 +139,6 @@ export function useLiveList<
   const liveQueryRef = useRef<LiveQuery<T> | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
 
-  // Get path for resource - use stable lqPath
-  const resourcePath = isLiveQuery ? lqPath : (typeof pathOrRepoOrQuery === "string" ? pathOrRepoOrQuery : null);
-
   // Get client and repo - use stable dependencies only
   // For LiveQuery: use lqPath (stable string)
   // For string: use the string itself (stable)
@@ -182,6 +181,10 @@ export function useLiveList<
     return () => clearInterval(interval);
   }, [client]);
 
+  // The path used to key the shared cache (only when resolvable from a string/LiveQuery).
+  const cachePath = isLiveQuery ? lqPath : stringPath;
+  const cacheOptionsRef = useRef<LiveQueryOptions | null>(null);
+
   useEffect(() => {
     if (!repo || !enabled) {
       liveQueryRef.current?.destroy();
@@ -191,10 +194,22 @@ export function useLiveList<
 
     const authErrorHandler = getAuthErrorHandler();
 
-    const liveQueryOptions = {
+    const liveQueryOptions: LiveQueryOptions = {
       ...queryOptions,
       select: select as string[] | undefined,
     };
+
+    // Path-based queries go through the shared cache so client.invalidate /
+    // client.prefetch can reach them. Direct ResourceClient instances keep the
+    // legacy per-component store (can't be keyed by path).
+    if (client && cachePath) {
+      cacheOptionsRef.current = liveQueryOptions;
+      liveQueryRef.current = client.queryCache.acquire(cachePath, liveQueryOptions);
+      return () => {
+        client.queryCache.release(cachePath, liveQueryOptions);
+        liveQueryRef.current = null;
+      };
+    }
 
     liveQueryRef.current = createLiveQuery(repo, liveQueryOptions, {
       onAuthError: authErrorHandler ?? undefined,
@@ -205,7 +220,7 @@ export function useLiveList<
       liveQueryRef.current?.destroy();
       liveQueryRef.current = null;
     };
-  }, [repo, optionsKey, enabled, client]);
+  }, [repo, optionsKey, enabled, client, cachePath]);
 
   const subscribe = useCallback((listener: () => void) => {
     if (!liveQueryRef.current) return () => {};
@@ -257,6 +272,184 @@ export function useLiveList<
     mutate,
     refresh,
     loadMore,
+  };
+}
+
+/**
+ * Returns a stable `invalidate(target)` function that marks matching cached
+ * LiveQuery stores stale and refetches them. Target is a resource path/prefix
+ * string or a predicate over (path, options).
+ *
+ * @example
+ * const invalidate = useInvalidate();
+ * await save();
+ * invalidate('/api/todos');
+ */
+export function useInvalidate(): (target: InvalidateTarget) => number {
+  return useCallback((target: InvalidateTarget) => {
+    try {
+      return getClient().invalidate(target);
+    } catch {
+      return 0;
+    }
+  }, []);
+}
+
+export interface UseInfiniteListResult<T extends { id: string }, TItem = T>
+  extends UseLiveListResult<T, TItem> {
+  /** Fetch the next page; accumulates into `items`. No-op when no more pages. */
+  fetchNextPage: () => Promise<void>;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+}
+
+/**
+ * Infinite/paginated live list built on cursor pagination. Pages accumulate in
+ * `items` and the list stays realtime-aware (new items still arrive via the
+ * subscription). Defaults to `strict` subscription mode (paginated semantics).
+ *
+ * @example
+ * const { items, fetchNextPage, hasNextPage, isFetchingNextPage } =
+ *   useInfiniteList<Todo>('/api/todos', { limit: 20, orderBy: 'createdAt:desc' });
+ */
+export function useInfiniteList<
+  T extends { id: string },
+  K extends keyof T & string = keyof T & string,
+>(
+  pathOrRepo: string | LiveListResourceClient<T>,
+  options?: UseLiveListOptions<T, K>
+): UseInfiniteListResult<T, Pick<T, K | "id">> {
+  const base = useLiveList<T, K>(pathOrRepo as string, options);
+  const [isFetchingNextPage, setIsFetchingNextPage] = useState(false);
+
+  const fetchNextPage = useCallback(async () => {
+    if (isFetchingNextPage || !base.hasMore) return;
+    setIsFetchingNextPage(true);
+    try {
+      await base.loadMore();
+    } finally {
+      setIsFetchingNextPage(false);
+    }
+  }, [base.loadMore, base.hasMore, isFetchingNextPage]);
+
+  return {
+    ...base,
+    fetchNextPage,
+    hasNextPage: base.hasMore,
+    isFetchingNextPage: isFetchingNextPage || base.isLoadingMore,
+  };
+}
+
+export interface UseMutationResult<TVars, TData> {
+  mutate: (vars: TVars) => void;
+  mutateAsync: (vars: TVars) => Promise<TData>;
+  status: MutationState<TData>["status"];
+  isLoading: boolean;
+  isSuccess: boolean;
+  isError: boolean;
+  error: Error | null;
+  data: TData | undefined;
+  reset: () => void;
+}
+
+const EMPTY_MUTATION_STATE: MutationState<unknown> = {
+  status: "idle",
+  error: null,
+  data: undefined,
+};
+
+/**
+ * Standalone mutation hook usable outside a list. Integrates with optimistic
+ * updates + the offline queue (via the resource repository) and the invalidation
+ * API. Pass a resource path to get create/update/replace/delete dispatch, or a
+ * custom async function for full control.
+ *
+ * @example
+ * // Resource-bound: vars describe the operation
+ * const { mutate, status } = useMutation<Todo>('/api/todos', {
+ *   invalidates: ['/api/todos'],
+ *   onSuccess: () => toast('Saved'),
+ * });
+ * mutate({ kind: 'create', data: { title: 'New' } });
+ *
+ * @example
+ * // Custom function
+ * const { mutateAsync } = useMutation(async ({ id }: { id: string }, ctx) => {
+ *   await ctx.resource.delete(id);
+ *   ctx.invalidate('/api/todos');
+ * }, { resource: '/api/todos' });
+ */
+export function useMutation<
+  T extends { id: string },
+  TData = T | void,
+>(
+  resource: string,
+  options?: MutationOptions<ResourceMutationVars<T>, TData>
+): UseMutationResult<ResourceMutationVars<T>, TData>;
+export function useMutation<TVars, TData, T extends { id: string } = { id: string }>(
+  fn: (vars: TVars, ctx: { resource: ResourceClient<T>; invalidate: (t: InvalidateTarget) => void }) => Promise<TData>,
+  options: MutationOptions<TVars, TData> & { resource: string }
+): UseMutationResult<TVars, TData>;
+export function useMutation(
+  resourceOrFn: string | ((vars: any, ctx: any) => Promise<any>),
+  options?: any
+): UseMutationResult<unknown, unknown> {
+  // Keep the latest options/fn in a ref so callbacks always see current values
+  // without recreating the controller (which would reset status mid-flight).
+  const latestRef = useRef<{
+    fn: ((vars: any, ctx: any) => Promise<any>) | undefined;
+    options: any;
+  }>({ fn: undefined, options: undefined });
+  latestRef.current = {
+    fn: typeof resourceOrFn === "function" ? resourceOrFn : undefined,
+    options,
+  };
+
+  const resourcePath = (typeof resourceOrFn === "string" ? resourceOrFn : options?.resource) as string;
+
+  const controller = useMemo(() => {
+    const client = getClient();
+    const resource = client.resource(resourcePath);
+    return createMutation({
+      resource,
+      fn: (vars, ctx) => {
+        const liveFn = latestRef.current.fn;
+        if (liveFn) return liveFn(vars, ctx);
+        return resourceMutationFn()(vars as any, ctx as any);
+      },
+      invalidate: (target) => client.invalidate(target),
+      options: {
+        onSuccess: (data, vars) => latestRef.current.options?.onSuccess?.(data, vars),
+        onError: (error, vars) => latestRef.current.options?.onError?.(error, vars),
+        onSettled: (data, error, vars) => latestRef.current.options?.onSettled?.(data, error, vars),
+        get invalidates() {
+          return (latestRef.current.options?.invalidates as InvalidateTarget[] | undefined) ?? [];
+        },
+      } as Parameters<typeof createMutation>[0]["options"],
+    });
+  }, [resourcePath]);
+
+  const subscribe = useCallback((listener: () => void) => controller.subscribe(listener), [controller]);
+  const getSnapshot = useCallback(
+    () => controller.getSnapshot() as MutationState<unknown>,
+    [controller]
+  );
+  const state = useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_MUTATION_STATE);
+
+  const mutate = useCallback((vars: unknown) => controller.mutate(vars), [controller]);
+  const mutateAsync = useCallback((vars: unknown) => controller.mutateAsync(vars), [controller]);
+  const reset = useCallback(() => controller.reset(), [controller]);
+
+  return {
+    mutate,
+    mutateAsync,
+    status: state.status,
+    isLoading: state.status === "loading",
+    isSuccess: state.status === "success",
+    isError: state.status === "error",
+    error: state.error,
+    data: state.data,
+    reset,
   };
 }
 
@@ -428,8 +621,7 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
 
   useEffect(() => {
     if (effectiveStrategy === "jwt" && client?.jwt) {
-      const unsubscribe = client.jwt.subscribe((rawState: unknown) => {
-        const state = rawState as { user?: unknown; isAuthenticated?: boolean; accessToken?: string | null };
+      const unsubscribe = client.jwt.subscribe((state) => {
         if (state.isAuthenticated && state.user) {
           setUser(state.user as TUser);
           setStatus("authenticated");
@@ -441,7 +633,7 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
         }
       });
 
-      const state = client.jwt.getState() as { user?: unknown; isAuthenticated?: boolean; accessToken?: string | null };
+      const state = client.jwt.getState();
       if (state.isAuthenticated && state.user) {
         setUser(state.user as TUser);
         setStatus("authenticated");
@@ -639,6 +831,16 @@ export function useSearch<T extends { id: string }>(
 export { statusLabel } from "./live-store";
 export type { LiveQueryStatus, LiveQueryState, LiveQueryMutations, LiveQuery, SubscriptionMode } from "./live-store";
 
+export type {
+  MutationStatus,
+  MutationState,
+  MutationOptions,
+  MutationFn,
+  MutationFnContext,
+  ResourceMutationVars,
+} from "./mutation";
+export type { InvalidateTarget } from "./query-cache";
+
 export {
   useFileUpload,
   useFile,
@@ -664,3 +866,22 @@ export {
 export type {
   UseJWTAuthResult,
 } from "./react-jwt";
+
+export {
+  useCredits,
+  useSubscription,
+  useCheckout,
+} from "./react-billing";
+export type {
+  UseCreditsResult,
+  UseSubscriptionResult,
+  UseCheckoutResult,
+} from "./react-billing";
+export type {
+  BillingClient,
+  BillingSubscription,
+  SubscriptionStatus,
+  CheckoutInput,
+  CheckoutResult,
+  PortalResult,
+} from "./billing";

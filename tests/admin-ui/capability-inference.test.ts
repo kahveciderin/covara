@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import express, { Express } from "express";
-import request from "supertest";
+import { Hono } from "hono";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -11,6 +10,7 @@ import {
   clearSchemaRegistry,
   getResourcesForOpenAPI,
 } from "../../src/ui/schema-registry";
+import { createTestApp, get, post, patch, del } from "../helpers/hono";
 
 const testTable = sqliteTable("test_items", {
   id: text("id").primaryKey(),
@@ -20,7 +20,7 @@ const testTable = sqliteTable("test_items", {
 });
 
 describe("Capability Inference", () => {
-  let app: Express;
+  let app: Hono;
   let sqlite: Database.Database;
   let db: ReturnType<typeof drizzle>;
 
@@ -39,8 +39,7 @@ describe("Capability Inference", () => {
 
     clearSchemaRegistry();
 
-    app = express();
-    app.use(express.json());
+    app = createTestApp();
   });
 
   afterEach(() => {
@@ -50,7 +49,7 @@ describe("Capability Inference", () => {
 
   describe("default capabilities", () => {
     it("should enable all CRUD capabilities by default", () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -70,7 +69,7 @@ describe("Capability Inference", () => {
     });
 
     it("should create all endpoints when no capabilities specified", async () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -81,34 +80,30 @@ describe("Capability Inference", () => {
 
       // Verify endpoints exist (may return 401 for writes without auth, but routes are registered)
       // GET list should work with public read
-      const listRes = await request(app).get("/api/items");
+      const listRes = await get(app, "/api/items");
       expect(listRes.status).toBe(200);
 
       // POST endpoint exists (returns 401 without auth, not 404)
-      const createRes = await request(app)
-        .post("/api/items")
-        .send({ id: "1", name: "Test" });
+      const createRes = await post(app, "/api/items", { id: "1", name: "Test" });
       expect(createRes.status).not.toBe(404);
 
       // PATCH endpoint exists
-      const updateRes = await request(app)
-        .patch("/api/items/1")
-        .send({ name: "Updated" });
+      const updateRes = await patch(app, "/api/items/1", { name: "Updated" });
       expect(updateRes.status).not.toBe(404);
 
       // DELETE endpoint exists
-      const deleteRes = await request(app).delete("/api/items/1");
+      const deleteRes = await del(app, "/api/items/1");
       expect(deleteRes.status).not.toBe(404);
 
       // Count endpoint exists
-      const countRes = await request(app).get("/api/items/count");
+      const countRes = await get(app, "/api/items/count");
       expect(countRes.status).toBe(200);
     });
   });
 
   describe("explicit capability disabling", () => {
     it("should reflect disabled create capability", () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -125,7 +120,7 @@ describe("Capability Inference", () => {
     });
 
     it("should reflect disabled update capability", () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -142,7 +137,7 @@ describe("Capability Inference", () => {
     });
 
     it("should reflect disabled delete capability", () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -159,7 +154,7 @@ describe("Capability Inference", () => {
     });
 
     it("should reflect disabled subscribe capability", () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -174,7 +169,7 @@ describe("Capability Inference", () => {
     });
 
     it("should reflect multiple disabled capabilities", () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -199,29 +194,28 @@ describe("Capability Inference", () => {
 
   describe("admin UI display matches capabilities", () => {
     it("should show all endpoints in admin UI when all capabilities enabled", async () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
           db,
         })
       );
-      app.use("/__concave", createAdminUI({}));
+      app.route("/__concave", createAdminUI({}));
 
-      const response = await request(app)
-        .get("/__concave/ui/resources")
-        .expect(200);
+      const response = await get(app, "/__concave/ui/resources");
+      expect(response.status).toBe(200);
 
       // Should show all endpoint types
-      expect(response.text).toContain("GET");
-      expect(response.text).toContain("POST");
-      expect(response.text).toContain("PATCH");
-      expect(response.text).toContain("DELETE");
-      expect(response.text).toContain("SSE");
+      expect(response.body).toContain("GET");
+      expect(response.body).toContain("POST");
+      expect(response.body).toContain("PATCH");
+      expect(response.body).toContain("DELETE");
+      expect(response.body).toContain("SSE");
     });
 
     it("should hide disabled endpoints in admin UI", async () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -234,20 +228,19 @@ describe("Capability Inference", () => {
           },
         })
       );
-      app.use("/__concave", createAdminUI({}));
+      app.route("/__concave", createAdminUI({}));
 
-      const response = await request(app)
-        .get("/__concave/ui/resources")
-        .expect(200);
+      const response = await get(app, "/__concave/ui/resources");
+      expect(response.status).toBe(200);
 
       // Should show GET but not mutation endpoints
-      expect(response.text).toContain("GET");
+      expect(response.body).toContain("GET");
       // POST, PATCH, DELETE badges should not appear for this resource
       // Note: GET badge appears, but POST/PATCH/DELETE should not be in endpoints table
-      expect(response.text).not.toContain('>Create<');
-      expect(response.text).not.toContain('>Update<');
-      expect(response.text).not.toContain('>Delete<');
-      expect(response.text).not.toContain('>SSE<');
+      expect(response.body).not.toContain('>Create<');
+      expect(response.body).not.toContain('>Update<');
+      expect(response.body).not.toContain('>Delete<');
+      expect(response.body).not.toContain('>SSE<');
     });
   });
 
@@ -265,7 +258,7 @@ describe("Capability Inference", () => {
         )
       `);
 
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -274,7 +267,7 @@ describe("Capability Inference", () => {
         })
       );
 
-      app.use(
+      app.route(
         "/api/other",
         useResource(table2, {
           id: table2.id,
@@ -299,7 +292,7 @@ describe("Capability Inference", () => {
 
   describe("auth config detection", () => {
     it("should detect auth scopes from config", () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -323,7 +316,7 @@ describe("Capability Inference", () => {
     });
 
     it("should detect public read config", () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -344,7 +337,7 @@ describe("Capability Inference", () => {
 
   describe("procedures detection", () => {
     it("should list registered procedures", () => {
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -370,7 +363,7 @@ describe("Capability Inference", () => {
 
   describe("mount path auto-capture", () => {
     it("should capture mount path on first request", async () => {
-      app.use(
+      app.route(
         "/api/v2/items",
         useResource(testTable, {
           id: testTable.id,
@@ -384,7 +377,7 @@ describe("Capability Inference", () => {
       expect(resources[0].path).toBe("/test_items");
 
       // Make a request to trigger path capture
-      await request(app).get("/api/v2/items");
+      await get(app, "/api/v2/items");
 
       // After request, path should be the actual mount path
       resources = getResourcesForOpenAPI();
@@ -404,7 +397,7 @@ describe("Capability Inference", () => {
         )
       `);
 
-      app.use(
+      app.route(
         "/api/items",
         useResource(testTable, {
           id: testTable.id,
@@ -413,7 +406,7 @@ describe("Capability Inference", () => {
         })
       );
 
-      app.use(
+      app.route(
         "/api/v2/other",
         useResource(table2, {
           id: table2.id,
@@ -423,8 +416,8 @@ describe("Capability Inference", () => {
       );
 
       // Trigger path capture for both
-      await request(app).get("/api/items");
-      await request(app).get("/api/v2/other");
+      await get(app, "/api/items");
+      await get(app, "/api/v2/other");
 
       const resources = getResourcesForOpenAPI();
       const items = resources.find((r) => r.name === "test_items");

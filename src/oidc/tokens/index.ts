@@ -1,4 +1,5 @@
-import * as crypto from "crypto";
+import * as crypto from "node:crypto";
+import jwt from "jsonwebtoken";
 import {
   AccessTokenClaims,
   IDTokenClaims,
@@ -10,6 +11,7 @@ import {
   TokenResponse,
   TokenService,
 } from "../types";
+import { algorithmToHash } from "../util";
 
 const base64UrlEncode = (buffer: Buffer): string => {
   return buffer
@@ -20,10 +22,21 @@ const base64UrlEncode = (buffer: Buffer): string => {
 };
 
 const computeAtHash = (accessToken: string, algorithm: string): string => {
-  const hashAlg = algorithm.replace("RS", "sha").replace("ES", "sha").replace("PS", "sha");
+  const hashAlg = algorithmToHash(algorithm);
   const hash = crypto.createHash(hashAlg).update(accessToken).digest();
   const halfHash = hash.subarray(0, hash.length / 2);
   return base64UrlEncode(halfHash);
+};
+
+export const validateIdTokenNonce = (
+  idToken: string,
+  expectedNonce: string
+): boolean => {
+  const decoded = jwt.decode(idToken) as { nonce?: unknown } | null;
+  if (!decoded || typeof decoded !== "object") {
+    return false;
+  }
+  return decoded.nonce === expectedNonce;
 };
 
 interface ResolvedTokenConfig {

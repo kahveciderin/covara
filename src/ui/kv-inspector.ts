@@ -1,5 +1,6 @@
-import { Router, Request, Response } from "express";
+import { Hono } from "hono";
 import { KVAdapter } from "@/kv/types";
+import { readJsonBody } from "@/server/request";
 import {
   logAdminAction,
   getAdminUser,
@@ -30,8 +31,8 @@ const matchPattern = (pattern: string, key: string): boolean => {
 export const createKVInspectorRoutes = (
   config: KVInspectorConfig = {},
   securityConfig: AdminSecurityConfig = {}
-): Router => {
-  const router = Router();
+): Hono => {
+  const router = new Hono();
   const mode = securityConfig.mode ?? detectEnvironment();
 
   const defaultEnabled = mode === "development";
@@ -41,9 +42,7 @@ export const createKVInspectorRoutes = (
   const isReadOnly = config.readOnly ?? defaultReadOnly;
 
   if (!enabled || !config.kv) {
-    router.use((_req: Request, res: Response) => {
-      res.json({ enabled: false });
-    });
+    router.all("*", (c) => c.json({ enabled: false }));
     return router;
   }
 
@@ -65,19 +64,21 @@ export const createKVInspectorRoutes = (
     return config.allowedPatterns.some((allowed) => matchPattern(allowed, key));
   };
 
-  router.get("/keys", async (req: Request, res: Response) => {
-    const adminUser = getAdminUser(req);
-    const pattern = (req.query.pattern as string) ?? "*";
-    const limit = parseInt((req.query.limit as string) ?? "100", 10);
+  router.get("/keys", async (c) => {
+    const adminUser = getAdminUser(c);
+    const pattern = c.req.query("pattern") ?? "*";
+    const limit = parseInt(c.req.query("limit") ?? "100", 10);
 
     if (!isPatternAllowed(pattern)) {
-      res.status(403).json({
-        type: "/__concave/problems/forbidden",
-        title: "Pattern not allowed",
-        status: 403,
-        detail: "This key pattern is not in the allowed list",
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/forbidden",
+          title: "Pattern not allowed",
+          status: 403,
+          detail: "This key pattern is not in the allowed list",
+        },
+        403
+      );
     }
 
     try {
@@ -98,34 +99,39 @@ export const createKVInspectorRoutes = (
         });
       }
 
-      res.json({
+      return c.json({
         enabled: true,
         readOnly: isReadOnly,
         keys,
         mode,
       });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to list keys",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to list keys",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
-  router.get("/key/:key", async (req: Request, res: Response) => {
-    const adminUser = getAdminUser(req);
-    const key = decodeURIComponent(req.params.key as string);
+  router.get("/key/:key", async (c) => {
+    const adminUser = getAdminUser(c);
+    const key = decodeURIComponent(c.req.param("key"));
 
     if (!isKeyAllowed(key)) {
-      res.status(403).json({
-        type: "/__concave/problems/forbidden",
-        title: "Key not allowed",
-        status: 403,
-        detail: "This key is not in the allowed patterns",
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/forbidden",
+          title: "Key not allowed",
+          status: 403,
+          detail: "This key is not in the allowed patterns",
+        },
+        403
+      );
     }
 
     try {
@@ -145,13 +151,12 @@ export const createKVInspectorRoutes = (
             });
           }
 
-          res.json({
+          return c.json({
             key,
             type: "hash",
             value: hashValue,
             ttl,
           });
-          return;
         }
 
         const listLength = await kv.llen(key);
@@ -167,14 +172,13 @@ export const createKVInspectorRoutes = (
             });
           }
 
-          res.json({
+          return c.json({
             key,
             type: "list",
             value: listValue,
             length: listLength,
             ttl,
           });
-          return;
         }
 
         const setMembers = await kv.smembers(key);
@@ -189,13 +193,12 @@ export const createKVInspectorRoutes = (
             });
           }
 
-          res.json({
+          return c.json({
             key,
             type: "set",
             value: setMembers,
             ttl,
           });
-          return;
         }
 
         const zsetMembers = await kv.zrange(key, 0, 99);
@@ -210,21 +213,22 @@ export const createKVInspectorRoutes = (
             });
           }
 
-          res.json({
+          return c.json({
             key,
             type: "zset",
             value: zsetMembers,
             ttl,
           });
-          return;
         }
 
-        res.status(404).json({
-          type: "/__concave/problems/not-found",
-          title: "Key not found",
-          status: 404,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/not-found",
+            title: "Key not found",
+            status: 404,
+          },
+          404
+        );
       }
 
       if (adminUser) {
@@ -244,7 +248,7 @@ export const createKVInspectorRoutes = (
         parsedValue = value;
       }
 
-      res.json({
+      return c.json({
         key,
         type: "string",
         value: parsedValue,
@@ -252,55 +256,67 @@ export const createKVInspectorRoutes = (
         ttl,
       });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to get key",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to get key",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
-  router.get("/key/:key/ttl", async (req: Request, res: Response) => {
-    const key = decodeURIComponent(req.params.key as string);
+  router.get("/key/:key/ttl", async (c) => {
+    const key = decodeURIComponent(c.req.param("key"));
 
     if (!isKeyAllowed(key)) {
-      res.status(403).json({
-        type: "/__concave/problems/forbidden",
-        title: "Key not allowed",
-        status: 403,
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/forbidden",
+          title: "Key not allowed",
+          status: 403,
+        },
+        403
+      );
     }
 
     try {
       const ttl = await kv.ttl(key);
-      res.json({ key, ttl });
+      return c.json({ key, ttl });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to get TTL",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to get TTL",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
   if (!isReadOnly) {
-    router.put("/key/:key", async (req: Request, res: Response) => {
-      const adminUser = requireAdminUser(req, res);
-      if (!adminUser) return;
+    router.put("/key/:key", async (c) => {
+      const adminUser = requireAdminUser(c);
 
-      const key = decodeURIComponent(req.params.key as string);
-      const { value, ttl } = req.body;
+      const key = decodeURIComponent(c.req.param("key"));
+      const { value, ttl } = (await readJsonBody(c)) as {
+        value?: unknown;
+        ttl?: number;
+      };
 
       if (!isKeyAllowed(key)) {
-        res.status(403).json({
-          type: "/__concave/problems/forbidden",
-          title: "Key not allowed",
-          status: 403,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/forbidden",
+            title: "Key not allowed",
+            status: 403,
+          },
+          403
+        );
       }
 
       try {
@@ -322,35 +338,39 @@ export const createKVInspectorRoutes = (
           afterValue: { value, ttl },
         });
 
-        res.json({ success: true, key });
+        return c.json({ success: true, key });
       } catch (error) {
-        res.status(500).json({
-          type: "/__concave/problems/internal-error",
-          title: "Failed to set key",
-          status: 500,
-          detail: error instanceof Error ? error.message : "Unknown error",
-        });
+        return c.json(
+          {
+            type: "/__concave/problems/internal-error",
+            title: "Failed to set key",
+            status: 500,
+            detail: error instanceof Error ? error.message : "Unknown error",
+          },
+          500
+        );
       }
     });
 
-    router.post("/key/:key/expire", async (req: Request, res: Response) => {
-      const adminUser = requireAdminUser(req, res);
-      if (!adminUser) return;
+    router.post("/key/:key/expire", async (c) => {
+      const adminUser = requireAdminUser(c);
 
-      const key = decodeURIComponent(req.params.key as string);
-      const { ttl } = req.body;
+      const key = decodeURIComponent(c.req.param("key"));
+      const { ttl } = (await readJsonBody(c)) as { ttl?: number };
 
       if (!isKeyAllowed(key)) {
-        res.status(403).json({
-          type: "/__concave/problems/forbidden",
-          title: "Key not allowed",
-          status: 403,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/forbidden",
+            title: "Key not allowed",
+            status: 403,
+          },
+          403
+        );
       }
 
       try {
-        const success = await kv.expire(key, ttl);
+        const success = await kv.expire(key, ttl as number);
 
         logAdminAction({
           userId: adminUser.id,
@@ -360,30 +380,34 @@ export const createKVInspectorRoutes = (
           reason: `Admin set TTL: ${ttl}s`,
         });
 
-        res.json({ success, key, ttl });
+        return c.json({ success, key, ttl });
       } catch (error) {
-        res.status(500).json({
-          type: "/__concave/problems/internal-error",
-          title: "Failed to set expiry",
-          status: 500,
-          detail: error instanceof Error ? error.message : "Unknown error",
-        });
+        return c.json(
+          {
+            type: "/__concave/problems/internal-error",
+            title: "Failed to set expiry",
+            status: 500,
+            detail: error instanceof Error ? error.message : "Unknown error",
+          },
+          500
+        );
       }
     });
 
-    router.delete("/key/:key", async (req: Request, res: Response) => {
-      const adminUser = requireAdminUser(req, res);
-      if (!adminUser) return;
+    router.delete("/key/:key", async (c) => {
+      const adminUser = requireAdminUser(c);
 
-      const key = decodeURIComponent(req.params.key as string);
+      const key = decodeURIComponent(c.req.param("key"));
 
       if (!isKeyAllowed(key)) {
-        res.status(403).json({
-          type: "/__concave/problems/forbidden",
-          title: "Key not allowed",
-          status: 403,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/forbidden",
+            title: "Key not allowed",
+            status: 403,
+          },
+          403
+        );
       }
 
       try {
@@ -397,14 +421,17 @@ export const createKVInspectorRoutes = (
           reason: "Admin delete KV key",
         });
 
-        res.json({ success: deleted > 0, deleted });
+        return c.json({ success: deleted > 0, deleted });
       } catch (error) {
-        res.status(500).json({
-          type: "/__concave/problems/internal-error",
-          title: "Failed to delete key",
-          status: 500,
-          detail: error instanceof Error ? error.message : "Unknown error",
-        });
+        return c.json(
+          {
+            type: "/__concave/problems/internal-error",
+            title: "Failed to delete key",
+            status: 500,
+            detail: error instanceof Error ? error.message : "Unknown error",
+          },
+          500
+        );
       }
     });
   }

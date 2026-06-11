@@ -1,6 +1,5 @@
-import { sql, SQLWrapper, Table, TableConfig, getTableColumns } from "drizzle-orm";
+import { sql, SQLWrapper } from "drizzle-orm";
 import { OperatorDefinition } from "./filter";
-import { DrizzleDatabase } from "./types";
 
 export interface TestValue {
   lhs: unknown;
@@ -445,8 +444,7 @@ export const BUILTIN_TEST_VALUES: TestValue[] = [
 ];
 
 export const createOperatorTestSuite = (
-  operators: OperatorDefinition[],
-  config?: OperatorValidationConfig
+  operators: OperatorDefinition[]
 ): Map<string, EquivalenceResult> => {
   const results = new Map<string, EquivalenceResult>();
 

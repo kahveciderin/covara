@@ -130,9 +130,33 @@ export interface ScanResult {
 }
 
 export interface KVConfig {
-  type: "memory" | "redis";
+  type: "memory" | "redis" | "durable-object";
   prefix?: string; // Key prefix for namespacing
   redis?: RedisConfig;
+  durableObject?: DurableObjectConfig;
+}
+
+// Structural stand-ins for Cloudflare types so this module never imports
+// from cloudflare:workers and stays compilable under Node
+export interface DurableObjectStubLike {
+  fetch(
+    input: string,
+    init?: {
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+    }
+  ): Promise<Response>;
+}
+
+export interface DurableObjectNamespaceLike {
+  idFromName(name: string): unknown;
+  get(id: unknown): DurableObjectStubLike;
+}
+
+export interface DurableObjectConfig {
+  namespace: DurableObjectNamespaceLike;
+  name?: string;
 }
 
 export interface RedisConfig {

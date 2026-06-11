@@ -45,7 +45,8 @@ const byRole = await users.aggregate({
 | `avg` | string[] | Fields to average |
 | `min` | string[] | Fields to find minimum |
 | `max` | string[] | Fields to find maximum |
-| `filter` | string | RSQL filter expression |
+| `filter` | string | RSQL filter expression (applied before grouping) |
+| `having` | string | Filter groups by aggregate output (applied after grouping) |
 
 ## Response Format
 
@@ -151,6 +152,40 @@ const monthlyStats = await orders.aggregate({
   sum: ["total"],
 });
 ```
+
+### Filtering Groups with HAVING
+
+`filter` narrows the rows **before** grouping; `having` filters the resulting **groups** by their
+aggregate output. Use the `having` query parameter with comparisons joined by `;` (AND):
+
+```bash
+# Categories with at least 5 orders AND total revenue over 100
+curl "http://localhost:3000/api/orders/aggregate?groupBy=category&count=true&sum=total&having=count>=5;sum_total>100"
+```
+
+The fields referenced in `having` are the **aggregate output aliases**:
+
+| Alias | Produced by |
+|-------|-------------|
+| `count` | `count=true` |
+| `sum_<field>` | `sum=<field>` |
+| `avg_<field>` | `avg=<field>` |
+| `min_<field>` | `min=<field>` |
+| `max_<field>` | `max=<field>` |
+| `<field>` | a `groupBy` column |
+
+Supported operators: `==`, `!=`, `>`, `>=`, `<`, `<=`. An alias referenced in `having` must be
+present in the query's selections (e.g. `sum_total` requires `sum=total`); referencing an unknown
+alias returns a `400` validation error. Numeric right-hand values are compared numerically;
+non-numeric values are compared as strings.
+
+```bash
+# Group by status, keep only groups whose average total exceeds 500
+curl "http://localhost:3000/api/orders/aggregate?groupBy=status&avg=total&having=avg_total>500"
+```
+
+> The HTTP query parameter is the supported interface for `having`; the typed client
+> `aggregate()` helper does not yet expose it.
 
 ### Date-based Aggregations
 

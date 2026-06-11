@@ -1,5 +1,12 @@
+import { z } from "zod";
 import { Table, TableConfig, getTableColumns } from "drizzle-orm";
-import { ResourceCapabilities, FieldPolicies, ProcedureDefinition } from "@/resource/types";
+import {
+  ResourceCapabilities,
+  FieldPolicies,
+  ProcedureDefinition,
+  ETagResourceConfig,
+  CustomOperator,
+} from "@/resource/types";
 import { CONCAVE_VERSION } from "@/middleware/versioning";
 
 export interface OpenAPIV3Document {
@@ -47,18 +54,30 @@ export interface ParameterObject {
   description?: string;
   required?: boolean;
   schema?: SchemaObject;
+  example?: unknown;
+}
+
+export interface MediaTypeObject {
+  schema: SchemaObject;
+  example?: unknown;
+  examples?: Record<string, { summary?: string; value: unknown }>;
 }
 
 export interface RequestBodyObject {
   description?: string;
   required?: boolean;
-  content: Record<string, { schema: SchemaObject }>;
+  content: Record<string, MediaTypeObject>;
+}
+
+export interface HeaderObject {
+  schema: SchemaObject;
+  description?: string;
 }
 
 export interface ResponseObject {
   description: string;
-  content?: Record<string, { schema: SchemaObject }>;
-  headers?: Record<string, { schema: SchemaObject; description?: string }>;
+  content?: Record<string, MediaTypeObject>;
+  headers?: Record<string, HeaderObject>;
 }
 
 export interface SchemaObject {
@@ -101,6 +120,8 @@ export interface RegisteredResource {
   procedures?: Record<string, ProcedureDefinition>;
   idField?: string;
   relations?: RelationInfo[];
+  etag?: ETagResourceConfig;
+  customOperators?: Record<string, CustomOperator>;
 }
 
 export interface OpenAPIConfig {
@@ -190,13 +211,24 @@ const generateSchemaFromDrizzle = <TConfig extends TableConfig>(
       continue;
     }
 
-    const col = column as { dataType?: string; notNull?: boolean; columnType?: string };
+    const col = column as {
+      dataType?: string;
+      notNull?: boolean;
+      columnType?: string;
+      enumValues?: readonly string[];
+    };
     const columnType = col.dataType ?? col.columnType ?? "string";
     const { type, format } = mapDrizzleTypeToOpenAPI(columnType);
 
     const prop: SchemaObject = { type };
     if (format) {
       prop.format = format;
+    }
+
+    if (col.enumValues && col.enumValues.length > 0) {
+      prop.type = "string";
+      prop.format = undefined;
+      prop.enum = [...col.enumValues];
     }
 
     if (!col.notNull) {
@@ -215,13 +247,49 @@ const generateSchemaFromDrizzle = <TConfig extends TableConfig>(
   };
 };
 
+const FILTER_OPERATORS_DOC = [
+  "Equality: `==`, `!=`, `=ieq=`, `=ine=` (case-insensitive)",
+  "Comparison: `>`, `>=`, `<`, `<=` (aliases `=gt=`, `=ge=`, `=lt=`, `=le=`)",
+  "Set membership: `=in=`, `=out=` (comma-separated values)",
+  "Pattern: `%=` / `!%=` (LIKE / NOT LIKE), `=ilike=`, `=nilike=`",
+  "Substring: `=contains=`, `=icontains=`, `=startswith=`, `=istartswith=`, `=endswith=`, `=iendswith=`",
+  "Null/empty: `=isnull=`, `=isempty=`",
+  "Range: `=between=`, `=nbetween=`",
+  "Regex: `=regex=`, `=iregex=`",
+  "Length: `=length=`, `=minlength=`, `=maxlength=`",
+  "Boolean: `==true`, `==false`",
+].join("; ");
+
+const FILTER_COMBINATORS_DOC =
+  "Combinators: `;` (AND), `,` (OR), `()` (grouping).";
+
+const FILTER_EXAMPLE = 'status=="active";age=gt=18,name=contains="jo"';
+
+const buildFilterDescription = (
+  customOperators?: Record<string, CustomOperator>
+): string => {
+  let description =
+    `RSQL filter expression. Operators: ${FILTER_OPERATORS_DOC}. ` +
+    `${FILTER_COMBINATORS_DOC}`;
+  const customNames = customOperators ? Object.keys(customOperators) : [];
+  if (customNames.length > 0) {
+    description += ` Custom operators: ${customNames.map((n) => `\`${n}\``).join(", ")}.`;
+  }
+  description += ` Example: ${FILTER_EXAMPLE}`;
+  return description;
+};
+
+const buildFilterParameter = (
+  customOperators?: Record<string, CustomOperator>
+): ParameterObject => ({
+  name: "filter",
+  in: "query",
+  description: buildFilterDescription(customOperators),
+  schema: { type: "string" },
+  example: FILTER_EXAMPLE,
+});
+
 const commonParameters: Record<string, ParameterObject> = {
-  filter: {
-    name: "filter",
-    in: "query",
-    description: "RSQL filter expression",
-    schema: { type: "string" },
-  },
   cursor: {
     name: "cursor",
     in: "query",
@@ -254,6 +322,59 @@ const commonParameters: Record<string, ParameterObject> = {
   },
 };
 
+const zodToSchemaObject = (
+  schema: z.ZodSchema | undefined,
+  fallback: SchemaObject
+): SchemaObject => {
+  if (!schema) {
+    return fallback;
+  }
+  try {
+    const jsonSchema = z.toJSONSchema(schema, { target: "draft-7" }) as Record<
+      string,
+      unknown
+    >;
+    delete jsonSchema.$schema;
+    return jsonSchema as SchemaObject;
+  } catch {
+    return fallback;
+  }
+};
+
+const ifMatchParameter: ParameterObject = {
+  name: "If-Match",
+  in: "header",
+  description:
+    "ETag value for optimistic concurrency control. The request fails with 412 if the current ETag does not match.",
+  schema: { type: "string" },
+};
+
+const ifNoneMatchParameter: ParameterObject = {
+  name: "If-None-Match",
+  in: "header",
+  description:
+    "ETag value. Returns 304 Not Modified if the current ETag matches.",
+  schema: { type: "string" },
+};
+
+const etagHeader: HeaderObject = {
+  schema: { type: "string" },
+  description: "Entity tag for the current representation.",
+};
+
+const preconditionFailedResponse: ResponseObject = {
+  description: "Precondition failed: the If-Match ETag did not match.",
+  content: {
+    "application/problem+json": {
+      schema: { $ref: "#/components/schemas/ProblemDetail" },
+    },
+  },
+};
+
+const notModifiedResponse: ResponseObject = {
+  description: "Not modified: the If-None-Match ETag matched.",
+};
+
 const problemDetailSchema: SchemaObject = {
   type: "object",
   properties: {
@@ -272,10 +393,12 @@ const addResourcePaths = (
   resource: RegisteredResource,
   basePath: string = ""
 ): void => {
-  const { name, path, schema, capabilities, fields, procedures } = resource;
+  const { name, path, schema, capabilities, fields, procedures, etag, customOperators } = resource;
   const resourcePath = `${basePath}${path}`;
   const resourceSchema = generateSchemaFromDrizzle(schema, fields?.readable);
   const schemaRef = `#/components/schemas/${name}`;
+  const hasEtag = !!etag;
+  const filterParameter = buildFilterParameter(customOperators);
 
   spec.components!.schemas![name] = resourceSchema;
   spec.components!.schemas![`${name}Input`] = generateSchemaFromDrizzle(schema, fields?.writable);
@@ -286,7 +409,7 @@ const addResourcePaths = (
       operationId: `list${name}`,
       tags: [name],
       parameters: [
-        commonParameters.filter!,
+        filterParameter,
         commonParameters.cursor!,
         commonParameters.limit!,
         commonParameters.orderBy!,
@@ -343,9 +466,7 @@ const addResourcePaths = (
               schema: { $ref: schemaRef },
             },
           },
-          headers: {
-            ETag: { schema: { type: "string" }, description: "Entity tag" },
-          },
+          ...(hasEtag ? { headers: { ETag: etagHeader } } : {}),
         },
         "400": {
           description: "Validation error",
@@ -374,7 +495,9 @@ const addResourcePaths = (
       summary: `Get ${name} by ID`,
       operationId: `get${name}`,
       tags: [name],
-      parameters: [commonParameters.select!],
+      parameters: hasEtag
+        ? [commonParameters.select!, ifNoneMatchParameter]
+        : [commonParameters.select!],
       responses: {
         "200": {
           description: "Successful response",
@@ -383,10 +506,9 @@ const addResourcePaths = (
               schema: { $ref: schemaRef },
             },
           },
-          headers: {
-            ETag: { schema: { type: "string" }, description: "Entity tag" },
-          },
+          ...(hasEtag ? { headers: { ETag: etagHeader } } : {}),
         },
+        ...(hasEtag ? { "304": notModifiedResponse } : {}),
         "404": {
           description: "Not found",
           content: {
@@ -404,14 +526,7 @@ const addResourcePaths = (
       summary: `Update ${name}`,
       operationId: `update${name}`,
       tags: [name],
-      parameters: [
-        {
-          name: "If-Match",
-          in: "header",
-          description: "ETag for conditional update",
-          schema: { type: "string" },
-        },
-      ],
+      ...(hasEtag ? { parameters: [ifMatchParameter] } : {}),
       requestBody: {
         required: true,
         content: {
@@ -428,9 +543,10 @@ const addResourcePaths = (
               schema: { $ref: schemaRef },
             },
           },
+          ...(hasEtag ? { headers: { ETag: etagHeader } } : {}),
         },
         "404": { description: "Not found" },
-        "412": { description: "Precondition failed" },
+        ...(hasEtag ? { "412": preconditionFailedResponse } : {}),
       },
     };
 
@@ -438,6 +554,7 @@ const addResourcePaths = (
       summary: `Replace ${name}`,
       operationId: `replace${name}`,
       tags: [name],
+      ...(hasEtag ? { parameters: [ifMatchParameter] } : {}),
       requestBody: {
         required: true,
         content: {
@@ -454,8 +571,10 @@ const addResourcePaths = (
               schema: { $ref: schemaRef },
             },
           },
+          ...(hasEtag ? { headers: { ETag: etagHeader } } : {}),
         },
         "404": { description: "Not found" },
+        ...(hasEtag ? { "412": preconditionFailedResponse } : {}),
       },
     };
   }
@@ -465,9 +584,11 @@ const addResourcePaths = (
       summary: `Delete ${name}`,
       operationId: `delete${name}`,
       tags: [name],
+      ...(hasEtag ? { parameters: [ifMatchParameter] } : {}),
       responses: {
         "204": { description: "Deleted" },
         "404": { description: "Not found" },
+        ...(hasEtag ? { "412": preconditionFailedResponse } : {}),
       },
     };
   }
@@ -477,7 +598,7 @@ const addResourcePaths = (
       summary: `Count ${name}`,
       operationId: `count${name}`,
       tags: [name],
-      parameters: [commonParameters.filter!],
+      parameters: [filterParameter],
       responses: {
         "200": {
           description: "Count response",
@@ -501,7 +622,7 @@ const addResourcePaths = (
         operationId: `aggregate${name}`,
         tags: [name],
         parameters: [
-          commonParameters.filter!,
+          filterParameter,
           { name: "groupBy", in: "query", schema: { type: "string" } },
           { name: "sum", in: "query", schema: { type: "string" } },
           { name: "avg", in: "query", schema: { type: "string" } },
@@ -545,23 +666,60 @@ const addResourcePaths = (
     spec.paths[`${resourcePath}/subscribe`] = {
       get: {
         summary: `Subscribe to ${name} changes`,
+        description:
+          "Server-Sent Events stream of changelog events. Each event has a type of " +
+          "`existing`, `added`, `changed`, `removed`, or `invalidate`, plus a monotonic " +
+          "sequence number for reliable delivery and reconnection.",
         operationId: `subscribe${name}`,
         tags: [name],
         parameters: [
-          commonParameters.filter!,
+          filterParameter,
+          {
+            name: "include",
+            in: "query",
+            schema: { type: "string" },
+            description:
+              "Relations to include, e.g. `relation(filter:value;limit:10)`.",
+          },
           {
             name: "resumeFrom",
             in: "query",
             schema: { type: "integer" },
-            description: "Sequence number to resume from",
+            description:
+              "Sequence number to resume from after a disconnect (catch-up replay).",
+          },
+          {
+            name: "skipExisting",
+            in: "query",
+            schema: { type: "boolean" },
+            description:
+              "If true, skip the initial `existing` snapshot events and only stream subsequent changes.",
           },
         ],
         responses: {
           "200": {
-            description: "SSE stream",
+            description: "Server-Sent Events stream of changelog events.",
+            headers: {
+              "Content-Type": {
+                schema: { type: "string", enum: ["text/event-stream"] },
+                description: "Always `text/event-stream`.",
+              },
+            },
             content: {
               "text/event-stream": {
-                schema: { type: "string" },
+                schema: {
+                  type: "object",
+                  description: "A single SSE changelog event payload.",
+                  properties: {
+                    type: {
+                      type: "string",
+                      enum: ["existing", "added", "changed", "removed", "invalidate"],
+                    },
+                    seq: { type: "integer", description: "Monotonic sequence number." },
+                    data: { $ref: schemaRef },
+                  },
+                  required: ["type", "seq"],
+                },
               },
             },
           },
@@ -571,16 +729,20 @@ const addResourcePaths = (
   }
 
   if (procedures) {
-    for (const [procName, _proc] of Object.entries(procedures)) {
+    for (const [procName, proc] of Object.entries(procedures)) {
+      const inputSchema = zodToSchemaObject(proc.input, { type: "object" });
+      const outputSchema = zodToSchemaObject(proc.output, { type: "object" });
       spec.paths[`${resourcePath}/rpc/${procName}`] = {
         post: {
           summary: `Call ${procName} procedure`,
+          description: `RPC procedure \`${procName}\` on ${name}.`,
           operationId: `${name}_${procName}`,
           tags: [name],
           requestBody: {
+            required: !!proc.input,
             content: {
               "application/json": {
-                schema: { type: "object" },
+                schema: inputSchema,
               },
             },
           },
@@ -589,7 +751,15 @@ const addResourcePaths = (
               description: "Procedure response",
               content: {
                 "application/json": {
-                  schema: { type: "object" },
+                  schema: outputSchema,
+                },
+              },
+            },
+            "400": {
+              description: "Validation error",
+              content: {
+                "application/problem+json": {
+                  schema: { $ref: "#/components/schemas/ProblemDetail" },
                 },
               },
             },

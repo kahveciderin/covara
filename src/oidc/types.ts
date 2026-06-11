@@ -1,3 +1,4 @@
+import type { Context, Hono } from "hono";
 import { SessionStore } from "@/auth/types";
 import { KVAdapter } from "@/kv/types";
 
@@ -296,17 +297,15 @@ export interface UIConfig {
     error?: string;
   };
   customLoginHandler?: (
-    req: unknown,
-    res: unknown,
+    c: Context,
     interaction: InteractionData
-  ) => Promise<void>;
+  ) => Promise<Response>;
   customConsentHandler?: (
-    req: unknown,
-    res: unknown,
+    c: Context,
     interaction: InteractionData,
     client: OIDCClient,
     user: OIDCUser
-  ) => Promise<void>;
+  ) => Promise<Response>;
 }
 
 export interface SecurityConfig {
@@ -317,12 +316,23 @@ export interface SecurityConfig {
   nonce?: {
     required?: boolean;
   };
+  consent?: {
+    ttlSeconds?: number;
+  };
   allowedOrigins?: string[];
   trustedProxies?: string[];
   rateLimiting?: {
     login?: { windowMs: number; max: number };
     token?: { windowMs: number; max: number };
+    jwks?: { windowMs: number; max: number };
+    introspect?: { windowMs: number; max: number };
   };
+}
+
+export interface RegistrationConfig {
+  enabled?: boolean;
+  defaultScopes?: string[];
+  initialAccessToken?: string;
 }
 
 export interface ProviderHooks {
@@ -361,8 +371,11 @@ export interface OIDCProviderConfig {
   claims?: ClaimDefinition[];
   ui?: UIConfig;
   security?: SecurityConfig;
+  registration?: RegistrationConfig;
   hooks?: ProviderHooks;
 }
+
+export const DEFAULT_CONSENT_TTL_SECONDS = 365 * 24 * 60 * 60;
 
 export interface ScopeDefinition {
   name: string;
@@ -430,10 +443,7 @@ export interface StateStore {
 
 export interface AuthBackend {
   name: string;
-  authenticate(
-    req: unknown,
-    res: unknown
-  ): Promise<AuthBackendResult>;
+  authenticate(c: Context): Promise<AuthBackendResult>;
   getLoginForm?(): {
     fields: Array<{
       name: string;
@@ -447,19 +457,15 @@ export interface AuthBackend {
     authUrl: string;
     icon?: string;
   }>;
-  initiateExternalAuth?(
-    providerName: string,
-    req: unknown,
-    res: unknown
-  ): Promise<void>;
-  handleExternalCallback?(req: unknown): Promise<AuthBackendResult>;
+  initiateExternalAuth?(providerName: string, c: Context): Promise<Response>;
+  handleExternalCallback?(c: Context): Promise<AuthBackendResult>;
   supportsSignup?: boolean;
   createUser?(data: {
     email: string;
     password: string;
     name?: string;
   }): Promise<OIDCUser>;
-  getRoutes?(): unknown;
+  getRoutes?(): Hono;
 }
 
 export interface AuthBackendResult {

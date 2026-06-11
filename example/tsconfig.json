@@ -5,8 +5,13 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "ES2020",
-    "lib": ["ES2020", "DOM"],
-    "types": ["node"],
+    "lib": [
+      "ES2020",
+      "DOM"
+    ],
+    "types": [
+      "node"
+    ],
     "sourceMap": true,
     "strict": true,
     "esModuleInterop": true,
@@ -14,13 +19,35 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "baseUrl": "..",
     "paths": {
-      "@kahveciderin/concave": ["./src/index.ts"],
-      "@kahveciderin/concave/*": ["./src/*"],
-      "@/*": ["./src/*"]
+      "@kahveciderin/concave": [
+        "../dist/index"
+      ],
+      "@kahveciderin/concave/node": [
+        "../dist/server/node"
+      ],
+      "@kahveciderin/concave/client": [
+        "../dist/client/index"
+      ],
+      "@kahveciderin/concave/client/react": [
+        "../dist/client/react"
+      ],
+      "@kahveciderin/concave/env": [
+        "../dist/env/index"
+      ],
+      "@kahveciderin/concave/*": [
+        "../dist/*"
+      ],
+      "@/*": [
+        "../dist/*"
+      ]
     }
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
 }

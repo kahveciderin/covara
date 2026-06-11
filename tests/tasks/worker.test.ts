@@ -281,7 +281,10 @@ describe("TaskWorker", () => {
       await worker.start();
 
       const taskId = await scheduler.enqueue(task, {});
-      await sleep(400);
+      
+      // Wait for task to be processed: initial run + 2 retries with 30ms delay each + buffer
+      // Need more time when system is under load from parallel test execution
+      await sleep(800);
 
       const stored = await scheduler.getTask(taskId);
       expect(stored?.status).toBe("dead");

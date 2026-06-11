@@ -1,4 +1,4 @@
-import { getTableColumns, Table, TableConfig, AnyColumn } from "drizzle-orm";
+import { getTableColumns, Table, TableConfig } from "drizzle-orm";
 import { ValidationError } from "./error";
 import { FieldPolicies, ResourceCapabilities } from "./types";
 

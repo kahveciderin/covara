@@ -5,10 +5,10 @@ Concave provides built-in search integration that automatically adds `/search` e
 ## Quick Start
 
 ```typescript
-import express from "express";
+import { Hono } from "hono";
 import { useResource, setGlobalSearch, createOpenSearchAdapter } from "@kahveciderin/concave";
 
-const app = express();
+const app = new Hono();
 
 // Configure the global search adapter
 setGlobalSearch(createOpenSearchAdapter({
@@ -16,13 +16,48 @@ setGlobalSearch(createOpenSearchAdapter({
 }));
 
 // Resources automatically get a /search endpoint
-app.use("/api/todos", useResource(db, todos));
+app.route("/api/todos", useResource(todos, { db, id: todos.id }));
 
 // GET /api/todos/search?q=important
 // Returns: { items: [...], total: 10 }
 ```
 
 ## Search Adapters
+
+### Built-in Full-Text Search (Recommended)
+
+You don't need OpenSearch to get full-text search. Concave ships adapters that index into
+your **primary database** — SQLite (FTS5) or PostgreSQL (`tsvector`) — so search works with
+zero extra infrastructure. These are the recommended default for most deployments.
+
+```typescript
+import { setGlobalSearch } from "@kahveciderin/concave";
+import { createSqliteFtsAdapter, createPostgresFtsAdapter } from "@kahveciderin/concave/search";
+// (the same factories are re-exported from the search module)
+
+// SQLite (libsql / better-sqlite3 / D1) — uses FTS5 virtual tables
+setGlobalSearch(createSqliteFtsAdapter({
+  db,                         // a runner with run(sql)/all(sql); your Drizzle db works
+  tablePrefix: "concave_fts_", // optional, default "concave_fts_"
+  columns: ["title", "body"], // optional; defaults to all string fields in the document
+}));
+
+// PostgreSQL — uses tsvector / to_tsquery
+setGlobalSearch(createPostgresFtsAdapter({
+  db,                         // a runner with execute(sql)
+  language: "english",        // optional text-search config, default "english"
+  tablePrefix: "concave_fts_",
+}));
+```
+
+Both adapters:
+
+- Create and manage their own backing tables (an FTS5 virtual table on SQLite, a tsvector
+  table on Postgres) lazily on first index.
+- Implement the full `SearchAdapter` interface, so they work with the automatic `/search`
+  endpoint, auto-indexing, and RSQL post-filtering exactly like the OpenSearch adapter.
+- Validate table/column identifiers to avoid injection, and index nested object/array
+  values by flattening them to text.
 
 ### OpenSearch Adapter
 
@@ -115,12 +150,16 @@ Search is enabled automatically when a global search adapter is configured. To e
 
 ```typescript
 // Disable search for a resource
-app.use("/api/todos", useResource(db, todos, {
+app.route("/api/todos", useResource(todos, {
+  db,
+  id: todos.id,
   search: { enabled: false }
 }));
 
 // Explicitly enable (default when adapter is configured)
-app.use("/api/todos", useResource(db, todos, {
+app.route("/api/todos", useResource(todos, {
+  db,
+  id: todos.id,
   search: { enabled: true }
 }));
 ```
@@ -130,7 +169,9 @@ app.use("/api/todos", useResource(db, todos, {
 By default, the resource table name is used as the index name. Override it:
 
 ```typescript
-app.use("/api/todos", useResource(db, todos, {
+app.route("/api/todos", useResource(todos, {
+  db,
+  id: todos.id,
   search: {
     indexName: "custom_todos_index"
   }
@@ -143,14 +184,18 @@ By default, all fields are searchable. Restrict to specific fields:
 
 ```typescript
 // Array syntax: only search these fields
-app.use("/api/todos", useResource(db, todos, {
+app.route("/api/todos", useResource(todos, {
+  db,
+  id: todos.id,
   search: {
     fields: ["title", "description"]
   }
 }));
 
 // Object syntax: configure weights and searchability
-app.use("/api/todos", useResource(db, todos, {
+app.route("/api/todos", useResource(todos, {
+  db,
+  id: todos.id,
   search: {
     fields: {
       title: { weight: 2.0 },           // Boost title matches
@@ -166,11 +211,83 @@ app.use("/api/todos", useResource(db, todos, {
 By default, documents are automatically indexed when created, updated, or deleted. Disable this for manual control:
 
 ```typescript
-app.use("/api/todos", useResource(db, todos, {
+app.route("/api/todos", useResource(todos, {
+  db,
+  id: todos.id,
   search: {
     autoIndex: false  // Disable auto-indexing
   }
 }));
+```
+
+### Transactional Outbox
+
+By default, indexing happens inline after a mutation commits, with one immediate retry. If the search
+backend is unavailable, the operation is dropped (the DB mutation still succeeds), which can leave the
+index permanently out of sync until the row is touched again.
+
+Enable the **transactional outbox** to get at-least-once DB → index convergence. Index/delete
+operations are written to a durable KV-backed queue at mutation time and drained in the background
+with exponential backoff. Operations that exhaust their retries are parked in a dead set rather than
+lost.
+
+```typescript
+app.route("/api/todos", useResource(todos, {
+  db,
+  id: todos.id,
+  search: {
+    outbox: true,  // durable KV-backed index queue (requires a global KV)
+  },
+}));
+```
+
+Requirements and behavior:
+
+- A global KV must be registered (`setGlobalKV(...)`); the outbox stores its queue, in-flight ops,
+  and dead set there. Without a global KV, enabling `outbox` has no effect.
+- On Node, enabling `outbox` on any resource starts a background drainer (a `setInterval`, default
+  every 2s, draining up to 100 ops per tick, `.unref()`'d so it never holds the process open).
+- Retries use exponential backoff: `base * 2^attempts` capped at 5 minutes (default base 1s, default
+  10 attempts). After `maxAttempts`, an op is moved to the dead set and logged.
+- **On Cloudflare Workers** there is no long-lived process, so you must drain the outbox yourself by
+  calling `drainSearchOutbox()` from a scheduled (cron) handler or a queue consumer. Do not rely on
+  `startSearchOutboxDrainer()` on Workers.
+
+```typescript
+import { drainSearchOutbox } from "@kahveciderin/concave";
+
+export default {
+  fetch: app.fetch,
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(drainSearchOutbox());
+  },
+};
+```
+
+#### Outbox API
+
+```typescript
+import {
+  enqueueSearchOp,
+  drainSearchOutbox,
+  startSearchOutboxDrainer,
+  getSearchOutboxStats,
+} from "@kahveciderin/concave";
+
+// Enqueue an index/delete op (returns false if no global KV is registered)
+await enqueueSearchOp({ index: "todos", type: "index", docId: "1", document: { id: 1, title: "Hi" } });
+await enqueueSearchOp({ index: "todos", type: "delete", docId: "1" });
+
+// Drain pending ops once (use this on Workers); options override retry tuning
+const result = await drainSearchOutbox({ maxAttempts: 10, backoffBaseMs: 1000, batchSize: 100 });
+// result: { processed, succeeded, failed, dead }
+
+// Start/stop the Node background drainer
+const stop = startSearchOutboxDrainer({ intervalMs: 2000 });
+stop();  // stopSearchOutboxDrainer()
+
+// Inspect queue health
+const { pending, dead } = await getSearchOutboxStats();
 ```
 
 ## Manual Index Management
@@ -279,6 +396,25 @@ interface OpenSearchConfig {
 }
 ```
 
+#### `createSqliteFtsAdapter(config)` / `createPostgresFtsAdapter(config)`
+
+Create database-backed full-text adapters (no external service required).
+
+```typescript
+interface SqliteFtsConfig {
+  db: { run(sql): unknown; all(sql): unknown[] };
+  tablePrefix?: string;  // Default: "concave_fts_"
+  columns?: string[];    // Default: all string fields in the indexed document
+}
+
+interface PostgresFtsConfig {
+  db: { execute(sql): Promise<unknown> };
+  tablePrefix?: string;  // Default: "concave_fts_"
+  columns?: string[];
+  language?: string;     // Default: "english"
+}
+```
+
 #### `createMemorySearchAdapter()`
 
 Creates an in-memory adapter for development/testing.
@@ -306,6 +442,13 @@ interface ResourceSearchConfig {
   indexName?: string;       // Default: table name
   fields?: string[] | Record<string, SearchFieldConfig>;
   autoIndex?: boolean;      // Default: true
+  outbox?: boolean;         // Durable KV-backed index queue (default: false)
+  onIndexError?: (info: {   // Called when an inline index/delete op fails
+    operation: "index" | "delete";
+    id: string;
+    index: string;
+    error: unknown;
+  }) => void | Promise<void>;
 }
 
 interface SearchFieldConfig {

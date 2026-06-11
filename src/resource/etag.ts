@@ -1,5 +1,5 @@
-import { createHash } from "crypto";
-import { Response } from "express";
+import { createHash } from "node:crypto";
+import type { Context } from "hono";
 import { PreconditionFailedError } from "./error";
 
 export interface ETagConfig {
@@ -12,7 +12,11 @@ export interface ETagConfig {
 const DEFAULT_CONFIG: ETagConfig = {
   updatedAtField: "updatedAt",
   idField: "id",
-  algorithm: "weak",
+  // Version numbers, updatedAt timestamps and content hashes are all *strong*
+  // validators (they change on every byte-level change), and RFC 7232 requires
+  // strong validators for If-Match write preconditions. Default to strong so
+  // optimistic concurrency control is correct out of the box.
+  algorithm: "strong",
 };
 
 export const generateETag = (
@@ -119,7 +123,8 @@ export const validateIfMatch = (
 
   const eTags = ifMatch.split(",").map((e) => e.trim());
 
-  const matches = eTags.some((tag) => compareETags(tag, currentETag, true));
+  // RFC 7232 §3.1: If-Match requires the strong comparison function.
+  const matches = eTags.some((tag) => compareETags(tag, currentETag, false));
 
   if (!matches) {
     throw new PreconditionFailedError(currentETag);
@@ -147,29 +152,28 @@ export const validateIfNoneMatch = (
 };
 
 export const setETagHeader = (
-  res: Response,
+  c: Context,
   item: Record<string, unknown>,
   config?: ETagConfig
 ): void => {
   const etag = generateETag(item, config);
-  res.set("ETag", etag);
+  c.header("ETag", etag);
 };
 
 export const handleConditionalGet = (
-  res: Response,
+  c: Context,
   ifNoneMatch: string | undefined,
   item: Record<string, unknown>,
   config?: ETagConfig
-): boolean => {
+): Response | null => {
   const etag = generateETag(item, config);
-  res.set("ETag", etag);
+  c.header("ETag", etag);
 
   if (ifNoneMatch && compareETags(ifNoneMatch, etag, true)) {
-    res.status(304).end();
-    return true;
+    return c.body(null, 304);
   }
 
-  return false;
+  return null;
 };
 
 export interface ConditionalWriteResult {
@@ -193,7 +197,8 @@ export const checkConditionalWrite = (
   }
 
   const eTags = ifMatch.split(",").map((e) => e.trim());
-  const matches = eTags.some((tag) => compareETags(tag, currentETag, true));
+  // RFC 7232 §3.1: If-Match requires the strong comparison function.
+  const matches = eTags.some((tag) => compareETags(tag, currentETag, false));
 
   return { shouldProceed: matches, currentETag };
 };
@@ -221,17 +226,16 @@ export const parseReturnPreference = (
 };
 
 export const handleReturnPreference = (
-  res: Response,
+  c: Context,
   item: Record<string, unknown>,
   preference: ReturnPreference,
   config?: ETagConfig
-): void => {
+): Response => {
   const etag = generateETag(item, config);
-  res.set("ETag", etag);
+  c.header("ETag", etag);
 
   if (preference === "minimal") {
-    res.status(204).end();
-  } else {
-    res.json(item);
+    return c.body(null, 204);
   }
+  return c.json(item);
 };

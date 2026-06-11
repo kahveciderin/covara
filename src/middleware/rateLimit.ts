@@ -1,17 +1,16 @@
-import { Request, Response, NextFunction } from "express";
+import type { Context, MiddlewareHandler } from "hono";
 import { RateLimitError } from "@/resource/error";
-import { AuthenticatedRequest } from "@/auth/types";
-import { getGlobalKV, hasGlobalKV, KVAdapter } from "../kv";
+import { getClientIP } from "@/server/request";
+import { getGlobalKV, hasGlobalKV } from "../kv";
 
-// KV key prefix
 const RATE_LIMIT_PREFIX = "concave:ratelimit:";
 const SLIDING_WINDOW_PREFIX = "concave:ratelimit:sliding:";
 
 export interface RateLimitConfig {
   windowMs: number;
   maxRequests: number;
-  keyGenerator?: (req: Request) => string;
-  skip?: (req: Request) => boolean;
+  keyGenerator?: (c: Context) => string;
+  skip?: (c: Context) => boolean;
   message?: string;
   headers?: boolean;
   store?: RateLimitStore;
@@ -33,10 +32,13 @@ export interface RateLimitStore {
  */
 export class InMemoryRateLimitStore implements RateLimitStore {
   private store = new Map<string, { count: number; resetAt: number }>();
-  private cleanupInterval: NodeJS.Timeout | null = null;
+  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.cleanupInterval = setInterval(() => this.cleanup(), 60000);
+    if (typeof this.cleanupInterval === "object" && "unref" in this.cleanupInterval) {
+      this.cleanupInterval.unref();
+    }
   }
 
   async increment(key: string, windowMs: number): Promise<RateLimitInfo> {
@@ -91,36 +93,30 @@ export class KVRateLimitStore implements RateLimitStore {
     const kv = hasGlobalKV() ? getGlobalKV() : null;
 
     if (!kv) {
-      // Fallback to basic in-memory behavior
       return { count: 1, resetAt: Date.now() + windowMs };
     }
 
     const kvKey = `${RATE_LIMIT_PREFIX}${key}`;
     const now = Date.now();
 
-    // Get current state
     const data = await kv.hgetall(kvKey);
 
     let count: number;
     let resetAt: number;
 
     if (!data.resetAt || parseInt(data.resetAt, 10) <= now) {
-      // Window expired or new key, start fresh
       count = 1;
       resetAt = now + windowMs;
     } else {
-      // Within window, increment
       count = (parseInt(data.count, 10) || 0) + 1;
       resetAt = parseInt(data.resetAt, 10);
     }
 
-    // Store updated state
     await kv.hmset(kvKey, {
       count: String(count),
       resetAt: String(resetAt),
     });
 
-    // Set expiry to auto-cleanup
     const ttl = Math.ceil((resetAt - now) / 1000) + 1;
     await kv.expire(kvKey, ttl);
 
@@ -148,18 +144,15 @@ export class KVRateLimitStore implements RateLimitStore {
   }
 }
 
-const defaultKeyGenerator = (req: Request): string => {
-  const authReq = req as AuthenticatedRequest;
-  const userId = authReq.user?.id;
-  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+const defaultKeyGenerator = (c: Context): string => {
+  const userId = c.get("user")?.id;
 
   if (userId) {
     return `user:${userId}`;
   }
-  return `ip:${ip}`;
+  return `ip:${getClientIP(c)}`;
 };
 
-// Default store - uses KV if available, otherwise in-memory
 let defaultStore: RateLimitStore | null = null;
 
 const getDefaultStore = (): RateLimitStore => {
@@ -173,7 +166,7 @@ const getDefaultStore = (): RateLimitStore => {
   return defaultStore;
 };
 
-export const createRateLimiter = (config: RateLimitConfig) => {
+export const createRateLimiter = (config: RateLimitConfig): MiddlewareHandler => {
   const {
     windowMs,
     maxRequests,
@@ -184,40 +177,32 @@ export const createRateLimiter = (config: RateLimitConfig) => {
     store,
   } = config;
 
-  return async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> => {
-    try {
-      if (skip?.(req)) {
-        return next();
-      }
+  return async (c, next) => {
+    if (skip?.(c)) {
+      return next();
+    }
 
-      const key = keyGenerator(req);
-      const actualStore = store ?? getDefaultStore();
-      const info = await actualStore.increment(key, windowMs);
+    const key = keyGenerator(c);
+    const actualStore = store ?? getDefaultStore();
+    const info = await actualStore.increment(key, windowMs);
+
+    if (headers) {
+      c.header("X-RateLimit-Limit", String(maxRequests));
+      c.header("X-RateLimit-Remaining", String(Math.max(0, maxRequests - info.count)));
+      c.header("X-RateLimit-Reset", String(Math.ceil(info.resetAt / 1000)));
+    }
+
+    if (info.count > maxRequests) {
+      const retryAfter = Math.ceil((info.resetAt - Date.now()) / 1000);
 
       if (headers) {
-        res.setHeader("X-RateLimit-Limit", maxRequests);
-        res.setHeader("X-RateLimit-Remaining", Math.max(0, maxRequests - info.count));
-        res.setHeader("X-RateLimit-Reset", Math.ceil(info.resetAt / 1000));
+        c.header("Retry-After", String(retryAfter));
       }
 
-      if (info.count > maxRequests) {
-        const retryAfter = Math.ceil((info.resetAt - Date.now()) / 1000);
-
-        if (headers) {
-          res.setHeader("Retry-After", retryAfter);
-        }
-
-        throw new RateLimitError(retryAfter);
-      }
-
-      next();
-    } catch (error) {
-      next(error);
+      throw new RateLimitError(retryAfter, message);
     }
+
+    return next();
   };
 };
 
@@ -225,7 +210,7 @@ export const createRateLimiter = (config: RateLimitConfig) => {
  * Sliding window rate limiter using sorted sets in KV
  * More accurate than fixed window but more expensive
  */
-export const createSlidingWindowRateLimiter = (config: RateLimitConfig) => {
+export const createSlidingWindowRateLimiter = (config: RateLimitConfig): MiddlewareHandler => {
   const {
     windowMs,
     maxRequests,
@@ -234,7 +219,6 @@ export const createSlidingWindowRateLimiter = (config: RateLimitConfig) => {
     headers = true,
   } = config;
 
-  // In-memory fallback
   const localRequests = new Map<string, number[]>();
 
   const cleanupLocal = (key: string, now: number): number[] => {
@@ -249,98 +233,81 @@ export const createSlidingWindowRateLimiter = (config: RateLimitConfig) => {
     return valid;
   };
 
-  return async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> => {
-    try {
-      if (skip?.(req)) {
-        return next();
+  return async (c, next) => {
+    if (skip?.(c)) {
+      return next();
+    }
+
+    const key = keyGenerator(c);
+    const now = Date.now();
+    const cutoff = now - windowMs;
+
+    const kv = hasGlobalKV() ? getGlobalKV() : null;
+
+    let requestCount: number;
+    let oldestTimestamp: number | null = null;
+
+    if (kv) {
+      const kvKey = `${SLIDING_WINDOW_PREFIX}${key}`;
+
+      const oldEntries = await kv.zrangebyscore(kvKey, "-inf", cutoff);
+      if (oldEntries.length > 0) {
+        await kv.zrem(kvKey, ...oldEntries);
       }
 
-      const key = keyGenerator(req);
-      const now = Date.now();
-      const cutoff = now - windowMs;
+      await kv.zadd(kvKey, now, `${now}:${Math.random()}`);
 
-      const kv = hasGlobalKV() ? getGlobalKV() : null;
+      await kv.expire(kvKey, Math.ceil(windowMs / 1000) + 1);
 
-      let requestCount: number;
-      let oldestTimestamp: number | null = null;
+      requestCount = await kv.zcard(kvKey);
 
-      if (kv) {
-        const kvKey = `${SLIDING_WINDOW_PREFIX}${key}`;
-
-        // Remove old entries and add new one atomically using a transaction
-        const tx = kv.multi();
-
-        // First, remove old entries (can't do in transaction easily, do separately)
-        const oldEntries = await kv.zrangebyscore(kvKey, "-inf", cutoff);
-        if (oldEntries.length > 0) {
-          await kv.zrem(kvKey, ...oldEntries);
+      if (requestCount >= maxRequests) {
+        const oldest = await kv.zrange(kvKey, 0, 0);
+        if (oldest.length > 0) {
+          oldestTimestamp = parseInt(oldest[0].split(":")[0], 10);
         }
+      }
+    } else {
+      const timestamps = cleanupLocal(key, now);
+      requestCount = timestamps.length;
 
-        // Add current request
-        await kv.zadd(kvKey, now, `${now}:${Math.random()}`);
-
-        // Set expiry
-        await kv.expire(kvKey, Math.ceil(windowMs / 1000) + 1);
-
-        // Get current count
-        requestCount = await kv.zcard(kvKey);
-
-        // Get oldest timestamp if at limit
-        if (requestCount >= maxRequests) {
-          const oldest = await kv.zrange(kvKey, 0, 0);
-          if (oldest.length > 0) {
-            oldestTimestamp = parseInt(oldest[0].split(":")[0], 10);
-          }
-        }
+      if (requestCount >= maxRequests) {
+        oldestTimestamp = timestamps[0] ?? null;
       } else {
-        // Fallback to local state
-        const timestamps = cleanupLocal(key, now);
+        timestamps.push(now);
+        localRequests.set(key, timestamps);
         requestCount = timestamps.length;
-
-        if (requestCount >= maxRequests) {
-          oldestTimestamp = timestamps[0] ?? null;
-        } else {
-          timestamps.push(now);
-          localRequests.set(key, timestamps);
-          requestCount = timestamps.length;
-        }
       }
+    }
+
+    if (headers) {
+      c.header("X-RateLimit-Limit", String(maxRequests));
+      c.header("X-RateLimit-Remaining", String(Math.max(0, maxRequests - requestCount)));
+    }
+
+    if (requestCount > maxRequests && oldestTimestamp) {
+      const retryAfter = Math.ceil((oldestTimestamp + windowMs - now) / 1000);
 
       if (headers) {
-        res.setHeader("X-RateLimit-Limit", maxRequests);
-        res.setHeader("X-RateLimit-Remaining", Math.max(0, maxRequests - requestCount));
+        c.header("Retry-After", String(retryAfter));
+        c.header("X-RateLimit-Reset", String(Math.ceil((oldestTimestamp + windowMs) / 1000)));
       }
 
-      if (requestCount > maxRequests && oldestTimestamp) {
-        const retryAfter = Math.ceil((oldestTimestamp + windowMs - now) / 1000);
-
-        if (headers) {
-          res.setHeader("Retry-After", retryAfter);
-          res.setHeader("X-RateLimit-Reset", Math.ceil((oldestTimestamp + windowMs) / 1000));
-        }
-
-        throw new RateLimitError(retryAfter);
-      }
-
-      next();
-    } catch (error) {
-      next(error);
+      throw new RateLimitError(retryAfter);
     }
+
+    return next();
   };
 };
 
 export const createResourceRateLimiter = (
   resourceName: string,
   config: RateLimitConfig
-) => {
+): MiddlewareHandler => {
   return createRateLimiter({
     ...config,
-    keyGenerator: (req) => {
-      const baseKey = config.keyGenerator?.(req) ?? defaultKeyGenerator(req);
+    keyGenerator: (c) => {
+      const baseKey = config.keyGenerator?.(c) ?? defaultKeyGenerator(c);
       return `${resourceName}:${baseKey}`;
     },
   });
@@ -358,7 +325,7 @@ export const createOperationRateLimiter = (
   resourceName: string,
   limits: OperationRateLimits
 ) => {
-  const limiters: Record<string, ReturnType<typeof createRateLimiter>> = {};
+  const limiters: Record<string, MiddlewareHandler> = {};
 
   for (const [op, config] of Object.entries(limits)) {
     if (config) {
@@ -366,8 +333,10 @@ export const createOperationRateLimiter = (
     }
   }
 
-  return (operation: keyof OperationRateLimits) => {
-    return limiters[operation] ?? ((_req: Request, _res: Response, next: NextFunction) => next());
+  const passthrough: MiddlewareHandler = async (_c, next) => next();
+
+  return (operation: keyof OperationRateLimits): MiddlewareHandler => {
+    return limiters[operation] ?? passthrough;
   };
 };
 

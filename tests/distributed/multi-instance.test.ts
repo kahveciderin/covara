@@ -1,15 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import request from "supertest";
+import { Hono } from "hono";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import http from "http";
 import { useResource } from "@/resource/hook";
 import { createMemoryKV, setGlobalKV } from "@/kv";
+import { createTestApp, get, post, patch, del } from "../helpers/hono";
 
 const testItemsTable = sqliteTable("test_items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -17,33 +16,15 @@ const testItemsTable = sqliteTable("test_items", {
   value: integer("value").notNull(),
 });
 
-const injectTestUser = (req: Request, _res: Response, next: NextFunction) => {
-  (req as any).user = { id: "test-user", roles: ["admin"] };
-  next();
-};
-
-const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err.statusCode || err.status || 500;
-  res.status(status).json({
-    type: err.type || "/__concave/problems/internal-error",
-    title: err.title || "Error",
-    status,
-    detail: err.message,
-  });
-};
-
-const createTestServer = (db: any): Express => {
-  const app = express();
-  app.use(express.json());
-  app.use(injectTestUser);
-  app.use(
+const createTestServer = (db: any): Hono => {
+  const app = createTestApp({ user: {} });
+  app.route(
     "/items",
     useResource(testItemsTable, {
       id: testItemsTable.id,
       db,
     })
   );
-  app.use(errorHandler);
   return app;
 };
 
@@ -89,14 +70,13 @@ describe("Multi-Instance Distributed Tests", () => {
     const instance1 = createTestServer(db);
     const instance2 = createTestServer(db);
 
-    const createRes = await request(instance1)
-      .post("/items")
-      .send({ name: "SharedItem", value: 100 })
-      .expect(201);
+    const createRes = await post(instance1, "/items", { name: "SharedItem", value: 100 });
+    expect(createRes.status).toBe(201);
 
     const itemId = createRes.body.id;
 
-    const getRes = await request(instance2).get(`/items/${itemId}`).expect(200);
+    const getRes = await get(instance2, `/items/${itemId}`);
+    expect(getRes.status).toBe(200);
 
     expect(getRes.body.name).toBe("SharedItem");
     expect(getRes.body.value).toBe(100);
@@ -106,19 +86,16 @@ describe("Multi-Instance Distributed Tests", () => {
     const instance1 = createTestServer(db);
     const instance2 = createTestServer(db);
 
-    const createRes = await request(instance1)
-      .post("/items")
-      .send({ name: "ToUpdate", value: 50 })
-      .expect(201);
+    const createRes = await post(instance1, "/items", { name: "ToUpdate", value: 50 });
+    expect(createRes.status).toBe(201);
 
     const itemId = createRes.body.id;
 
-    await request(instance2)
-      .patch(`/items/${itemId}`)
-      .send({ value: 150 })
-      .expect(200);
+    const patchRes = await patch(instance2, `/items/${itemId}`, { value: 150 });
+    expect(patchRes.status).toBe(200);
 
-    const getRes = await request(instance1).get(`/items/${itemId}`).expect(200);
+    const getRes = await get(instance1, `/items/${itemId}`);
+    expect(getRes.status).toBe(200);
 
     expect(getRes.body.value).toBe(150);
   });
@@ -127,16 +104,16 @@ describe("Multi-Instance Distributed Tests", () => {
     const instance1 = createTestServer(db);
     const instance2 = createTestServer(db);
 
-    const createRes = await request(instance1)
-      .post("/items")
-      .send({ name: "ToDelete", value: 200 })
-      .expect(201);
+    const createRes = await post(instance1, "/items", { name: "ToDelete", value: 200 });
+    expect(createRes.status).toBe(201);
 
     const itemId = createRes.body.id;
 
-    await request(instance2).delete(`/items/${itemId}`).expect(204);
+    const deleteRes = await del(instance2, `/items/${itemId}`);
+    expect(deleteRes.status).toBe(204);
 
-    await request(instance1).get(`/items/${itemId}`).expect(404);
+    const getRes = await get(instance1, `/items/${itemId}`);
+    expect(getRes.status).toBe(404);
   });
 
   it("should maintain consistency with concurrent writes to different instances", async () => {
@@ -146,10 +123,10 @@ describe("Multi-Instance Distributed Tests", () => {
     const items: number[] = [];
 
     const createPromises = [
-      request(instance1).post("/items").send({ name: "Item1", value: 1 }),
-      request(instance2).post("/items").send({ name: "Item2", value: 2 }),
-      request(instance1).post("/items").send({ name: "Item3", value: 3 }),
-      request(instance2).post("/items").send({ name: "Item4", value: 4 }),
+      post(instance1, "/items", { name: "Item1", value: 1 }),
+      post(instance2, "/items", { name: "Item2", value: 2 }),
+      post(instance1, "/items", { name: "Item3", value: 3 }),
+      post(instance2, "/items", { name: "Item4", value: 4 }),
     ];
 
     const results = await Promise.all(createPromises);
@@ -159,8 +136,10 @@ describe("Multi-Instance Distributed Tests", () => {
       items.push(res.body.id);
     }
 
-    const listRes1 = await request(instance1).get("/items").expect(200);
-    const listRes2 = await request(instance2).get("/items").expect(200);
+    const listRes1 = await get(instance1, "/items");
+    expect(listRes1.status).toBe(200);
+    const listRes2 = await get(instance2, "/items");
+    expect(listRes2.status).toBe(200);
 
     expect(listRes1.body.items.length).toBe(4);
     expect(listRes2.body.items.length).toBe(4);
@@ -170,14 +149,16 @@ describe("Multi-Instance Distributed Tests", () => {
     const instance1 = createTestServer(db);
     const instance2 = createTestServer(db);
 
-    await request(instance1).post("/items").send({ name: "A", value: 10 }).expect(201);
-    await request(instance2).post("/items").send({ name: "B", value: 20 }).expect(201);
-    await request(instance1).post("/items").send({ name: "C", value: 30 }).expect(201);
+    expect((await post(instance1, "/items", { name: "A", value: 10 })).status).toBe(201);
+    expect((await post(instance2, "/items", { name: "B", value: 20 })).status).toBe(201);
+    expect((await post(instance1, "/items", { name: "C", value: 30 })).status).toBe(201);
 
     const filter = encodeURIComponent("value>15");
 
-    const filterRes1 = await request(instance1).get(`/items?filter=${filter}`).expect(200);
-    const filterRes2 = await request(instance2).get(`/items?filter=${filter}`).expect(200);
+    const filterRes1 = await get(instance1, `/items?filter=${filter}`);
+    expect(filterRes1.status).toBe(200);
+    const filterRes2 = await get(instance2, `/items?filter=${filter}`);
+    expect(filterRes2.status).toBe(200);
 
     expect(filterRes1.body.items.length).toBe(2);
     expect(filterRes2.body.items.length).toBe(2);
@@ -187,12 +168,14 @@ describe("Multi-Instance Distributed Tests", () => {
     const instance1 = createTestServer(db);
     const instance2 = createTestServer(db);
 
-    await request(instance1).post("/items").send({ name: "Count1", value: 5 }).expect(201);
-    await request(instance2).post("/items").send({ name: "Count2", value: 10 }).expect(201);
-    await request(instance1).post("/items").send({ name: "Count3", value: 15 }).expect(201);
+    expect((await post(instance1, "/items", { name: "Count1", value: 5 })).status).toBe(201);
+    expect((await post(instance2, "/items", { name: "Count2", value: 10 })).status).toBe(201);
+    expect((await post(instance1, "/items", { name: "Count3", value: 15 })).status).toBe(201);
 
-    const countRes1 = await request(instance1).get("/items/count").expect(200);
-    const countRes2 = await request(instance2).get("/items/count").expect(200);
+    const countRes1 = await get(instance1, "/items/count");
+    expect(countRes1.status).toBe(200);
+    const countRes2 = await get(instance2, "/items/count");
+    expect(countRes2.status).toBe(200);
 
     expect(countRes1.body.count).toBe(3);
     expect(countRes2.body.count).toBe(3);

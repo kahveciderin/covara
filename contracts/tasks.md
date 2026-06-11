@@ -4,7 +4,8 @@
 
 ### Execution Semantics
 - **At-least-once execution**: Every scheduled task will be attempted at least once (unless cancelled)
-- **Idempotency key respect**: Tasks with same idempotency key execute at most once within TTL
+- **Idempotency key respect**: Tasks with the same `idempotencyKey` run the handler at most once within `idempotencyRetentionMs` (default 24h); subsequent executions return the stored result. Requires a shared KV store to hold across workers/instances
+- **Concurrency cap**: `maxConcurrency` is enforced via a distributed counter — at most N instances of a task type run concurrently across the fleet; a worker that can't reserve a slot leaves the task for another
 - **State machine validity**: Tasks only transition through valid states:
   ```
   scheduled → claimed → running → success|failed|retry
@@ -25,8 +26,23 @@
 
 ### Recurring Tasks
 - **Scheduled execution**: Recurring tasks execute at specified intervals
-- **No pile-up**: Missed executions during downtime don't cause burst of catchup runs
+- **Timezone honored**: Cron schedules are evaluated in the configured `timezone` (default UTC), so DST transitions shift wall-clock fire times correctly
+- **Configurable catchup**: A `catchup` policy controls how missed occurrences (worker downtime / delayed tick) are handled — `"skip"` (default, fire once, no pile-up), `"last"` (coalesce all missed runs into a single execution), or `"all"` (re-run each missed occurrence between `lastRunAt` and now, bounded to 1000 per tick)
 - **Drift control**: Fixed-rate vs fixed-delay semantics are explicit and honored
+
+### Dead Letter Queue
+- **Replay lineage**: Replaying a DLQ entry preserves `originalTaskId` and increments a `replayCount` that survives across repeated failures/replays; replays may carry an optional `replayedBy` actor and are recorded in a replay audit log
+- **Alerting hook**: An optional `onDlqEnqueue` callback fires whenever a task lands in the DLQ (failures in the hook never affect DLQ persistence)
+- **Bounded replay**: `retryAll` is bounded by a `limit` (default 100) and audited
+- **Metrics**: `metrics()` exposes the current DLQ count and oldest-entry age
+
+### Progress, Heartbeat, Result TTL
+- **Progress reporting**: Handlers receive `ctx.reportProgress(percent, message?)` which persists progress (clamped 0–100) so a monitor can read it via `storage.getProgress`
+- **Heartbeat**: Running tasks update `lastHeartbeatAt` independently of lock extension, so a stalled task is detectable even while its lock is still valid
+- **Result TTL**: `resultTtlMs` (default 24h) sets `resultExpiresAt` on completed/failed records; expired records are removed lazily on the next read rather than accumulating forever
+
+### Cloudflare Queues Backend
+- **Push delivery**: `createCloudflareQueueProducer(binding)` enqueues tasks onto a Workers Queue and `createQueueConsumer({ kv, registry })` executes them from a `MessageBatch`, acking on success/dead-letter and retrying (with backoff `delaySeconds`) on retryable failure — no long-lived poller required
 
 ## Non-Guarantees
 
@@ -36,9 +52,10 @@
 - ❌ **Clock accuracy**: System depends on reasonable clock accuracy (±seconds, not milliseconds)
 
 ### Execution (What We Don't Promise)
-- ❌ **Exactly-once**: We provide at-least-once; idempotency is caller's responsibility
+- ❌ **Exactly-once**: Delivery is at-least-once. `idempotencyKey` gives effectively-once execution within the retention window when a shared KV is configured, but without an idempotency key (or with a memory KV that isn't shared) a task may run more than once
+- ❌ **Concurrency cap without shared KV**: `maxConcurrency` enforcement relies on the shared counter; with the per-process memory KV it only bounds a single instance
 - ❌ **Execution duration limits**: Tasks can run indefinitely (unless timeout configured)
-- ❌ **Result persistence**: Task results are not permanently stored by default
+- ❌ **Permanent result persistence**: Completed task records (including results) are retained only until `resultExpiresAt` (`resultTtlMs`, default 24h), then removed on the next read; they are not kept forever
 
 ### Distributed (What We Don't Promise)
 - ❌ **Fair distribution**: Work distribution across workers is best-effort, not guaranteed fair

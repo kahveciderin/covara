@@ -90,7 +90,7 @@ export const createFileClient = (config: FileClientConfig): FileClient => {
           try {
             const response = JSON.parse(xhr.responseText);
             resolve(response.data as UploadedFile);
-          } catch (error) {
+          } catch {
             reject(new Error("Invalid response format"));
           }
         } else {

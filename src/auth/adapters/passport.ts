@@ -1,17 +1,10 @@
-import { Request, Router } from "express";
+import { Hono, type Context } from "hono";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { BaseAuthAdapter, createUserContext } from "../adapter";
 import { AuthCredentials, AuthResult, SessionData, SessionStore } from "../types";
 import { UserContext } from "@/resource/types";
-
-declare module "express" {
-  interface Request {
-    isAuthenticated?(): boolean;
-    user?: any;
-    session?: any;
-    sessionID?: string;
-    logout?(callback: (err?: Error) => void): void;
-  }
-}
+import { readJsonBody } from "@/server/request";
+import { isProduction } from "@/server/env";
 
 export interface PassportAdapterOptions {
   getUserById: (id: string) => Promise<{
@@ -57,22 +50,18 @@ export class PassportAdapter extends BaseAuthAdapter {
     this.getUserContextFn = options.getUserContext;
   }
 
-  extractCredentials(req: Request): AuthCredentials | null {
-    if (req.isAuthenticated?.() && req.user) {
-      return { type: "session", sessionId: (req.session as any)?.id };
-    }
-
-    const passportSessionId = req.cookies?.["connect.sid"] ?? req.sessionID;
-    if (passportSessionId && (req.session as any)?.passport?.user) {
+  extractCredentials(c: Context): AuthCredentials | null {
+    const passportSessionId = getCookie(c, "connect.sid");
+    if (passportSessionId) {
       return { type: "session", sessionId: passportSessionId };
     }
 
-    const sessionCookie = req.cookies?.session;
+    const sessionCookie = getCookie(c, "session");
     if (sessionCookie) {
       return { type: "session", sessionId: sessionCookie };
     }
 
-    const authHeader = req.headers.authorization;
+    const authHeader = c.req.header("authorization");
     if (authHeader?.startsWith("Bearer ")) {
       return { type: "bearer", token: authHeader.slice(7) };
     }
@@ -84,7 +73,7 @@ export class PassportAdapter extends BaseAuthAdapter {
       return { type: "basic", username, password };
     }
 
-    const apiKey = req.headers["x-api-key"];
+    const apiKey = c.req.header("x-api-key");
     if (typeof apiKey === "string") {
       return { type: "apiKey", apiKey };
     }
@@ -212,71 +201,73 @@ export class PassportAdapter extends BaseAuthAdapter {
     return createUserContext(user, session);
   }
 
-  getRoutes(): Router {
-    const router = Router();
+  getRoutes(): Hono {
+    const router = new Hono();
 
-    router.get("/session", async (req, res) => {
-      const credentials = this.extractCredentials(req);
+    router.get("/session", async (c) => {
+      const credentials = this.extractCredentials(c);
       if (!credentials) {
-        return res.json({ user: null });
+        return c.json({ user: null });
       }
 
       const result = await this.validateCredentials(credentials);
       if (!result.success) {
-        return res.json({ user: null });
+        return c.json({ user: null });
       }
 
-      res.json({ user: result.user, expiresAt: result.expiresAt });
+      return c.json({ user: result.user, expiresAt: result.expiresAt });
     });
 
     if (this.validatePassword) {
-      router.post("/login", async (req, res) => {
-        const { username, password } = req.body;
+      router.post("/login", async (c) => {
+        const { username, password } = (await readJsonBody(c)) as {
+          username?: string;
+          password?: string;
+        };
 
         if (!username || !password) {
-          return res.status(400).json({
-            error: { code: "INVALID_INPUT", message: "Username and password required" },
-          });
+          return c.json(
+            {
+              error: { code: "INVALID_INPUT", message: "Username and password required" },
+            },
+            400
+          );
         }
 
         const user = await this.validatePassword!(username, password);
         if (!user) {
-          return res.status(401).json({
-            error: { code: "INVALID_CREDENTIALS", message: "Invalid username or password" },
-          });
+          return c.json(
+            {
+              error: { code: "INVALID_CREDENTIALS", message: "Invalid username or password" },
+            },
+            401
+          );
         }
 
         const session = await this.createSession(user.id);
         const userContext = this.createContext(user, session);
 
-        res.cookie("session", session.id, {
+        setCookie(c, "session", session.id, {
           httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
+          secure: isProduction(),
           sameSite: "lax",
           expires: session.expiresAt,
         });
 
-        res.json({ user: userContext, sessionId: session.id });
+        return c.json({ user: userContext, sessionId: session.id });
       });
     }
 
-    router.post("/logout", async (req, res) => {
-      const credentials = this.extractCredentials(req);
+    router.post("/logout", async (c) => {
+      const credentials = this.extractCredentials(c);
       if (credentials?.sessionId) {
         await this.invalidateSession(credentials.sessionId);
       }
 
-      res.clearCookie("session");
-      res.clearCookie("connect.sid");
+      deleteCookie(c, "session");
+      deleteCookie(c, "connect.sid");
 
-      const logout = (req as any).logout;
-      if (logout) {
-        logout((err: Error | undefined) => {
-          if (err) console.error("Passport logout error:", err);
-        });
-      }
-
-      res.json({ success: true });
+      return c.json({ success: true });
     });
 
     return router;

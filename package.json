@@ -1,11 +1,14 @@
 {
   "name": "@kahveciderin/concave",
   "version": "0.5.7",
-  "description": "Real-time resource API framework for Express.js with TypeScript client",
+  "description": "Real-time resource API framework built on Hono — runs standalone (Node) and on Cloudflare Workers, with a TypeScript client",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "concave": "./dist/cli/index.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -39,6 +42,26 @@
       "types": "./dist/oidc/index.d.ts",
       "import": "./dist/oidc/index.js"
     },
+    "./search": {
+      "types": "./dist/search/index.d.ts",
+      "import": "./dist/search/index.js"
+    },
+    "./db": {
+      "types": "./dist/db/index.d.ts",
+      "import": "./dist/db/index.js"
+    },
+    "./email": {
+      "types": "./dist/email/index.d.ts",
+      "import": "./dist/email/index.js"
+    },
+    "./billing": {
+      "types": "./dist/billing/index.d.ts",
+      "import": "./dist/billing/index.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "import": "./dist/storage/index.js"
+    },
     "./openapi": {
       "types": "./dist/openapi/index.d.ts",
       "import": "./dist/openapi/index.js"
@@ -63,9 +86,21 @@
       "types": "./dist/middleware/logging.d.ts",
       "import": "./dist/middleware/logging.js"
     },
+    "./middleware/securityHeaders": {
+      "types": "./dist/middleware/securityHeaders.d.ts",
+      "import": "./dist/middleware/securityHeaders.js"
+    },
     "./env": {
       "types": "./dist/env/index.d.ts",
       "import": "./dist/env/index.js"
+    },
+    "./node": {
+      "types": "./dist/server/node.d.ts",
+      "import": "./dist/server/node.js"
+    },
+    "./server": {
+      "types": "./dist/server/app.d.ts",
+      "import": "./dist/server/app.js"
     }
   },
   "files": [
@@ -73,11 +108,15 @@
     "README.md",
     "LICENSE"
   ],
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json && tsc-alias -p tsconfig.json --resolve-full-paths",
     "prepublishOnly": "npm run build && npm run test",
     "start": "node dist/index.js",
     "lint": "eslint 'src/**/*.ts'",
@@ -99,7 +138,9 @@
     "api",
     "rest",
     "realtime",
-    "express",
+    "hono",
+    "cloudflare-workers",
+    "edge",
     "drizzle",
     "orm",
     "crud",
@@ -122,24 +163,20 @@
     "url": "https://github.com/kahveciderin/concave/issues"
   },
   "dependencies": {
+    "@hono/node-server": "^2.0.4",
     "@opensearch-project/opensearch": "^3.5.1",
-    "cookie-parser": "^1.4.7",
     "cron-parser": "^5.4.0",
-    "dotenv": "^17.2.3",
     "drizzle-zod": "^0.8.3",
+    "hono": "^4.12.25",
     "jsonwebtoken": "^9.0.3",
     "uuid": "^13.0.0"
   },
   "peerDependencies": {
     "drizzle-orm": ">=0.30.0",
-    "express": ">=4.0.0",
     "react": ">=18.0.0",
     "zod": ">=3.0.0"
   },
   "peerDependenciesMeta": {
-    "express": {
-      "optional": true
-    },
     "react": {
       "optional": true
     }
@@ -148,26 +185,21 @@
     "@electric-sql/pglite": "^0.3.15",
     "@libsql/client": "^0.17.0",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/cookie-parser": "^1.4.8",
-    "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.0.8",
     "@types/react": "^18.3.12",
-    "@types/supertest": "^6.0.3",
     "@types/uuid": "^10.0.0",
     "better-sqlite3": "^12.6.0",
     "drizzle-kit": "^0.31.8",
     "drizzle-orm": "^0.45.1",
+    "esbuild": "^0.28.0",
     "eslint": "^9.39.2",
-    "express": "^5.2.1",
     "fast-check": "^4.5.3",
-    "nodemon": "^3.1.11",
     "prettier": "^3.8.0",
-    "supertest": "^7.2.2",
-    "ts-node": "^10.9.2",
     "tsc-alias": "^1.8.16",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.61.0",
     "vitest": "^3.1.4",
     "zod": "^4.3.5"
   }

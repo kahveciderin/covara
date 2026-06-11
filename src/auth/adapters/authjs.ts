@@ -1,4 +1,5 @@
-import { Request, Router } from "express";
+import { Hono, type Context } from "hono";
+import { getCookie, deleteCookie } from "hono/cookie";
 import { eq, and, gt } from "drizzle-orm";
 import { SQLiteTableWithColumns } from "drizzle-orm/sqlite-core";
 import { BaseAuthAdapter, createUserContext } from "../adapter";
@@ -34,17 +35,17 @@ export class AuthJsAdapter extends BaseAuthAdapter {
     this.getUserContextFn = options.getUserContext;
   }
 
-  extractCredentials(req: Request): AuthCredentials | null {
-    const sessionToken = req.cookies?.["authjs.session-token"] ??
-      req.cookies?.["__Secure-authjs.session-token"] ??
-      req.cookies?.["next-auth.session-token"] ??
-      req.cookies?.["__Secure-next-auth.session-token"];
+  extractCredentials(c: Context): AuthCredentials | null {
+    const sessionToken = getCookie(c, "authjs.session-token") ??
+      getCookie(c, "__Secure-authjs.session-token") ??
+      getCookie(c, "next-auth.session-token") ??
+      getCookie(c, "__Secure-next-auth.session-token");
 
     if (sessionToken) {
       return { type: "session", sessionId: sessionToken };
     }
 
-    const authHeader = req.headers.authorization;
+    const authHeader = c.req.header("authorization");
     if (authHeader?.startsWith("Bearer ")) {
       return { type: "bearer", token: authHeader.slice(7) };
     }
@@ -159,31 +160,31 @@ export class AuthJsAdapter extends BaseAuthAdapter {
     }
   }
 
-  getRoutes(): Router {
-    const router = Router();
+  getRoutes(): Hono {
+    const router = new Hono();
 
-    router.get("/session", async (req, res) => {
-      const credentials = this.extractCredentials(req);
+    router.get("/session", async (c) => {
+      const credentials = this.extractCredentials(c);
       if (!credentials) {
-        return res.json({ user: null });
+        return c.json({ user: null });
       }
 
       const result = await this.validateCredentials(credentials);
       if (!result.success) {
-        return res.json({ user: null });
+        return c.json({ user: null });
       }
 
-      res.json({ user: result.user, expiresAt: result.expiresAt });
+      return c.json({ user: result.user, expiresAt: result.expiresAt });
     });
 
-    router.post("/logout", async (req, res) => {
-      const credentials = this.extractCredentials(req);
+    router.post("/logout", async (c) => {
+      const credentials = this.extractCredentials(c);
       if (credentials?.sessionId) {
         await this.invalidateSession(credentials.sessionId);
       }
-      res.clearCookie("authjs.session-token");
-      res.clearCookie("__Secure-authjs.session-token");
-      res.json({ success: true });
+      deleteCookie(c, "authjs.session-token");
+      deleteCookie(c, "__Secure-authjs.session-token");
+      return c.json({ success: true });
     });
 
     return router;

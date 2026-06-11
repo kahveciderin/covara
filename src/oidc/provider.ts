@@ -1,5 +1,4 @@
-import { Router, Request, Response, NextFunction } from "express";
-import cookieParser from "cookie-parser";
+import { Hono, type MiddlewareHandler } from "hono";
 import {
   AuthBackend,
   OIDCClient,
@@ -11,22 +10,25 @@ import {
 import { createKeyManager } from "./keys";
 import { createTokenService } from "./tokens";
 import { generateDiscoveryDocument } from "./discovery";
-import { createStores, InMemoryClientStore } from "./stores";
+import { createStores } from "./stores";
 import {
   createAuthorizeEndpoint,
   createTokenEndpoint,
   createUserInfoEndpoint,
   createJWKSEndpoint,
   createLogoutEndpoint,
+  createRevocationEndpoint,
+  createIntrospectionEndpoint,
 } from "./endpoints";
+import { createRegisterEndpoint } from "./endpoints/register";
+import { createOIDCRateLimiter } from "./rate-limit";
 import { createLoginHandler, createConsentHandler } from "./ui";
 import { createEmailPasswordBackend, createFederatedBackend } from "./backends";
 import { InMemorySessionStore, SessionStore } from "@/auth/types";
-import { UserContext } from "@/resource/types";
 
 export interface OIDCProviderResult {
-  router: Router;
-  middleware: (req: Request, res: Response, next: NextFunction) => Promise<void>;
+  router: Hono;
+  middleware: MiddlewareHandler;
   stores: OIDCProviderStores;
   tokenService: TokenService;
 }
@@ -38,7 +40,7 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
     ? config.clients
     : [];
 
-  const stores = createStores(config.stores ?? { type: "memory" }, clients);
+  const stores = createStores(config.stores, clients);
 
   if (Array.isArray(config.clients)) {
     for (const client of config.clients) {
@@ -84,23 +86,29 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
     );
   }
 
-  const router = Router();
+  const router = new Hono();
 
-  router.use(cookieParser());
-  router.use((req, res, next) => {
-    if (req.is("application/x-www-form-urlencoded") || req.is("application/json")) {
-      return next();
-    }
-    next();
+  router.get("/.well-known/openid-configuration", (c) => {
+    return c.json(generateDiscoveryDocument(config));
   });
 
-  router.get("/.well-known/openid-configuration", (_req: Request, res: Response) => {
-    res.json(generateDiscoveryDocument(config));
-  });
+  const rl = config.security?.rateLimiting;
+  if (rl?.jwks) {
+    router.use("/jwks", createOIDCRateLimiter({ ...rl.jwks, prefix: "jwks" }));
+  }
+  if (rl?.token) {
+    router.use("/token", createOIDCRateLimiter({ ...rl.token, prefix: "token" }));
+  }
+  if (rl?.introspect) {
+    router.use(
+      "/introspect",
+      createOIDCRateLimiter({ ...rl.introspect, prefix: "introspect" })
+    );
+  }
 
-  router.use("/jwks", createJWKSEndpoint(keyManager));
+  router.route("/jwks", createJWKSEndpoint(keyManager));
 
-  router.use(
+  router.route(
     "/authorize",
     createAuthorizeEndpoint({
       config,
@@ -110,7 +118,7 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
     })
   );
 
-  router.use(
+  router.route(
     "/token",
     createTokenEndpoint({
       config,
@@ -120,7 +128,7 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
     })
   );
 
-  router.use(
+  router.route(
     "/userinfo",
     createUserInfoEndpoint({
       config,
@@ -129,7 +137,7 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
     })
   );
 
-  router.use(
+  router.route(
     "/logout",
     createLogoutEndpoint({
       config,
@@ -139,7 +147,23 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
     })
   );
 
-  router.use(
+  router.route(
+    "/revoke",
+    createRevocationEndpoint({
+      stores,
+      tokenService,
+    })
+  );
+
+  router.route(
+    "/introspect",
+    createIntrospectionEndpoint({
+      stores,
+      tokenService,
+    })
+  );
+
+  router.route(
     config.ui?.loginPath ?? "/login",
     createLoginHandler({
       config,
@@ -149,27 +173,32 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
     })
   );
 
-  router.use(
+  router.route(
     config.ui?.consentPath ?? "/consent",
     createConsentHandler({
       config,
       stores,
       findUserById,
+      sessionStore,
+    })
+  );
+
+  router.route(
+    "/register",
+    createRegisterEndpoint({
+      stores,
+      registration: config.registration,
     })
   );
 
   for (const backend of backends) {
     if (backend.getRoutes) {
-      router.use(`/auth/${backend.name}`, backend.getRoutes() as Router);
+      router.route(`/auth/${backend.name}`, backend.getRoutes());
     }
   }
 
-  const middleware = async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> => {
-    const authHeader = req.headers.authorization;
+  const middleware: MiddlewareHandler = async (c, next) => {
+    const authHeader = c.req.header("authorization");
     if (!authHeader?.startsWith("Bearer ")) {
       return next();
     }
@@ -178,16 +207,18 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
     const validation = await tokenService.validateAccessToken(token);
 
     if (!validation.valid || !validation.claims) {
-      res.status(401).json({
-        error: "invalid_token",
-        error_description: "Invalid or expired access token",
-      });
-      return;
+      return c.json(
+        {
+          error: "invalid_token",
+          error_description: "Invalid or expired access token",
+        },
+        401
+      );
     }
 
     const user = await findUserById(validation.claims.sub);
 
-    (req as Request & { user?: UserContext }).user = {
+    c.set("user", {
       id: validation.claims.sub,
       email: user?.email ?? null,
       name: user?.name ?? null,
@@ -196,9 +227,9 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
       sessionId: validation.claims.jti,
       sessionExpiresAt: new Date(validation.claims.exp * 1000),
       metadata: user?.metadata,
-    };
+    });
 
-    next();
+    return next();
   };
 
   return {

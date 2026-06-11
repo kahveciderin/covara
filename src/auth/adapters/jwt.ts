@@ -1,6 +1,7 @@
-import { Request, Response, NextFunction, Router } from "express";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import jwt, { SignOptions, VerifyOptions, Algorithm } from "jsonwebtoken";
-import { BaseAuthAdapter, createUserContext } from "../adapter";
+import { BaseAuthAdapter } from "../adapter";
 import {
   AuthCredentials,
   AuthResult,
@@ -8,6 +9,8 @@ import {
   SessionStore,
 } from "../types";
 import { UserContext } from "@/resource/types";
+import { readJsonBody } from "@/server/request";
+import { isProduction } from "@/server/env";
 
 export interface JWTPayload {
   sub: string;
@@ -55,6 +58,13 @@ export interface JWTAdapterOptions {
   ) => Promise<void>;
 }
 
+interface JWTRequestBody {
+  email?: string;
+  password?: string;
+  name?: string;
+  refreshToken?: string;
+}
+
 export class JWTAdapter extends BaseAuthAdapter {
   name = "jwt";
   private jwtConfig: Required<
@@ -85,14 +95,14 @@ export class JWTAdapter extends BaseAuthAdapter {
     this.onTokenRefreshFn = options.onTokenRefresh;
   }
 
-  extractCredentials(req: Request): AuthCredentials | null {
-    const authHeader = req.headers.authorization;
+  extractCredentials(c: Context): AuthCredentials | null {
+    const authHeader = c.req.header("authorization");
     if (authHeader?.startsWith("Bearer ")) {
       return { type: "bearer", token: authHeader.slice(7) };
     }
 
-    const refreshToken = req.cookies?.refreshToken;
-    if (refreshToken && req.path.endsWith("/refresh")) {
+    const refreshToken = getCookie(c, "refreshToken");
+    if (refreshToken && c.req.path.endsWith("/refresh")) {
       return { type: "bearer", token: refreshToken };
     }
 
@@ -246,98 +256,106 @@ export class JWTAdapter extends BaseAuthAdapter {
     }
   }
 
-  get middleware() {
-    return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+  get middleware(): MiddlewareHandler {
+    return async (c, next) => {
       try {
-        const credentials = this.extractCredentials(req);
+        const credentials = this.extractCredentials(c);
         if (!credentials) {
-          req.user = null;
           return next();
         }
 
         const result = await this.validateCredentials(credentials);
         if (!result.success || !result.user) {
-          req.user = null;
           return next();
         }
 
-        req.user = result.user;
-        next();
+        c.set("user", result.user);
+        return next();
       } catch {
-        req.user = null;
-        next();
+        return next();
       }
     };
   }
 
-  getRoutes(): Router {
-    const router = Router();
+  private setRefreshCookie(c: Context, refreshToken: string): void {
+    setCookie(c, "refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: isProduction(),
+      sameSite: "strict",
+      maxAge: this.jwtConfig.refreshTokenTtl,
+      path: "/",
+    });
+  }
 
-    router.get("/me", async (req, res) => {
-      const credentials = this.extractCredentials(req);
+  private async storeRefreshSession(accessToken: string, userId: string): Promise<void> {
+    if (!this.refreshStore) return;
+    const decoded = jwt.decode(accessToken) as JWTPayload;
+    const jti = `refresh:${decoded.jti}`;
+    await this.refreshStore.set(
+      jti,
+      {
+        id: jti,
+        userId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + this.jwtConfig.refreshTokenTtl * 1000),
+      },
+      this.jwtConfig.refreshTokenTtl * 1000
+    );
+  }
+
+  getRoutes(): Hono {
+    const router = new Hono();
+
+    router.get("/me", async (c) => {
+      const credentials = this.extractCredentials(c);
       if (!credentials) {
-        return res.json({ user: null });
+        return c.json({ user: null });
       }
 
       const result = await this.validateCredentials(credentials);
       if (!result.success) {
-        return res.json({ user: null });
+        return c.json({ user: null });
       }
 
-      res.json({ user: result.user, expiresAt: result.expiresAt });
+      return c.json({ user: result.user, expiresAt: result.expiresAt });
     });
 
     if (this.validatePasswordFn) {
-      router.post("/login", async (req, res) => {
-        const { email, password } = req.body;
+      router.post("/login", async (c) => {
+        const { email, password } = (await readJsonBody(c)) as JWTRequestBody;
 
         if (!email || !password) {
-          return res.status(400).json({
-            error: {
-              code: "INVALID_INPUT",
-              message: "Email and password required",
+          return c.json(
+            {
+              error: {
+                code: "INVALID_INPUT",
+                message: "Email and password required",
+              },
             },
-          });
+            400
+          );
         }
 
         const user = await this.validatePasswordFn!(email, password);
         if (!user) {
-          return res.status(401).json({
-            error: {
-              code: "INVALID_CREDENTIALS",
-              message: "Invalid email or password",
+          return c.json(
+            {
+              error: {
+                code: "INVALID_CREDENTIALS",
+                message: "Invalid email or password",
+              },
             },
-          });
+            401
+          );
         }
 
         const tokens = this.generateTokens(user);
 
-        if (this.refreshStore) {
-          const decoded = jwt.decode(tokens.accessToken) as JWTPayload;
-          const jti = `refresh:${decoded.jti}`;
-          await this.refreshStore.set(
-            jti,
-            {
-              id: jti,
-              userId: user.id,
-              createdAt: new Date(),
-              expiresAt: new Date(
-                Date.now() + this.jwtConfig.refreshTokenTtl * 1000
-              ),
-            },
-            this.jwtConfig.refreshTokenTtl * 1000
-          );
-        }
+        await this.storeRefreshSession(tokens.accessToken, user.id);
 
-        res.cookie("refreshToken", tokens.refreshToken, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
-          maxAge: this.jwtConfig.refreshTokenTtl * 1000,
-          path: "/",
-        });
+        this.setRefreshCookie(c, tokens.refreshToken);
 
-        res.json({
+        return c.json({
           accessToken: tokens.accessToken,
           expiresIn: tokens.expiresIn,
           tokenType: "Bearer",
@@ -346,80 +364,71 @@ export class JWTAdapter extends BaseAuthAdapter {
     }
 
     if (this.createUserFn) {
-      router.post("/signup", async (req, res) => {
-        const { email, password, name } = req.body;
+      router.post("/signup", async (c) => {
+        const { email, password, name } = (await readJsonBody(c)) as JWTRequestBody;
 
         if (!email || !password) {
-          return res.status(400).json({
-            error: {
-              code: "INVALID_INPUT",
-              message: "Email and password required",
+          return c.json(
+            {
+              error: {
+                code: "INVALID_INPUT",
+                message: "Email and password required",
+              },
             },
-          });
+            400
+          );
         }
 
         try {
           const user = await this.createUserFn!({ email, password, name });
           const tokens = this.generateTokens(user);
 
-          if (this.refreshStore) {
-            const decoded = jwt.decode(tokens.accessToken) as JWTPayload;
-            const jti = `refresh:${decoded.jti}`;
-            await this.refreshStore.set(
-              jti,
-              {
-                id: jti,
-                userId: user.id,
-                createdAt: new Date(),
-                expiresAt: new Date(
-                  Date.now() + this.jwtConfig.refreshTokenTtl * 1000
-                ),
+          await this.storeRefreshSession(tokens.accessToken, user.id);
+
+          this.setRefreshCookie(c, tokens.refreshToken);
+
+          return c.json(
+            {
+              accessToken: tokens.accessToken,
+              expiresIn: tokens.expiresIn,
+              tokenType: "Bearer",
+              user: {
+                id: user.id,
+                email: user.email,
+                name: user.name,
               },
-              this.jwtConfig.refreshTokenTtl * 1000
-            );
-          }
-
-          res.cookie("refreshToken", tokens.refreshToken, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: "strict",
-            maxAge: this.jwtConfig.refreshTokenTtl * 1000,
-            path: "/",
-          });
-
-          res.status(201).json({
-            accessToken: tokens.accessToken,
-            expiresIn: tokens.expiresIn,
-            tokenType: "Bearer",
-            user: {
-              id: user.id,
-              email: user.email,
-              name: user.name,
             },
-          });
+            201
+          );
         } catch (error) {
           const message = error instanceof Error ? error.message : "Failed to create user";
-          return res.status(400).json({
-            error: {
-              code: "SIGNUP_FAILED",
-              message,
+          return c.json(
+            {
+              error: {
+                code: "SIGNUP_FAILED",
+                message,
+              },
             },
-          });
+            400
+          );
         }
       });
     }
 
-    router.post("/refresh", async (req, res) => {
-      const refreshToken =
-        req.cookies?.refreshToken ?? (req.body?.refreshToken as string);
+    router.post("/refresh", async (c) => {
+      const body = (await readJsonBody(c)) as JWTRequestBody;
+      const refreshToken = getCookie(c, "refreshToken") ?? body?.refreshToken;
 
       if (!refreshToken) {
-        return res.status(400).json({
-          error: {
-            code: "NO_REFRESH_TOKEN",
-            message: "Refresh token required",
+        return c.json(
+          {
+            error: {
+              code: "NO_REFRESH_TOKEN",
+              message: "Refresh token required",
+            },
           },
-        });
+          400
+        );
       }
 
       try {
@@ -432,20 +441,26 @@ export class JWTAdapter extends BaseAuthAdapter {
         if (this.refreshStore) {
           const stored = await this.refreshStore.get(payload.jti!);
           if (!stored) {
-            return res.status(401).json({
-              error: {
-                code: "TOKEN_REVOKED",
-                message: "Refresh token has been revoked",
+            return c.json(
+              {
+                error: {
+                  code: "TOKEN_REVOKED",
+                  message: "Refresh token has been revoked",
+                },
               },
-            });
+              401
+            );
           }
         }
 
         const user = await this.getUserByIdFn(payload.sub);
         if (!user) {
-          return res.status(401).json({
-            error: { code: "USER_NOT_FOUND", message: "User not found" },
-          });
+          return c.json(
+            {
+              error: { code: "USER_NOT_FOUND", message: "User not found" },
+            },
+            401
+          );
         }
 
         const tokens = this.generateTokens(user);
@@ -472,40 +487,40 @@ export class JWTAdapter extends BaseAuthAdapter {
           await this.onTokenRefreshFn?.(user.id, oldJti, newJti);
         }
 
-        res.cookie("refreshToken", tokens.refreshToken, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
-          maxAge: this.jwtConfig.refreshTokenTtl * 1000,
-          path: "/",
-        });
+        this.setRefreshCookie(c, tokens.refreshToken);
 
-        res.json({
+        return c.json({
           accessToken: tokens.accessToken,
           expiresIn: tokens.expiresIn,
           tokenType: "Bearer",
         });
       } catch (error) {
         if (error instanceof jwt.TokenExpiredError) {
-          return res.status(401).json({
-            error: {
-              code: "REFRESH_TOKEN_EXPIRED",
-              message: "Refresh token expired",
+          return c.json(
+            {
+              error: {
+                code: "REFRESH_TOKEN_EXPIRED",
+                message: "Refresh token expired",
+              },
             },
-          });
+            401
+          );
         }
-        return res.status(401).json({
-          error: {
-            code: "INVALID_REFRESH_TOKEN",
-            message: "Invalid refresh token",
+        return c.json(
+          {
+            error: {
+              code: "INVALID_REFRESH_TOKEN",
+              message: "Invalid refresh token",
+            },
           },
-        });
+          401
+        );
       }
     });
 
-    router.post("/logout", async (req, res) => {
-      const refreshToken =
-        req.cookies?.refreshToken ?? (req.body?.refreshToken as string);
+    router.post("/logout", async (c) => {
+      const body = (await readJsonBody(c)) as JWTRequestBody;
+      const refreshToken = getCookie(c, "refreshToken") ?? body?.refreshToken;
 
       if (refreshToken && this.refreshStore) {
         try {
@@ -518,8 +533,8 @@ export class JWTAdapter extends BaseAuthAdapter {
         }
       }
 
-      res.clearCookie("refreshToken", { path: "/" });
-      res.json({ success: true });
+      deleteCookie(c, "refreshToken", { path: "/" });
+      return c.json({ success: true });
     });
 
     return router;

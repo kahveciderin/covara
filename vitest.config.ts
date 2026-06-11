@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
+    unstubGlobals: true,
     include: ["src/**/*.test.ts", "tests/**/*.test.ts"],
     sequence: {
       concurrent: false,
@@ -18,6 +19,10 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"],
+    },
+    typecheck: {
+      include: ["tests/**/*.test-d.ts"],
+      tsconfig: "./tsconfig.typecheck.json",
     },
   },
   resolve: {

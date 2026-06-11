@@ -3,7 +3,9 @@ export type { OIDCProviderResult } from "./provider";
 
 export { generateDiscoveryDocument } from "./discovery";
 export { createKeyManager } from "./keys";
-export { createTokenService } from "./tokens";
+export { createTokenService, validateIdTokenNonce } from "./tokens";
+export { redirectUriMatches, redirectUriAllowed, escapeHtml, algorithmToHash } from "./util";
+export { createOIDCRateLimiter, resetOIDCRateLimits } from "./rate-limit";
 export {
   createStores,
   InMemoryClientStore,
@@ -21,6 +23,7 @@ export {
 } from "./stores";
 
 export { createEmailPasswordBackend, createFederatedBackend } from "./backends";
+export { clearFederatedCaches } from "./backends/federated";
 
 export {
   createAuthorizeEndpoint,
@@ -61,6 +64,7 @@ export type {
   StoreConfig,
   UIConfig,
   SecurityConfig,
+  RegistrationConfig,
   ProviderHooks,
   ScopeDefinition,
   ClaimDefinition,

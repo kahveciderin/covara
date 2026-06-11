@@ -1,6 +1,6 @@
-import { Router, Request, Response } from "express";
+import { Hono } from "hono";
 import { Table, TableConfig, getTableColumns } from "drizzle-orm";
-import { ResourceCapabilities, FieldPolicies, ProcedureDefinition } from "@/resource/types";
+import { ResourceCapabilities, FieldPolicies } from "@/resource/types";
 import { CONCAVE_VERSION } from "@/middleware/versioning";
 import { generateOpenAPISpec, RegisteredResource, OpenAPIConfig } from "./generator";
 import { getResourcesForOpenAPI } from "@/ui/schema-registry";
@@ -332,13 +332,13 @@ export interface ConcaveRouterConfig extends OpenAPIConfig {
   pathPrefix?: string;
 }
 
-export function createConcaveRouter(config?: ConcaveRouterConfig): Router;
-export function createConcaveRouter(resources: RegisteredResource[], openApiConfig?: OpenAPIConfig): Router;
+export function createConcaveRouter(config?: ConcaveRouterConfig): Hono;
+export function createConcaveRouter(resources: RegisteredResource[], openApiConfig?: OpenAPIConfig): Hono;
 export function createConcaveRouter(
   resourcesOrConfig?: RegisteredResource[] | ConcaveRouterConfig,
   openApiConfig?: OpenAPIConfig
-): Router {
-  const router = Router();
+): Hono {
+  const router = new Hono();
 
   // Determine if using auto-discovery or explicit resources
   const isAutoDiscovery = !Array.isArray(resourcesOrConfig);
@@ -354,41 +354,41 @@ export function createConcaveRouter(
     return getResourcesForOpenAPI(config.pathPrefix);
   };
 
-  router.get("/schema", (_req: Request, res: Response) => {
+  router.get("/schema", (c) => {
     const resources = getResources();
     const schema = buildConcaveSchema(resources);
-    res.json(schema);
+    return c.json(schema);
   });
 
-  router.get("/schema/typescript", (_req: Request, res: Response) => {
+  router.get("/schema/typescript", (c) => {
     const resources = getResources();
     const schema = buildConcaveSchema(resources);
     const types = generateTypeScriptTypes(schema);
-    res.set("Content-Type", "text/typescript");
-    res.send(types);
+    c.header("Content-Type", "text/typescript");
+    return c.body(types);
   });
 
-  router.get("/openapi.json", (_req: Request, res: Response) => {
+  router.get("/openapi.json", (c) => {
     const resources = getResources();
     const spec = generateOpenAPISpec(resources, config);
-    res.json(spec);
+    return c.json(spec);
   });
 
-  router.get("/openapi.yaml", async (_req: Request, res: Response) => {
+  router.get("/openapi.yaml", (c) => {
     try {
       const resources = getResources();
       const spec = generateOpenAPISpec(resources, config);
       const yaml = JSON.stringify(spec, null, 2);
-      res.set("Content-Type", "text/yaml");
-      res.send(yaml);
+      c.header("Content-Type", "text/yaml");
+      return c.body(yaml);
     } catch {
-      res.status(500).json({ error: "Failed to generate YAML" });
+      return c.json({ error: "Failed to generate YAML" }, 500);
     }
   });
 
-  router.get("/health", (_req: Request, res: Response) => {
+  router.get("/health", (c) => {
     const resources = getResources();
-    res.json({
+    return c.json({
       status: "ok",
       version: CONCAVE_VERSION,
       timestamp: new Date().toISOString(),

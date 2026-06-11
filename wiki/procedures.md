@@ -7,7 +7,7 @@ Procedures allow you to define custom RPC endpoints and lifecycle hooks.
 Define custom endpoints on your resource:
 
 ```typescript
-import { defineProcedure } from "@kahveciderin/concave/resource";
+import { defineProcedure } from "@kahveciderin/concave";
 import { z } from "zod";
 
 useResource(postsTable, {
@@ -110,7 +110,7 @@ useResource(postsTable, {
 Combine multiple hook sets:
 
 ```typescript
-import { composeHooks, createTimestampHooks } from "@kahveciderin/concave/resource";
+import { composeHooks, createTimestampHooks } from "@kahveciderin/concave";
 
 const auditHooks = {
   onAfterCreate: async (ctx, created) => {
@@ -144,10 +144,11 @@ The context object provides:
 
 ```typescript
 interface ProcedureContext {
-  db: TrackedDatabase;    // Tracked database instance (mutations auto-recorded)
-  schema: Table;          // Drizzle table schema
+  db: TrackedDatabase;       // Tracked database instance (mutations auto-recorded)
+  schema: Table;             // Drizzle table schema
   user: UserContext | null;  // Authenticated user
-  req: Request;           // Express request
+  req: Request | null;       // Raw web Request
+  context: Context | null;   // Hono Context (headers, cookies, etc.)
 }
 ```
 
@@ -184,7 +185,7 @@ const trackedDb = trackMutations(baseDb, {
 });
 
 // Pass the tracked db to useResource
-app.use("/posts", useResource(postsTable, {
+app.route("/posts", useResource(postsTable, {
   id: postsTable.id,
   db: trackedDb,  // Already tracked - won't be double-wrapped
   procedures: {

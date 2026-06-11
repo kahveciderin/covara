@@ -587,7 +587,7 @@ export const createRedisKVFromConfig = async (
   // Dynamic import to make ioredis optional
   let Redis: new (...args: unknown[]) => RedisClient;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     Redis = (await import("ioredis" as string)).default;
   } catch {
     throw new Error(

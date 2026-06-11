@@ -9,14 +9,12 @@ The OIDC provider gives you a complete identity server with standard endpoints, 
 ### Quick Setup
 
 ```typescript
-import express from "express";
+import { Hono } from "hono";
 import { createOIDCProvider } from "@kahveciderin/concave";
 
-const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+const app = new Hono();
 
-const { router, middleware } = createOIDCProvider({
+const { router, middleware, stores, tokenService } = createOIDCProvider({
   issuer: "https://auth.myapp.com",
   keys: { algorithm: "RS256" },
   tokens: {
@@ -40,7 +38,7 @@ const { router, middleware } = createOIDCProvider({
       enabled: true,
       validateUser: async (email, password) => {
         const user = await db.query.users.findFirst({ where: eq(users.email, email) });
-        if (user && await bcrypt.compare(password, user.passwordHash)) {
+        if (user && await verifyPassword(password, user.passwordHash)) {
           return { id: user.id, email: user.email, name: user.name };
         }
         return null;
@@ -54,11 +52,14 @@ const { router, middleware } = createOIDCProvider({
 });
 
 // Mount OIDC routes at /oidc
-app.use("/oidc", router);
+app.route("/oidc", router);
 
 // Protect API routes with the middleware
-app.use("/api", middleware, apiRoutes);
+app.use("/api/*", middleware);
+app.route("/api", apiRoutes);
 ```
+
+The provider returns `{ router, middleware, stores, tokenService }` — `router` is a `Hono` instance, `middleware` is a Hono `MiddlewareHandler` that validates bearer tokens and populates the request context (`c.get("user")`).
 
 ### OIDC Endpoints
 
@@ -70,8 +71,22 @@ app.use("/api", middleware, apiRoutes);
 | `/userinfo` | GET/POST | User claims |
 | `/jwks` | GET | Public keys for verification |
 | `/logout` | GET | End session with redirect |
+| `/revoke` | POST | Token revocation (RFC 7009) |
+| `/introspect` | POST | Token introspection (RFC 7662) |
 | `/login` | GET/POST | Login UI (customizable) |
 | `/consent` | GET/POST | Consent UI |
+| `/consent/revoke` | POST/DELETE | Revoke a user's consent (one client or all) |
+| `/register` | POST | Dynamic client registration (opt-in) |
+
+`/revoke` and `/introspect` require client authentication and are advertised in the
+discovery document as `revocation_endpoint` and `introspection_endpoint`. Revoking a
+refresh token invalidates it; introspection returns the standard `{ active, scope, sub,
+client_id, exp, ... }` response for both access and refresh tokens.
+
+Confidential client secrets may be stored hashed. A secret that begins with `scrypt$` is
+verified with the built-in scrypt hasher (`hashPassword`/`verifyPassword`); a plaintext
+secret is compared in constant time. Generate a hash with `await hashPassword(secret)` and
+store the result as the client's `secret`.
 
 ### Provider Configuration
 
@@ -107,10 +122,16 @@ interface OIDCProviderConfig {
     federated?: FederatedProvider[];
   };
 
-  // Store configuration (default: in-memory)
+  // Store configuration
+  // KV-backed stores are used by default whenever a global KV is registered (setGlobalKV);
+  // set type: "memory" to force in-memory even with a global KV present.
   stores?: {
-    type: "memory" | "redis";
-    kv?: KVAdapter;  // For Redis stores
+    type?: "memory" | "redis" | "drizzle";
+    kv?: KVAdapter;       // explicit KV for the OIDC stores
+    sessionStore?: ...;   // session store for the login/consent UI
+    prefix?: string;      // KV key prefix (default: "oidc")
+    db?: unknown;         // for the drizzle store
+    tables?: ...;
   };
 
   // UI customization
@@ -122,6 +143,24 @@ interface OIDCProviderConfig {
       consent?: string;
       error?: string;
     };
+  };
+
+  // Hardening (see "Security & Hardening" below)
+  security?: {
+    pkce?: { required?: boolean; methods?: ("S256")[] };
+    consent?: { ttlSeconds?: number };  // default: 1 year
+    rateLimiting?: {
+      token?: { windowMs: number; max: number };
+      jwks?: { windowMs: number; max: number };
+      introspect?: { windowMs: number; max: number };
+    };
+  };
+
+  // Dynamic client registration (opt-in)
+  registration?: {
+    enabled?: boolean;            // default: false (POST /register returns 404 when off)
+    defaultScopes?: string[];     // default: ["openid", "profile", "email"]
+    initialAccessToken?: string;  // if set, /register requires Bearer <token>
   };
 
   // Lifecycle hooks
@@ -176,6 +215,65 @@ const { router, middleware } = createOIDCProvider({
 ```
 
 Available provider helpers: `google`, `microsoft`, `okta`, `auth0`, `keycloak`, `generic`.
+
+Federated `id_token`s are signature-verified against the provider's JWKS (fetched from its discovery
+document and cached), with issuer and audience checks. After verification the `nonce` is compared to
+the stored interaction nonce, and the `id_token`'s `sub` is cross-checked against the `userinfo`
+`sub`; any mismatch aborts the login.
+
+### Security & Hardening
+
+The provider applies a number of OAuth2/OIDC hardening measures by default:
+
+- **Redirect URI validation** — `redirect_uri` is matched component-by-component (protocol, host,
+  port, normalized path, and query/fragment when registered), not by prefix. An unregistered URI is
+  rejected with a `400` before any redirect happens, so an attacker never receives a redirect.
+- **PKCE** — `code_challenge_method=plain` is always rejected (only `S256` is supported and
+  advertised). PKCE is **required for public clients** (`tokenEndpointAuthMethod: "none"`). Set
+  `security.pkce.required: true` to require it for all clients.
+- **at_hash** — the `id_token` `at_hash` claim is computed correctly (left-half of the hash matching
+  the signing algorithm) whenever an access token is issued.
+- **Nonce** — `validateIdTokenNonce(idToken, expectedNonce)` is exported for clients/relying parties
+  that need to validate the `id_token` nonce.
+- **Rate limiting** — `/token`, `/jwks`, and `/introspect` can be rate-limited per client (or per IP)
+  via `security.rateLimiting`. Limiters use the global KV when registered, else an in-memory bucket,
+  and emit `X-RateLimit-*` headers plus `429` + `Retry-After` when exceeded. No limit is applied
+  unless the corresponding key is configured.
+- **Persistent stores by default** — when a global KV is registered, the provider's clients, codes,
+  refresh tokens, consents, interactions, and state are KV-backed with TTLs derived from each record's
+  expiry. Pass `stores.type: "memory"` to force in-memory.
+- **login_hint escaping** — the `login_hint` (and all dynamic values) are HTML-escaped in the default
+  login template.
+
+### Dynamic Client Registration
+
+Enable RFC 7591-style dynamic registration with `registration.enabled: true`:
+
+```typescript
+createOIDCProvider({
+  // ...
+  registration: {
+    enabled: true,
+    defaultScopes: ["openid", "profile", "email"],
+    initialAccessToken: process.env.OIDC_REGISTRATION_TOKEN, // optional gate
+  },
+});
+```
+
+`POST /register` accepts a JSON (or form) body with at least `redirect_uris` (each validated as a
+URL). It defaults `token_endpoint_auth_method` to `client_secret_basic` (use `none` for a public
+client), `grant_types` to `["authorization_code"]`, and `response_types` to `["code"]`. It returns
+`201` with a generated `client_id` (and `client_secret` for confidential clients). When `enabled` is
+false the endpoint returns `404`; when `initialAccessToken` is set, a matching `Authorization: Bearer`
+header is required. The `registration_endpoint` is added to the discovery document only when enabled.
+
+### Consent Revocation
+
+`POST /consent/revoke` (or `DELETE /consent/revoke`) revokes a logged-in user's consent. With a
+`client_id` in the body it revokes consent for that one client; without it, it revokes all of the
+user's consents. The request must carry a valid `oidc_session` cookie (else `401`). Stored consents
+also expire after `security.consent.ttlSeconds` (default 1 year), after which the user is prompted to
+consent again.
 
 ## Client-Side OIDC Authentication
 
@@ -365,13 +463,10 @@ For traditional session-based auth without OIDC, use the original `useAuth` func
 The `useAuth` function creates auth routes and middleware in one call:
 
 ```typescript
-import express from "express";
-import cookieParser from "cookie-parser";
-import { createPassportAdapter, useAuth } from "@kahveciderin/concave";
+import { Hono } from "hono";
+import { createPassportAdapter, useAuth, hashPassword, verifyPassword } from "@kahveciderin/concave";
 
-const app = express();
-app.use(express.json());
-app.use(cookieParser());
+const app = new Hono();
 
 const authAdapter = createPassportAdapter({
   getUserById: async (id) => {
@@ -384,7 +479,7 @@ const { router, middleware } = useAuth({
   login: {
     validateCredentials: async (email, password) => {
       const user = await db.query.users.findFirst({ where: eq(users.email, email) });
-      if (user && await bcrypt.compare(password, user.passwordHash)) {
+      if (user && await verifyPassword(password, user.passwordHash)) {
         return { id: user.id, email: user.email, name: user.name };
       }
       return null;
@@ -397,7 +492,7 @@ const { router, middleware } = useAuth({
         id,
         email,
         name,
-        passwordHash: await bcrypt.hash(password, 10),
+        passwordHash: await hashPassword(password),
       }).returning();
       return { id: user.id, email: user.email, name: user.name };
     },
@@ -405,10 +500,21 @@ const { router, middleware } = useAuth({
 });
 
 // Mount auth routes at /api/auth
-app.use("/api/auth", router);
+app.route("/api/auth", router);
 
-// Add auth middleware to populate req.user
-app.use(middleware);
+// Add auth middleware to populate the user in the request context
+app.use("*", middleware);
+```
+
+`router` is a `Hono` instance and `middleware` is a Hono `MiddlewareHandler`. After the middleware runs, the user is available in handlers via `c.get("user")` or the `getUser(c)` / `requireUser(c)` helpers.
+
+With `createConcave`, pass the result directly:
+
+```typescript
+const app = createConcave({
+  auth: { router, middleware },  // mounts router at <basePath>/auth, applies middleware
+  // auth: { router, middleware, path: "/auth" },  // custom mount path
+});
 ```
 
 This creates the following routes:
@@ -451,12 +557,304 @@ interface UseAuthOptions {
   // Optional: customize user serialization
   serializeUser?: (user: UserContext) => Record<string, unknown>;
 
-  // Optional: lifecycle hooks
-  onLogin?: (user: UserContext, req: Request) => void | Promise<void>;
-  onLogout?: (user: UserContext | null, req: Request) => void | Promise<void>;
-  onSignup?: (user: AuthUser, req: Request) => void | Promise<void>;
+  // Optional: lifecycle hooks (c is the Hono Context)
+  onLogin?: (user: UserContext, c: Context) => void | Promise<void>;
+  onLogout?: (user: UserContext | null, c: Context) => void | Promise<void>;
+  onSignup?: (user: AuthUser, c: Context) => void | Promise<void>;
+
+  // Optional: security flows (see "Account Security" below)
+  csrf?: boolean | CsrfOptions;
+  throttle?: boolean | LoginThrottleOptions;
+  verification?: {
+    store: VerificationTokenStore;
+    sendToken: (params: { identifier: string; token: string; expiresAt: Date; c: Context }) => void | Promise<void>;
+    markVerified: (identifier: string) => void | Promise<void>;
+    ttlMs?: number;       // default: 24h
+    hashTokens?: boolean; // store SHA-256 of the token instead of the raw value
+  };
+  passwordReset?: {
+    store: VerificationTokenStore;
+    sendToken: (params: { identifier: string; token: string; expiresAt: Date; c: Context }) => void | Promise<void>;
+    resetPassword: (identifier: string, passwordHash: string) => void | Promise<void>;
+    findUserByEmail?: (identifier: string) => Promise<{ id: string } | null>;
+    ttlMs?: number;       // default: 1h
+    hashTokens?: boolean;
+    logoutEverywhere?: boolean; // invalidate all of the user's sessions after reset
+  };
+
+  // Optional: enforce a password policy on signup and password reset
+  passwordPolicy?: {
+    minLength?: number;            // default: 8
+    maxLength?: number;
+    requireUppercase?: boolean;    // default: false
+    requireLowercase?: boolean;    // default: false
+    requireNumber?: boolean;       // default: false
+    requireSymbol?: boolean;       // default: false
+    denylist?: string[];
+    useBuiltInDenylist?: boolean;  // default: true (blocks ~20 common passwords)
+  };
+
+  // Optional: TOTP-based multi-factor authentication (see "Multi-Factor Authentication")
+  mfa?: {
+    issuer?: string;
+    totp?: { step?: number; digits?: number; window?: number };
+    backupCodeCount?: number;      // default: 10
+    requireOnLogin?: boolean;      // gate /login on a second factor when enrolled
+    getUserByEmail: (email: string) => Promise<(AuthUser & { mfa?: MfaEnrollment | null }) | null>;
+    getEnrollment: (userId: string) => Promise<MfaEnrollment | null>;
+    saveEnrollment: (userId: string, enrollment: MfaEnrollment) => void | Promise<void>;
+    saveBackupCodeHashes?: (userId: string, hashes: string[]) => void | Promise<void>;
+    consumeBackupCode?: (userId: string, index: number) => void | Promise<void>;
+  };
+
+  // Optional: passwordless magic-link login (see "Magic Links")
+  magicLink?: {
+    store: VerificationTokenStore;
+    sendLink: (params: { identifier: string; token: string; expiresAt: Date; c: Context }) => void | Promise<void>;
+    findUserByEmail: (identifier: string) => Promise<AuthUser | null>;
+    ttlMs?: number;       // default: 15m
+    hashTokens?: boolean;
+  };
 }
 ```
+
+On a successful `/login`, the prior session cookie (if any) is invalidated before a new
+session is created — sessions are rotated on every login.
+
+## Password Hashing
+
+Concave ships a Workers-safe scrypt password hasher, so you don't need `bcrypt` or any
+native dependency. Hashes are self-describing strings (`scrypt$N=...,r=...,p=...$salt$hash`),
+so parameters can evolve without a separate column.
+
+```typescript
+import { hashPassword, verifyPassword, needsRehash } from "@kahveciderin/concave";
+
+// On signup
+const passwordHash = await hashPassword(plaintext);
+
+// On login
+if (!(await verifyPassword(plaintext, user.passwordHash))) {
+  throw new Error("Invalid credentials");
+}
+
+// Optionally upgrade old hashes to stronger parameters after a successful login
+if (needsRehash(user.passwordHash)) {
+  await db.update(users).set({ passwordHash: await hashPassword(plaintext) }).where(eq(users.id, user.id));
+}
+```
+
+`hashPassword(password, options?)` accepts scrypt cost parameters (`N`, `r`, `p`, `keylen`,
+`saltlen`); `needsRehash(stored, options?)` returns `true` when the stored hash is weaker
+than the target parameters (or unparseable). All three are constant-time on comparison.
+
+## Account Security
+
+These flows are opt-in via `useAuth` options. They build on the same `adapter` and add
+routes under the auth router's mount path (e.g. `/api/auth`).
+
+### CSRF Protection
+
+```typescript
+useAuth({ adapter, login, csrf: true });
+// or: csrf: { headerName: "X-CSRF-Token", cookieName: "csrf_token", skip: (c) => ... }
+```
+
+Uses the double-submit-cookie pattern: a non-`httpOnly` `csrf_token` cookie is issued on
+safe requests and refreshed on login, and unsafe methods (`POST`/`PUT`/`PATCH`/`DELETE`)
+must echo it back in the `X-CSRF-Token` header. Requests carrying an `Authorization` header
+(bearer/API-key clients) are exempt. A mismatch returns `403`. The middleware is also
+available standalone as `createSecurityHeaders`'s sibling `createCsrfMiddleware`.
+
+### Login Throttling
+
+```typescript
+useAuth({ adapter, login, throttle: true });
+// or: throttle: { maxAttempts: 5, windowMs: 15 * 60 * 1000, store: myRateLimitStore }
+```
+
+Failed logins are counted per email and per IP; once `maxAttempts` (default 5) is exceeded
+within the window (default 15 minutes), `/login` returns `429` with a `Retry-After`. A
+successful login resets the counters. Provide a distributed `RateLimitStore` (e.g.
+Redis-backed) for multi-instance deployments; the default is in-memory.
+
+### Email Verification
+
+```typescript
+import { InMemoryVerificationTokenStore } from "@kahveciderin/concave";
+
+useAuth({
+  adapter,
+  login,
+  verification: {
+    store: new InMemoryVerificationTokenStore(),
+    sendToken: async ({ identifier, token, expiresAt }) => sendEmail(identifier, token),
+    markVerified: async (email) => db.update(users).set({ emailVerified: true }).where(eq(users.email, email)),
+  },
+});
+```
+
+Adds `POST /verify/request` (issues a one-time token and calls `sendToken`) and
+`POST /verify/confirm` (`{ email, token }` → calls `markVerified`). Set `hashTokens: true`
+to store only the SHA-256 of the token.
+
+### Password Reset
+
+```typescript
+useAuth({
+  adapter,
+  login,
+  passwordReset: {
+    store: new InMemoryVerificationTokenStore(),
+    sendToken: async ({ identifier, token }) => sendEmail(identifier, token),
+    resetPassword: async (email, passwordHash) =>
+      db.update(users).set({ passwordHash }).where(eq(users.email, email)),
+    findUserByEmail: async (email) => db.query.users.findFirst({ where: eq(users.email, email) }),
+    logoutEverywhere: true,
+  },
+});
+```
+
+Adds `POST /password/forgot` (`{ email }` → issues a token via `sendToken`; always returns
+`{ success: true }` to avoid leaking which emails exist) and `POST /password/reset`
+(`{ email, token, password }` → hashes the new password with the built-in scrypt hasher and
+calls `resetPassword`). When `logoutEverywhere` is set and the adapter implements
+`invalidateUserSessions`, all of the user's existing sessions are revoked after the reset.
+
+The token stores implement the `VerificationTokenStore` interface
+(`create`/`consume`/`deleteByIdentifier`); `InMemoryVerificationTokenStore` is provided for
+development, and you can back it with your own database for production.
+
+### Password Policy
+
+```typescript
+useAuth({
+  adapter,
+  login,
+  signup,
+  passwordPolicy: {
+    minLength: 12,
+    requireUppercase: true,
+    requireNumber: true,
+    requireSymbol: true,
+  },
+});
+```
+
+When set, the policy is enforced (before your own `signup.validatePassword`) on `POST /signup` and
+again on `POST /password/reset`. A weak password fails with a `422` validation error listing the
+violations. The built-in denylist (enabled by default) blocks roughly 20 of the most common
+passwords (`password`, `123456`, `qwerty`, …); disable it with `useBuiltInDenylist: false` or extend
+it with your own `denylist`. The policy helpers are also available standalone:
+
+```typescript
+import { validatePasswordStrength, enforcePasswordStrength, builtInPasswordDenylist } from "@kahveciderin/concave";
+
+const { valid, errors } = validatePasswordStrength(password, { minLength: 12 });
+enforcePasswordStrength(password, { minLength: 12 }); // throws ValidationError if invalid
+```
+
+### Multi-Factor Authentication (TOTP)
+
+```typescript
+useAuth({
+  adapter,
+  login,
+  mfa: {
+    issuer: "My App",
+    requireOnLogin: true,
+    getUserByEmail: async (email) => db.query.users.findFirst({ where: eq(users.email, email) }),
+    getEnrollment: async (userId) => db.query.mfa.findFirst({ where: eq(mfa.userId, userId) }),
+    saveEnrollment: async (userId, enrollment) =>
+      db.insert(mfa).values({ userId, ...enrollment }).onConflictDoUpdate({ target: mfa.userId, set: enrollment }),
+    consumeBackupCode: async (userId, index) => { /* mark backup code `index` used */ },
+  },
+});
+```
+
+Required callbacks: `getUserByEmail`, `getEnrollment`, `saveEnrollment`. The `MfaEnrollment` you store
+is `{ secret: string; enabled: boolean; backupCodeHashes?: string[] }`. When `mfa` is set, these
+routes are added:
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/mfa/enroll` | POST | Generate a new TOTP secret + backup codes for the current user (saved as `enabled: false`). Returns `{ secret, otpauthUri, backupCodes }` (codes shown once). |
+| `/mfa/enroll/confirm` | POST | `{ code }` — verify the first TOTP and flip the enrollment to `enabled: true`. |
+| `/mfa/verify` | POST | `{ email, code }` — second-factor step of login; on success creates the session. Accepts a TOTP code or a backup code. |
+
+Login flow: when `requireOnLogin` is true and the user has an enabled enrollment, `POST /login` returns
+`{ mfaRequired: true }` with `401` if no `mfaCode` is supplied. The client then either resubmits
+`/login` with `mfaCode`, or calls `/mfa/verify`. A matched backup code triggers `consumeBackupCode`.
+
+The TOTP primitives are exported for custom flows: `generateTotpSecret`, `generateTotp`, `verifyTotp`,
+`getTotpUri`, `generateBackupCodes`, `verifyBackupCode`.
+
+### Magic Links (Passwordless Login)
+
+```typescript
+import { InMemoryVerificationTokenStore } from "@kahveciderin/concave";
+
+useAuth({
+  adapter,
+  magicLink: {
+    store: new InMemoryVerificationTokenStore(),
+    sendLink: async ({ identifier, token }) => sendEmail(identifier, `https://app.com/magic?token=${token}`),
+    findUserByEmail: async (email) => db.query.users.findFirst({ where: eq(users.email, email) }),
+    ttlMs: 15 * 60 * 1000,
+  },
+});
+```
+
+Adds `POST /magic-link/request` (`{ email }` → issues a single-use token and calls `sendLink` only if
+the user exists; always returns `{ success: true }` to avoid leaking which emails exist) and
+`POST /magic-link/verify` (`{ email, token }` → consumes the token and creates the session, returning
+`{ user, sessionId }`; an invalid or expired token returns `401`). The low-level helpers
+`issueMagicLinkToken` / `consumeMagicLinkToken` are exported for custom flows.
+
+## API Keys
+
+Standalone helpers for issuing and verifying API keys. These are not wired into `useAuth` routes —
+use them in your own endpoints (e.g. a settings page that creates keys, and an adapter's
+`validateApiKey` that verifies them). A key is formatted `[prefix_]<id>.<secret>`; only its hash is
+stored, and the raw key is returned once at creation.
+
+```typescript
+import {
+  createApiKey,
+  verifyApiKey,
+  listApiKeys,
+  revokeApiKey,
+  rotateApiKey,
+  InMemoryApiKeyStore,
+} from "@kahveciderin/concave";
+
+const store = new InMemoryApiKeyStore(); // or your own ApiKeyStore backed by a table
+
+// Create (raw key shown once)
+const { key, metadata } = await createApiKey({
+  store,
+  userId: "user_123",
+  label: "CI token",
+  scopes: ["read"],
+  prefix: "myapp",          // optional, prefixes the raw key
+  expiresAt: null,          // or a Date / ttlMs
+});
+
+// Verify (touches lastUsedAt by default)
+const result = await verifyApiKey(key, { store });
+if (result.valid) {
+  // result.metadata: { id, userId, scopes, expiresAt, lastUsedAt, ... }
+} else {
+  // result.reason: "not_found" | "expired" | "mismatch"
+}
+
+await listApiKeys({ store, userId: "user_123" });
+await rotateApiKey({ store, id: metadata.id });  // revoke + reissue inheriting label/scopes/expiry
+await revokeApiKey(metadata.id, { store });
+```
+
+The `ApiKeyStore` interface is `create` / `list` / `findById` / `delete` / `touch`;
+`InMemoryApiKeyStore` is a reference implementation for development.
 
 ## Auth Adapters
 
@@ -512,7 +910,7 @@ Use the `rsql` template helper to define row-level access control:
 ```typescript
 import { useResource, rsql } from "@kahveciderin/concave";
 
-app.use("/api/posts", useResource(postsTable, {
+app.route("/api/posts", useResource(postsTable, {
   id: postsTable.id,
   db,
   auth: {
@@ -561,10 +959,14 @@ auth: scopePatterns.orgBased("organizationId"),
 Build scopes programmatically:
 
 ```typescript
-import { rsql, eq, ne, gt, gte, lt, lte, inList, and, or } from "@kahveciderin/concave";
+import { rsql, eq, ne, gt, gte, lt, lte, inList, notIn, like, notLike, isNull, isNotNull, and, or } from "@kahveciderin/concave";
 
 // Basic equality
 const scope = eq("userId", user.id);
+
+// Pattern matching (LIKE / NOT LIKE)
+const scope = like("email", "%@example.com");   // emits %=
+const scope = notLike("email", "%@spam.com");   // emits !%=
 
 // Multiple conditions (AND)
 const scope = and(
@@ -582,25 +984,27 @@ const scope = or(
 const scope = rsql`userId=="${user.id}";status=="active"`;
 ```
 
+The filter grammar has no NOT combinator, so there is no `not()` helper — use the negated operators instead: `ne` (`!=`), `notIn` (`=out=`), `notLike` (`!%=`), `isNotNull` (`=isnull=false`).
+
 ## Middleware
 
 Additional middleware helpers:
 
 ```typescript
-import { requireAuth, requireRole, requirePermission } from "@kahveciderin/concave";
+import { requireAuth, requireRole, requirePermission, getUser } from "@kahveciderin/concave";
 
 // Require authentication
-app.get("/profile", requireAuth(), (req, res) => {
-  res.json(req.user);
+app.get("/profile", requireAuth(), (c) => {
+  return c.json(getUser(c));
 });
 
 // Require specific role
-app.get("/admin", requireRole("admin"), (req, res) => {
-  res.json({ message: "Admin area" });
+app.get("/admin", requireRole("admin"), (c) => {
+  return c.json({ message: "Admin area" });
 });
 
 // Require specific permission
-app.post("/posts", requirePermission("posts:create"), (req, res) => {
+app.post("/posts", requirePermission("posts:create"), async (c) => {
   // ...
 });
 ```
@@ -960,16 +1364,18 @@ const authAdapter = createPassportAdapter({
   },
 });
 
-// Use adapter's built-in routes
-app.use("/auth", authAdapter.getRoutes());
+// Use adapter's built-in routes (getRoutes() returns a Hono instance)
+app.route("/auth", authAdapter.getRoutes());
 
 // Or create custom routes
-app.post("/custom-login", async (req, res) => {
-  const { email, password } = req.body;
+import { setCookie } from "hono/cookie";
+
+app.post("/custom-login", async (c) => {
+  const { email, password } = await c.req.json<{ email: string; password: string }>();
   // Custom login logic using adapter
   const session = await authAdapter.createSession(userId);
-  res.cookie("session", session.id, { httpOnly: true });
-  res.json({ success: true });
+  setCookie(c, "session", session.id, { httpOnly: true });
+  return c.json({ success: true });
 });
 ```
 

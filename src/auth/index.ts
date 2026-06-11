@@ -1,9 +1,76 @@
 export * from "./types";
 export * from "./adapter";
+export * from "./password";
 export * from "./rsql";
 export * from "./scope";
 export * from "./middleware";
 export * from "./routes";
+export {
+  createCsrfMiddleware,
+  issueCsrfToken,
+  generateCsrfToken,
+  type CsrfOptions,
+} from "./csrf";
+export {
+  LoginThrottle,
+  type LoginThrottleOptions,
+  type ThrottleCheck,
+} from "./login-throttle";
+export {
+  InMemoryVerificationTokenStore,
+  issueToken,
+  verifyToken,
+  hashToken,
+  generateToken,
+  type VerificationTokenStore,
+  type VerificationTokenRecord,
+} from "./verification";
+export {
+  issuePasswordResetToken,
+  verifyPasswordResetToken,
+  hashNewPassword,
+  type PasswordResetOptions,
+} from "./password-reset";
+export {
+  base32Encode,
+  base32Decode,
+  generateTotpSecret,
+  generateTotp,
+  verifyTotp,
+  getTotpUri,
+  generateBackupCodes,
+  verifyBackupCode,
+  type TotpOptions,
+  type TotpUriParams,
+  type BackupCodesResult,
+} from "./totp";
+export {
+  issueMagicLinkToken,
+  consumeMagicLinkToken,
+  type MagicLinkOptions,
+} from "./magic-link";
+export {
+  createApiKey,
+  verifyApiKey,
+  rotateApiKey,
+  revokeApiKey,
+  listApiKeys,
+  InMemoryApiKeyStore,
+  type ApiKeyStore,
+  type StoredApiKey,
+  type ApiKeyMetadata,
+  type CreatedApiKey,
+  type CreateApiKeyOptions,
+  type RotateApiKeyOptions,
+  type VerifyApiKeyResult,
+} from "./api-keys";
+export {
+  validatePasswordStrength,
+  enforcePasswordStrength,
+  builtInPasswordDenylist,
+  type PasswordPolicyOptions,
+  type PasswordStrengthResult,
+} from "./password-policy";
 export {
   createAuthAdapter,
   createSessionStore,

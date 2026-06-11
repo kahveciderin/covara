@@ -1,28 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import request from "supertest";
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
+import { Hono } from "hono";
 import { pgTable, text, integer, boolean, timestamp, serial, varchar } from "drizzle-orm/pg-core";
 import { drizzle } from "drizzle-orm/pglite";
 import { PGlite } from "@electric-sql/pglite";
-import { sql } from "drizzle-orm";
 import { useResource } from "@/resource/hook";
 import { createResourceFilter } from "@/resource/filter";
 import { rsql } from "@/auth/rsql";
-
-const injectTestUser = (req: Request, _res: Response, next: NextFunction) => {
-  (req as any).user = { id: "test-user", email: "test@test.com", roles: ["admin"] };
-  next();
-};
-
-const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err.statusCode || err.status || 500;
-  res.status(status).json({
-    error: {
-      message: err.message,
-      code: err.code || "INTERNAL_ERROR",
-    },
-  });
-};
+import { createTestApp, get, post, patch, del } from "../helpers/hono";
 
 const usersTable = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -47,7 +31,7 @@ const postsTable = pgTable("posts", {
 });
 
 describe("PostgreSQL Dialect Tests", () => {
-  let app: Express;
+  let app: Hono;
   let pglite: PGlite;
   let db: ReturnType<typeof drizzle>;
 
@@ -90,27 +74,22 @@ describe("PostgreSQL Dialect Tests", () => {
     await pglite.exec(`TRUNCATE TABLE users RESTART IDENTITY CASCADE`);
     await pglite.exec(`TRUNCATE TABLE posts RESTART IDENTITY CASCADE`);
 
-    app = express();
-    app.use(express.json());
-    app.use(injectTestUser);
+    app = createTestApp({ user: { id: "test-user", email: "test@test.com" } });
   });
 
   describe("Basic CRUD Operations", () => {
     beforeEach(() => {
-      app.use(
+      app.route(
         "/users",
         useResource(usersTable, {
           id: usersTable.id,
           db,
         })
       );
-      app.use(errorHandler);
     });
 
     it("should create a user", async () => {
-      const res = await request(app)
-        .post("/users")
-        .send({ name: "John", email: "john@example.com", age: 30 });
+      const res = await post(app, "/users", { name: "John", email: "john@example.com", age: 30 });
 
       expect(res.status).toBe(201);
       expect(res.body.name).toBe("John");
@@ -118,47 +97,39 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should get a user by id", async () => {
-      await request(app)
-        .post("/users")
-        .send({ name: "Jane", email: "jane@example.com", age: 25 });
+      await post(app, "/users", { name: "Jane", email: "jane@example.com", age: 25 });
 
-      const res = await request(app).get("/users/1");
+      const res = await get(app, "/users/1");
 
       expect(res.status).toBe(200);
       expect(res.body.name).toBe("Jane");
     });
 
     it("should update a user", async () => {
-      await request(app)
-        .post("/users")
-        .send({ name: "Bob", email: "bob@example.com", age: 35 });
+      await post(app, "/users", { name: "Bob", email: "bob@example.com", age: 35 });
 
-      const res = await request(app)
-        .patch("/users/1")
-        .send({ name: "Robert" });
+      const res = await patch(app, "/users/1", { name: "Robert" });
 
       expect(res.status).toBe(200);
       expect(res.body.name).toBe("Robert");
     });
 
     it("should delete a user", async () => {
-      await request(app)
-        .post("/users")
-        .send({ name: "Alice", email: "alice@example.com", age: 28 });
+      await post(app, "/users", { name: "Alice", email: "alice@example.com", age: 28 });
 
-      const deleteRes = await request(app).delete("/users/1");
+      const deleteRes = await del(app, "/users/1");
       expect(deleteRes.status).toBe(204);
 
-      const getRes = await request(app).get("/users/1");
+      const getRes = await get(app, "/users/1");
       expect(getRes.status).toBe(404);
     });
 
     it("should list users", async () => {
-      await request(app).post("/users").send({ name: "User1", email: "u1@test.com", age: 20 });
-      await request(app).post("/users").send({ name: "User2", email: "u2@test.com", age: 25 });
-      await request(app).post("/users").send({ name: "User3", email: "u3@test.com", age: 30 });
+      await post(app, "/users", { name: "User1", email: "u1@test.com", age: 20 });
+      await post(app, "/users", { name: "User2", email: "u2@test.com", age: 25 });
+      await post(app, "/users", { name: "User3", email: "u3@test.com", age: 30 });
 
-      const res = await request(app).get("/users");
+      const res = await get(app, "/users");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(3);
@@ -167,23 +138,22 @@ describe("PostgreSQL Dialect Tests", () => {
 
   describe("Filter Operations", () => {
     beforeEach(async () => {
-      app.use(
+      app.route(
         "/users",
         useResource(usersTable, {
           id: usersTable.id,
           db,
         })
       );
-      app.use(errorHandler);
 
-      await request(app).post("/users").send({ name: "Alice", email: "alice@example.com", age: 25, role: "admin", status: "active" });
-      await request(app).post("/users").send({ name: "Bob", email: "bob@test.com", age: 30, role: "user", status: "active" });
-      await request(app).post("/users").send({ name: "Charlie", email: "charlie@example.com", age: 35, role: "user", status: "inactive" });
-      await request(app).post("/users").send({ name: "Diana", email: "diana@company.com", age: 28, role: "admin", status: "active" });
+      await post(app, "/users", { name: "Alice", email: "alice@example.com", age: 25, role: "admin", status: "active" });
+      await post(app, "/users", { name: "Bob", email: "bob@test.com", age: 30, role: "user", status: "active" });
+      await post(app, "/users", { name: "Charlie", email: "charlie@example.com", age: 35, role: "user", status: "inactive" });
+      await post(app, "/users", { name: "Diana", email: "diana@company.com", age: 28, role: "admin", status: "active" });
     });
 
     it("should filter with == operator", async () => {
-      const res = await request(app).get('/users?filter=role=="admin"');
+      const res = await get(app, '/users?filter=role=="admin"');
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
@@ -191,14 +161,14 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should filter with != operator", async () => {
-      const res = await request(app).get('/users?filter=status!="inactive"');
+      const res = await get(app, '/users?filter=status!="inactive"');
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(3);
     });
 
     it("should filter with > operator", async () => {
-      const res = await request(app).get("/users?filter=age>28");
+      const res = await get(app, "/users?filter=age>28");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
@@ -206,49 +176,49 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should filter with >= operator", async () => {
-      const res = await request(app).get("/users?filter=age>=30");
+      const res = await get(app, "/users?filter=age>=30");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
     });
 
     it("should filter with < operator", async () => {
-      const res = await request(app).get("/users?filter=age<30");
+      const res = await get(app, "/users?filter=age<30");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
     });
 
     it("should filter with <= operator", async () => {
-      const res = await request(app).get("/users?filter=age<=28");
+      const res = await get(app, "/users?filter=age<=28");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
     });
 
     it("should filter with =in= operator", async () => {
-      const res = await request(app).get('/users?filter=age=in=(25,30)');
+      const res = await get(app, "/users?filter=age=in=(25,30)");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
     });
 
     it("should filter with =out= operator", async () => {
-      const res = await request(app).get('/users?filter=age=out=(25,30)');
+      const res = await get(app, "/users?filter=age=out=(25,30)");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
     });
 
     it("should filter with =contains= operator", async () => {
-      const res = await request(app).get('/users?filter=email=contains="example"');
+      const res = await get(app, '/users?filter=email=contains="example"');
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
     });
 
     it("should filter with =icontains= operator (case-insensitive)", async () => {
-      const res = await request(app).get('/users?filter=name=icontains="ali"');
+      const res = await get(app, '/users?filter=name=icontains="ali"');
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(1);
@@ -256,42 +226,42 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should filter with =startswith= operator", async () => {
-      const res = await request(app).get('/users?filter=name=startswith="A"');
+      const res = await get(app, '/users?filter=name=startswith="A"');
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(1);
     });
 
     it("should filter with =endswith= operator", async () => {
-      const res = await request(app).get('/users?filter=email=endswith=".com"');
+      const res = await get(app, '/users?filter=email=endswith=".com"');
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(4);
     });
 
     it("should filter with =iendswith= operator", async () => {
-      const res = await request(app).get('/users?filter=email=iendswith=".COM"');
+      const res = await get(app, '/users?filter=email=iendswith=".COM"');
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(4);
     });
 
     it("should filter with AND (;) combinator", async () => {
-      const res = await request(app).get('/users?filter=role=="admin";status=="active"');
+      const res = await get(app, '/users?filter=role=="admin";status=="active"');
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
     });
 
     it("should filter with OR (,) combinator", async () => {
-      const res = await request(app).get('/users?filter=age==25,age==35');
+      const res = await get(app, "/users?filter=age==25,age==35");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
     });
 
     it("should filter with complex nested expression", async () => {
-      const res = await request(app).get('/users?filter=(role=="admin";age>25),status=="inactive"');
+      const res = await get(app, '/users?filter=(role=="admin";age>25),status=="inactive"');
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
@@ -300,7 +270,7 @@ describe("PostgreSQL Dialect Tests", () => {
     it("should filter with range using comparison operators", async () => {
       // Note: =between= operator has SQL generation issues with arrays
       // Using comparison operators as workaround: age >= 26 AND age <= 32
-      const res = await request(app).get("/users?filter=age>=26;age<=32");
+      const res = await get(app, "/users?filter=age>=26;age<=32");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
@@ -308,14 +278,14 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should filter with =ieq= operator (case-insensitive equals)", async () => {
-      const res = await request(app).get('/users?filter=role=ieq="ADMIN"');
+      const res = await get(app, '/users?filter=role=ieq="ADMIN"');
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
     });
 
     it("should filter with =length= operator", async () => {
-      const res = await request(app).get("/users?filter=name=length=3");
+      const res = await get(app, "/users?filter=name=length=3");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(1);
@@ -323,14 +293,14 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should filter with =minlength= operator", async () => {
-      const res = await request(app).get("/users?filter=name=minlength=5");
+      const res = await get(app, "/users?filter=name=minlength=5");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(3);
     });
 
     it("should filter with LIKE pattern (%=)", async () => {
-      const res = await request(app).get('/users?filter=email%="%@example.com"');
+      const res = await get(app, '/users?filter=email%="%@example.com"');
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
@@ -339,7 +309,7 @@ describe("PostgreSQL Dialect Tests", () => {
 
   describe("Pagination", () => {
     beforeEach(async () => {
-      app.use(
+      app.route(
         "/users",
         useResource(usersTable, {
           id: usersTable.id,
@@ -347,10 +317,9 @@ describe("PostgreSQL Dialect Tests", () => {
           pagination: { defaultLimit: 2, maxLimit: 10 },
         })
       );
-      app.use(errorHandler);
 
       for (let i = 1; i <= 10; i++) {
-        await request(app).post("/users").send({
+        await post(app, "/users", {
           name: `User${i}`,
           email: `user${i}@test.com`,
           age: 20 + i,
@@ -359,7 +328,7 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should paginate with default limit", async () => {
-      const res = await request(app).get("/users");
+      const res = await get(app, "/users");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
@@ -368,7 +337,7 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should paginate with custom limit", async () => {
-      const res = await request(app).get("/users?limit=5");
+      const res = await get(app, "/users?limit=5");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(5);
@@ -380,7 +349,7 @@ describe("PostgreSQL Dialect Tests", () => {
 
       do {
         const url = cursor ? `/users?limit=3&cursor=${cursor}` : "/users?limit=3";
-        const res = await request(app).get(url);
+        const res = await get(app, url);
 
         expect(res.status).toBe(200);
         allItems.push(...res.body.items);
@@ -393,7 +362,7 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should support ordering", async () => {
-      const res = await request(app).get("/users?orderBy=age:desc&limit=3");
+      const res = await get(app, "/users?orderBy=age:desc&limit=3");
 
       expect(res.status).toBe(200);
       expect(res.body.items[0].age).toBe(30);
@@ -402,7 +371,7 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should include total count when requested", async () => {
-      const res = await request(app).get("/users?totalCount=true&limit=3");
+      const res = await get(app, "/users?totalCount=true&limit=3");
 
       expect(res.status).toBe(200);
       expect(res.body.totalCount).toBe(10);
@@ -411,31 +380,30 @@ describe("PostgreSQL Dialect Tests", () => {
 
   describe("Aggregations", () => {
     beforeEach(async () => {
-      app.use(
+      app.route(
         "/users",
         useResource(usersTable, {
           id: usersTable.id,
           db,
         })
       );
-      app.use(errorHandler);
 
-      await request(app).post("/users").send({ name: "A", email: "a@t.com", age: 20, role: "admin" });
-      await request(app).post("/users").send({ name: "B", email: "b@t.com", age: 30, role: "admin" });
-      await request(app).post("/users").send({ name: "C", email: "c@t.com", age: 25, role: "user" });
-      await request(app).post("/users").send({ name: "D", email: "d@t.com", age: 35, role: "user" });
-      await request(app).post("/users").send({ name: "E", email: "e@t.com", age: 40, role: "user" });
+      await post(app, "/users", { name: "A", email: "a@t.com", age: 20, role: "admin" });
+      await post(app, "/users", { name: "B", email: "b@t.com", age: 30, role: "admin" });
+      await post(app, "/users", { name: "C", email: "c@t.com", age: 25, role: "user" });
+      await post(app, "/users", { name: "D", email: "d@t.com", age: 35, role: "user" });
+      await post(app, "/users", { name: "E", email: "e@t.com", age: 40, role: "user" });
     });
 
     it("should count all records", async () => {
-      const res = await request(app).get("/users/aggregate?count=true");
+      const res = await get(app, "/users/aggregate?count=true");
 
       expect(res.status).toBe(200);
       expect(res.body.groups[0].count).toBe(5);
     });
 
     it("should group by field", async () => {
-      const res = await request(app).get("/users/aggregate?groupBy=role&count=true");
+      const res = await get(app, "/users/aggregate?groupBy=role&count=true");
 
       expect(res.status).toBe(200);
       expect(res.body.groups).toHaveLength(2);
@@ -448,21 +416,21 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should calculate sum", async () => {
-      const res = await request(app).get("/users/aggregate?sum=age");
+      const res = await get(app, "/users/aggregate?sum=age");
 
       expect(res.status).toBe(200);
       expect(res.body.groups[0].sum.age).toBe(150);
     });
 
     it("should calculate avg", async () => {
-      const res = await request(app).get("/users/aggregate?avg=age");
+      const res = await get(app, "/users/aggregate?avg=age");
 
       expect(res.status).toBe(200);
       expect(res.body.groups[0].avg.age).toBe(30);
     });
 
     it("should calculate min and max", async () => {
-      const res = await request(app).get("/users/aggregate?min=age&max=age");
+      const res = await get(app, "/users/aggregate?min=age&max=age");
 
       expect(res.status).toBe(200);
       expect(res.body.groups[0].min.age).toBe(20);
@@ -470,7 +438,7 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should combine groupBy with aggregations", async () => {
-      const res = await request(app).get("/users/aggregate?groupBy=role&count=true&avg=age");
+      const res = await get(app, "/users/aggregate?groupBy=role&count=true&avg=age");
 
       expect(res.status).toBe(200);
 
@@ -482,7 +450,7 @@ describe("PostgreSQL Dialect Tests", () => {
 
   describe("Batch Operations", () => {
     beforeEach(() => {
-      app.use(
+      app.route(
         "/users",
         useResource(usersTable, {
           id: usersTable.id,
@@ -490,7 +458,6 @@ describe("PostgreSQL Dialect Tests", () => {
           batch: { create: 10, update: 10, delete: 10 },
         })
       );
-      app.use(errorHandler);
     });
 
     it("should batch create users", async () => {
@@ -500,14 +467,14 @@ describe("PostgreSQL Dialect Tests", () => {
         { name: "User3", email: "u3@test.com", age: 30 },
       ];
 
-      const res = await request(app).post("/users/batch").send({ items: users });
+      const res = await post(app, "/users/batch", { items: users });
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(3);
     });
 
     it("should batch update users", async () => {
-      await request(app).post("/users/batch").send({
+      await post(app, "/users/batch", {
         items: [
           { name: "User1", email: "u1@test.com", age: 20, status: "active" },
           { name: "User2", email: "u2@test.com", age: 25, status: "active" },
@@ -515,16 +482,14 @@ describe("PostgreSQL Dialect Tests", () => {
         ],
       });
 
-      const res = await request(app)
-        .patch('/users/batch?filter=age>=25')
-        .send({ status: "premium" });
+      const res = await patch(app, "/users/batch?filter=age>=25", { status: "premium" });
 
       expect(res.status).toBe(200);
       expect(res.body.count).toBe(2);
     });
 
     it("should batch delete users", async () => {
-      await request(app).post("/users/batch").send({
+      await post(app, "/users/batch", {
         items: [
           { name: "User1", email: "u1@test.com", age: 20 },
           { name: "User2", email: "u2@test.com", age: 25 },
@@ -532,7 +497,7 @@ describe("PostgreSQL Dialect Tests", () => {
         ],
       });
 
-      const res = await request(app).delete('/users/batch?filter=age<30');
+      const res = await del(app, "/users/batch?filter=age<30");
 
       expect(res.status).toBe(200);
       expect(res.body.count).toBe(2);
@@ -541,29 +506,28 @@ describe("PostgreSQL Dialect Tests", () => {
 
   describe("Boolean and Null Handling", () => {
     beforeEach(async () => {
-      app.use(
+      app.route(
         "/users",
         useResource(usersTable, {
           id: usersTable.id,
           db,
         })
       );
-      app.use(errorHandler);
 
-      await request(app).post("/users").send({ name: "Verified", email: "v@t.com", age: 25, isVerified: true, bio: "Has bio" });
-      await request(app).post("/users").send({ name: "Unverified", email: "u@t.com", age: 30, isVerified: false, bio: null });
-      await request(app).post("/users").send({ name: "NoBio", email: "n@t.com", age: 35, isVerified: true, bio: "" });
+      await post(app, "/users", { name: "Verified", email: "v@t.com", age: 25, isVerified: true, bio: "Has bio" });
+      await post(app, "/users", { name: "Unverified", email: "u@t.com", age: 30, isVerified: false, bio: null });
+      await post(app, "/users", { name: "NoBio", email: "n@t.com", age: 35, isVerified: true, bio: "" });
     });
 
     it("should filter by boolean true", async () => {
-      const res = await request(app).get("/users?filter=isVerified==true");
+      const res = await get(app, "/users?filter=isVerified==true");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
     });
 
     it("should filter by boolean false", async () => {
-      const res = await request(app).get("/users?filter=isVerified==false");
+      const res = await get(app, "/users?filter=isVerified==false");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(1);
@@ -571,7 +535,7 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should filter with =isnull= operator", async () => {
-      const res = await request(app).get("/users?filter=bio=isnull=true");
+      const res = await get(app, "/users?filter=bio=isnull=true");
 
       expect(res.status).toBe(200);
       // The =isnull= operator filters records where the field IS NULL
@@ -580,7 +544,7 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should filter with =isempty= operator", async () => {
-      const res = await request(app).get("/users?filter=bio=isempty=true");
+      const res = await get(app, "/users?filter=bio=isempty=true");
 
       expect(res.status).toBe(200);
       // Note: PostgreSQL handles NULL vs empty string differently
@@ -589,7 +553,7 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should filter with =isempty=false operator", async () => {
-      const res = await request(app).get("/users?filter=bio=isempty=false");
+      const res = await get(app, "/users?filter=bio=isempty=false");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(1);
@@ -599,7 +563,7 @@ describe("PostgreSQL Dialect Tests", () => {
 
   describe("Authorization Scopes", () => {
     beforeEach(async () => {
-      app.use(
+      app.route(
         "/posts",
         useResource(postsTable, {
           id: postsTable.id,
@@ -611,7 +575,6 @@ describe("PostgreSQL Dialect Tests", () => {
           },
         })
       );
-      app.use(errorHandler);
 
       await db.insert(postsTable).values([
         { title: "Public Post", content: "Content", authorId: 1, published: true },
@@ -621,7 +584,7 @@ describe("PostgreSQL Dialect Tests", () => {
     });
 
     it("should only return posts matching read scope", async () => {
-      const res = await request(app).get("/posts");
+      const res = await get(app, "/posts");
 
       expect(res.status).toBe(200);
       expect(res.body.items).toHaveLength(2);
@@ -631,20 +594,19 @@ describe("PostgreSQL Dialect Tests", () => {
 
   describe("Projections (select)", () => {
     beforeEach(async () => {
-      app.use(
+      app.route(
         "/users",
         useResource(usersTable, {
           id: usersTable.id,
           db,
         })
       );
-      app.use(errorHandler);
 
-      await request(app).post("/users").send({ name: "Test", email: "test@t.com", age: 25, role: "admin" });
+      await post(app, "/users", { name: "Test", email: "test@t.com", age: 25, role: "admin" });
     });
 
     it("should return only selected fields", async () => {
-      const res = await request(app).get("/users?select=id,name,email");
+      const res = await get(app, "/users?select=id,name,email");
 
       expect(res.status).toBe(200);
       expect(res.body.items[0]).toHaveProperty("id");
@@ -657,29 +619,28 @@ describe("PostgreSQL Dialect Tests", () => {
 
   describe("Count Endpoint", () => {
     beforeEach(async () => {
-      app.use(
+      app.route(
         "/users",
         useResource(usersTable, {
           id: usersTable.id,
           db,
         })
       );
-      app.use(errorHandler);
 
-      await request(app).post("/users").send({ name: "A", email: "a@t.com", age: 20, role: "admin" });
-      await request(app).post("/users").send({ name: "B", email: "b@t.com", age: 30, role: "user" });
-      await request(app).post("/users").send({ name: "C", email: "c@t.com", age: 40, role: "admin" });
+      await post(app, "/users", { name: "A", email: "a@t.com", age: 20, role: "admin" });
+      await post(app, "/users", { name: "B", email: "b@t.com", age: 30, role: "user" });
+      await post(app, "/users", { name: "C", email: "c@t.com", age: 40, role: "admin" });
     });
 
     it("should count all records", async () => {
-      const res = await request(app).get("/users/count");
+      const res = await get(app, "/users/count");
 
       expect(res.status).toBe(200);
       expect(res.body.count).toBe(3);
     });
 
     it("should count with filter", async () => {
-      const res = await request(app).get('/users/count?filter=role=="admin"');
+      const res = await get(app, '/users/count?filter=role=="admin"');
 
       expect(res.status).toBe(200);
       expect(res.body.count).toBe(2);

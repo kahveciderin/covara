@@ -2,7 +2,6 @@ import { useState, useCallback, useMemo, useRef } from "react";
 import { getClient } from "./globals";
 import {
   createFileClient,
-  FileClient,
   FileUploadOptions,
   UploadedFile,
   UploadProgress,

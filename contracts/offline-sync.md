@@ -53,10 +53,38 @@
 - May overwrite concurrent server changes
 - Use for last-write-wins semantics
 
+### Merge (Field-Level)
+- Conflict detected → field-level three-way merge, then retry as update
+- Server wins **only** on fields that BOTH the client and server changed
+- Client edits to fields the server did not touch are preserved
+- Requires `ConflictError.serverState`; when `ConflictError.baseState` is present
+  it is used to detect which fields each side actually changed (otherwise every
+  field in the mutation data is treated as a client change)
+- Only applies to `update` mutations; `create`/`delete` conflicts fall back to discard
+
 ### Manual Resolution
 - Conflict detected → call `onConflict` handler
 - Application decides resolution
 - Most flexible but requires implementation
+
+## Multi-Tab Coherence (opt-in: `offline.tabSync`)
+- Coordinated across browser tabs via `BroadcastChannel` (feature-detected;
+  a no-op in React Native / Node where `BroadcastChannel` is unavailable)
+- **Single flusher**: only the elected leader tab flushes the shared mutation
+  queue, so a mutation is not sent once per open tab. Leadership uses a
+  `localStorage` lock with a heartbeat/TTL; if `localStorage` is unavailable
+  every tab acts independently (best effort)
+- **Mirrored state**: id-remaps and invalidations broadcast to other tabs;
+  receiving tabs apply the id mapping and refetch matching live queries
+- After a leader finishes flushing it broadcasts `sync-complete`; followers
+  refresh their live queries to catch up
+
+## Durable Storage Backends
+- `InMemoryOfflineStorage` — non-durable (default when no DOM APIs)
+- `LocalStorageOfflineStorage` — browser, small queues
+- `IndexedDBOfflineStorage` — browser, larger queues (feature-detected)
+- `createOfflineStorage()` picks the best available backend (IndexedDB →
+  LocalStorage → in-memory)
 
 ## Failure Modes
 
@@ -101,4 +129,5 @@
 
 - `tests/sync/offline-sync-edge-cases.test.ts` - Comprehensive sync scenarios
 - `tests/client/offline.test.ts` - Basic offline functionality
+- `tests/client/offline-advanced.test.ts` - Merge strategy, IndexedDB backend, multi-tab sync
 - `tests/client/live-store.test.ts` - LiveQuery + offline integration

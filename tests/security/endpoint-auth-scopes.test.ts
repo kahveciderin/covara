@@ -1,6 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import request from "supertest";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient as createLibsqlClient } from "@libsql/client";
@@ -14,6 +12,7 @@ import {
   clearGlobalSearch,
   createMemorySearchAdapter,
 } from "@/search";
+import { createTestApp, get } from "../helpers/hono";
 
 const testDocumentsTable = sqliteTable("test_documents", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -24,21 +23,6 @@ const testDocumentsTable = sqliteTable("test_documents", {
   score: integer("score").default(0),
   isPublic: integer("isPublic", { mode: "boolean" }).default(false),
 });
-
-const injectTestUser = (userId: string) => (req: Request, _res: Response, next: NextFunction) => {
-  (req as any).user = { id: userId, roles: ["user"] };
-  next();
-};
-
-const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err.statusCode || err.status || 500;
-  res.status(status).json({
-    type: err.type || "/__concave/problems/internal-error",
-    title: err.title || "Error",
-    status,
-    detail: err.message,
-  });
-};
 
 describe("Endpoint Auth Scope Enforcement", () => {
   let libsqlClient: ReturnType<typeof createLibsqlClient>;
@@ -110,11 +94,9 @@ describe("Endpoint Auth Scope Enforcement", () => {
   });
 
   const createAppWithScope = (currentUserId: string) => {
-    const app = express();
-    app.use(express.json());
-    app.use(injectTestUser(currentUserId));
+    const app = createTestApp({ user: { id: currentUserId } });
 
-    app.use(
+    app.route(
       "/docs",
       useResource(testDocumentsTable, {
         id: testDocumentsTable.id,
@@ -130,7 +112,6 @@ describe("Endpoint Auth Scope Enforcement", () => {
       })
     );
 
-    app.use(errorHandler);
     return app;
   };
 
@@ -138,7 +119,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
     it("should only count documents within auth scope", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app).get("/docs/count").expect(200);
+      const res = await get(app, "/docs/count");
+      expect(res.status).toBe(200);
 
       // user1 should see: user1's 2 docs + user2's 1 public doc + user3's 0 public docs = 3 total
       expect(res.body.count).toBe(3);
@@ -149,7 +131,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
 
       // Try to filter for user2's docs - should only get public ones
       const filter = encodeURIComponent('userId=="user2"');
-      const res = await request(app).get(`/docs/count?filter=${filter}`).expect(200);
+      const res = await get(app, `/docs/count?filter=${filter}`);
+      expect(res.status).toBe(200);
 
       // Should only count user2's public doc, not the private one
       expect(res.body.count).toBe(1);
@@ -159,8 +142,10 @@ describe("Endpoint Auth Scope Enforcement", () => {
       const appUser1 = createAppWithScope("user1");
       const appUser2 = createAppWithScope("user2");
 
-      const resUser1 = await request(appUser1).get("/docs/count").expect(200);
-      const resUser2 = await request(appUser2).get("/docs/count").expect(200);
+      const resUser1 = await get(appUser1, "/docs/count");
+      expect(resUser1.status).toBe(200);
+      const resUser2 = await get(appUser2, "/docs/count");
+      expect(resUser2.status).toBe(200);
 
       // user1: own 2 docs + 2 public docs from others = but user2 public is already counted, user3 has no public
       // Actually: user1 private, user1 public, user2 public = 3
@@ -175,7 +160,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
 
       // Filter for work category
       const filter = encodeURIComponent('category=="work"');
-      const res = await request(app).get(`/docs/count?filter=${filter}`).expect(200);
+      const res = await get(app, `/docs/count?filter=${filter}`);
+      expect(res.status).toBe(200);
 
       // user1 has 1 work doc (private), but user2 and user3's work docs are private and not visible
       expect(res.body.count).toBe(1);
@@ -186,7 +172,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
     it("should only aggregate documents within auth scope", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app).get("/docs/aggregate?count=true").expect(200);
+      const res = await get(app, "/docs/aggregate?count=true");
+      expect(res.status).toBe(200);
 
       // Total count should be 3 (user1's 2 docs + user2's public doc)
       const totalCount = res.body.groups.reduce(
@@ -199,7 +186,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
     it("should only sum scores from documents within auth scope", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app).get("/docs/aggregate?sum=score").expect(200);
+      const res = await get(app, "/docs/aggregate?sum=score");
+      expect(res.status).toBe(200);
 
       // user1 private (10) + user1 public (20) + user2 public (40) = 70
       // Should NOT include user2 private (30) or user3 private (50)
@@ -213,7 +201,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
     it("should only average scores from documents within auth scope", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app).get("/docs/aggregate?avg=score").expect(200);
+      const res = await get(app, "/docs/aggregate?avg=score");
+      expect(res.status).toBe(200);
 
       // Average of 10, 20, 40 = 70/3 ≈ 23.33
       const avg = res.body.groups[0]?.avg?.score;
@@ -223,7 +212,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
     it("should group by category only within auth scope", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app).get("/docs/aggregate?groupBy=category&count=true").expect(200);
+      const res = await get(app, "/docs/aggregate?groupBy=category&count=true");
+      expect(res.status).toBe(200);
 
       const groups = res.body.groups;
       const workGroup = groups.find((g: any) => g.key?.category === "work");
@@ -241,7 +231,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
 
       // Try to filter for user3's docs
       const filter = encodeURIComponent('userId=="user3"');
-      const res = await request(app).get(`/docs/aggregate?filter=${filter}&count=true`).expect(200);
+      const res = await get(app, `/docs/aggregate?filter=${filter}&count=true`);
+      expect(res.status).toBe(200);
 
       // user3 has no public docs, so count should be 0
       const totalCount = res.body.groups.reduce(
@@ -254,7 +245,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
     it("should apply min/max only to documents within auth scope", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app).get("/docs/aggregate?min=score&max=score").expect(200);
+      const res = await get(app, "/docs/aggregate?min=score&max=score");
+      expect(res.status).toBe(200);
 
       // Min should be 10 (user1 private), max should be 40 (user2 public)
       // Should NOT include user3's 50 (private)
@@ -267,7 +259,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
     it("should only return search results within auth scope", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app).get("/docs/search?q=content").expect(200);
+      const res = await get(app, "/docs/search?q=content");
+      expect(res.status).toBe(200);
 
       // Should find documents with "content" in title/content, but only within scope
       // user1 should see: user1 private, user1 public, user2 public
@@ -290,7 +283,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
       const app = createAppWithScope("user1");
 
       // Search for "Secret" which appears in all private docs
-      const res = await request(app).get("/docs/search?q=Secret").expect(200);
+      const res = await get(app, "/docs/search?q=Secret");
+      expect(res.status).toBe(200);
 
       // Should only find user1's private doc, not user2's or user3's
       for (const item of res.body.items) {
@@ -305,7 +299,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
 
       // Try to search and filter for user2's documents
       const filter = encodeURIComponent('userId=="user2"');
-      const res = await request(app).get(`/docs/search?q=content&filter=${filter}`).expect(200);
+      const res = await get(app, `/docs/search?q=content&filter=${filter}`);
+      expect(res.status).toBe(200);
 
       // Should only return user2's PUBLIC documents
       for (const item of res.body.items) {
@@ -326,8 +321,10 @@ describe("Endpoint Auth Scope Enforcement", () => {
       const appUser2 = createAppWithScope("user2");
 
       // Search for "Private" which appears in all private doc titles
-      const resUser1 = await request(appUser1).get("/docs/search?q=Private").expect(200);
-      const resUser2 = await request(appUser2).get("/docs/search?q=Private").expect(200);
+      const resUser1 = await get(appUser1, "/docs/search?q=Private");
+      expect(resUser1.status).toBe(200);
+      const resUser2 = await get(appUser2, "/docs/search?q=Private");
+      expect(resUser2.status).toBe(200);
 
       // user1 should only see their own private doc
       expect(resUser1.body.items.every((item: any) =>
@@ -343,7 +340,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
     it("should not expose total count of out-of-scope documents", async () => {
       const app = createAppWithScope("user1");
 
-      const res = await request(app).get("/docs/search?q=content").expect(200);
+      const res = await get(app, "/docs/search?q=content");
+      expect(res.status).toBe(200);
 
       // Total should only count documents within scope
       // There are 5 total docs with "content", but user1 should only see 3
@@ -354,7 +352,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
       const app = createAppWithScope("user1");
 
       // Search for "user2" which appears in user2's content
-      const res = await request(app).get("/docs/search?q=user2").expect(200);
+      const res = await get(app, "/docs/search?q=user2");
+      expect(res.status).toBe(200);
 
       // Should only return user2's public doc if it matches
       for (const item of res.body.items) {
@@ -367,11 +366,9 @@ describe("Endpoint Auth Scope Enforcement", () => {
 
   describe("Unauthenticated Access", () => {
     const createAppWithoutAuth = () => {
-      const app = express();
-      app.use(express.json());
-      // No user injection - unauthenticated
+      const app = createTestApp({ user: null });
 
-      app.use(
+      app.route(
         "/docs",
         useResource(testDocumentsTable, {
           id: testDocumentsTable.id,
@@ -383,36 +380,33 @@ describe("Endpoint Auth Scope Enforcement", () => {
         })
       );
 
-      app.use(errorHandler);
       return app;
     };
 
     it("should deny count access for unauthenticated users with auth configured", async () => {
       const app = createAppWithoutAuth();
-      const res = await request(app).get("/docs/count");
+      const res = await get(app, "/docs/count");
       expect([401, 403]).toContain(res.status);
     });
 
     it("should deny aggregate access for unauthenticated users with auth configured", async () => {
       const app = createAppWithoutAuth();
-      const res = await request(app).get("/docs/aggregate?count=true");
+      const res = await get(app, "/docs/aggregate?count=true");
       expect([401, 403]).toContain(res.status);
     });
 
     it("should deny search access for unauthenticated users with auth configured", async () => {
       const app = createAppWithoutAuth();
-      const res = await request(app).get("/docs/search?q=test");
+      const res = await get(app, "/docs/search?q=test");
       expect([401, 403]).toContain(res.status);
     });
   });
 
   describe("Public Read Access", () => {
     const createAppWithPublicRead = () => {
-      const app = express();
-      app.use(express.json());
-      // No user injection
+      const app = createTestApp({ user: null });
 
-      app.use(
+      app.route(
         "/docs",
         useResource(testDocumentsTable, {
           id: testDocumentsTable.id,
@@ -426,19 +420,20 @@ describe("Endpoint Auth Scope Enforcement", () => {
         })
       );
 
-      app.use(errorHandler);
       return app;
     };
 
     it("should allow count access with public read", async () => {
       const app = createAppWithPublicRead();
-      const res = await request(app).get("/docs/count").expect(200);
+      const res = await get(app, "/docs/count");
+      expect(res.status).toBe(200);
       expect(res.body.count).toBe(5); // All 5 documents
     });
 
     it("should allow aggregate access with public read", async () => {
       const app = createAppWithPublicRead();
-      const res = await request(app).get("/docs/aggregate?count=true").expect(200);
+      const res = await get(app, "/docs/aggregate?count=true");
+      expect(res.status).toBe(200);
       const totalCount = res.body.groups.reduce(
         (sum: number, g: any) => sum + (g.count || 0),
         0
@@ -448,7 +443,8 @@ describe("Endpoint Auth Scope Enforcement", () => {
 
     it("should allow search access with public read", async () => {
       const app = createAppWithPublicRead();
-      const res = await request(app).get("/docs/search?q=content").expect(200);
+      const res = await get(app, "/docs/search?q=content");
+      expect(res.status).toBe(200);
       // All documents have "content" in them
       expect(res.body.items.length).toBe(5);
     });

@@ -3,7 +3,6 @@ import {
   AuthState,
   OIDCUserInfo,
   TokenSet,
-  TokenStorage,
   AuthEventListener,
   AuthManagerEvents,
 } from "./types";
@@ -11,8 +10,6 @@ import { OIDCClient, createOIDCClient } from "./oidc-client";
 import {
   TokenManager,
   MemoryStorage,
-  LocalStorageAdapter,
-  SessionStorageAdapter,
   createTokenManager,
 } from "./token-manager";
 import { AuthTransport, createAuthTransport } from "./auth-transport";

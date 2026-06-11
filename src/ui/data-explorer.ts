@@ -1,8 +1,7 @@
-import { Router, Request, Response } from "express";
+import { Hono } from "hono";
 import { SQL, getTableColumns, eq, and, count } from "drizzle-orm";
 import {
   getResourceSchema,
-  getAllResourceSchemas,
   getSchemaInfo,
   getAllSchemaInfos,
 } from "./schema-registry";
@@ -12,6 +11,7 @@ import {
   decodeCursorLegacy,
   parseOrderBy,
 } from "@/resource/pagination";
+import { readJsonBody } from "@/server/request";
 import {
   logAdminAction,
   getAdminUser,
@@ -47,8 +47,8 @@ const applyFieldExclusion = (
 export const createDataExplorerRoutes = (
   config: DataExplorerConfig = {},
   securityConfig: AdminSecurityConfig = {}
-): Router => {
-  const router = Router();
+): Hono => {
+  const router = new Hono();
   const maxLimit = config.maxLimit ?? DEFAULT_MAX_LIMIT;
   const mode = securityConfig.mode ?? detectEnvironment();
 
@@ -60,77 +60,85 @@ export const createDataExplorerRoutes = (
     return config.resources.includes(name);
   };
 
-  router.get("/schemas", (_req: Request, res: Response) => {
+  router.get("/schemas", (c) => {
     let schemas = getAllSchemaInfos();
     if (config.resources && config.resources.length > 0) {
       schemas = schemas.filter((s) => config.resources!.includes(s.name));
     }
-    res.json({ schemas, mode, readOnly: isReadOnly });
+    return c.json({ schemas, mode, readOnly: isReadOnly });
   });
 
-  router.get("/schemas/:resource", (req: Request, res: Response) => {
-    const resource = req.params.resource as string;
+  router.get("/schemas/:resource", (c) => {
+    const resource = c.req.param("resource");
 
     if (!isResourceAllowed(resource)) {
-      res.status(404).json({
-        type: "/__concave/problems/not-found",
-        title: "Resource not found",
-        status: 404,
-        detail: `Resource '${resource}' is not available in the data explorer`,
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/not-found",
+          title: "Resource not found",
+          status: 404,
+          detail: `Resource '${resource}' is not available in the data explorer`,
+        },
+        404
+      );
     }
 
     const schema = getSchemaInfo(resource);
     if (!schema) {
-      res.status(404).json({
-        type: "/__concave/problems/not-found",
-        title: "Resource not found",
-        status: 404,
-        detail: `Resource '${resource}' not found`,
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/not-found",
+          title: "Resource not found",
+          status: 404,
+          detail: `Resource '${resource}' not found`,
+        },
+        404
+      );
     }
 
-    res.json({ schema });
+    return c.json({ schema });
   });
 
-  router.get("/data/:resource", async (req: Request, res: Response) => {
-    const resource = req.params.resource as string;
-    const adminUser = getAdminUser(req);
+  router.get("/data/:resource", async (c) => {
+    const resource = c.req.param("resource");
+    const adminUser = getAdminUser(c);
 
     if (!isResourceAllowed(resource)) {
-      res.status(404).json({
-        type: "/__concave/problems/not-found",
-        title: "Resource not found",
-        status: 404,
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/not-found",
+          title: "Resource not found",
+          status: 404,
+        },
+        404
+      );
     }
 
     const entry = getResourceSchema(resource);
     if (!entry) {
-      res.status(404).json({
-        type: "/__concave/problems/not-found",
-        title: "Resource not found",
-        status: 404,
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/not-found",
+          title: "Resource not found",
+          status: 404,
+        },
+        404
+      );
     }
 
     const db = entry.db;
     const schema = entry.schema;
     const idColumnName = entry.idColumn.name;
 
-    const filterStr = (req.query.filter as string) ?? "";
+    const filterStr = c.req.query("filter") ?? "";
     const limitNum = Math.min(
-      parseInt((req.query.limit as string) ?? "20", 10),
+      parseInt(c.req.query("limit") ?? "20", 10),
       maxLimit
     );
-    const cursor = req.query.cursor as string | undefined;
-    const orderByStr = (req.query.orderBy as string) ?? idColumnName;
-    const selectStr = req.query.select as string | undefined;
-    const includeTotalCount = req.query.totalCount === "true";
+    const cursor = c.req.query("cursor");
+    const orderByStr = c.req.query("orderBy") ?? idColumnName;
+    const selectStr = c.req.query("select");
+    const includeTotalCount = c.req.query("totalCount") === "true";
 
     try {
       const filterer = createResourceFilter(schema, {});
@@ -174,7 +182,7 @@ export const createDataExplorerRoutes = (
 
       query = query.limit(limitNum + 1);
 
-      let items = await query;
+      const items = await query;
 
       let totalCount: number | undefined;
       if (includeTotalCount) {
@@ -223,43 +231,50 @@ export const createDataExplorerRoutes = (
         });
       }
 
-      res.json({
+      return c.json({
         ...result,
         adminBypass: true,
         warning: "Admin bypass active - all scopes bypassed",
       });
     } catch (error) {
-      res.status(400).json({
-        type: "/__concave/problems/filter-parse-error",
-        title: "Invalid query",
-        status: 400,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/filter-parse-error",
+          title: "Invalid query",
+          status: 400,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        400
+      );
     }
   });
 
-  router.get("/data/:resource/:id", async (req: Request, res: Response) => {
-    const resource = req.params.resource as string;
-    const id = req.params.id as string;
-    const adminUser = getAdminUser(req);
+  router.get("/data/:resource/:id", async (c) => {
+    const resource = c.req.param("resource");
+    const id = c.req.param("id");
+    const adminUser = getAdminUser(c);
 
     if (!isResourceAllowed(resource)) {
-      res.status(404).json({
-        type: "/__concave/problems/not-found",
-        title: "Resource not found",
-        status: 404,
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/not-found",
+          title: "Resource not found",
+          status: 404,
+        },
+        404
+      );
     }
 
     const entry = getResourceSchema(resource);
     if (!entry) {
-      res.status(404).json({
-        type: "/__concave/problems/not-found",
-        title: "Resource not found",
-        status: 404,
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/not-found",
+          title: "Resource not found",
+          status: 404,
+        },
+        404
+      );
     }
 
     const db = entry.db;
@@ -268,26 +283,30 @@ export const createDataExplorerRoutes = (
     const idColumn = columns[entry.idColumn.name];
 
     if (!idColumn) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Internal error",
-        status: 500,
-        detail: "ID column not found",
-      });
-      return;
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Internal error",
+          status: 500,
+          detail: "ID column not found",
+        },
+        500
+      );
     }
 
     try {
       const [item] = await db.select().from(schema).where(eq(idColumn, id));
 
       if (!item) {
-        res.status(404).json({
-          type: "/__concave/problems/not-found",
-          title: "Record not found",
-          status: 404,
-          detail: `Record with id '${id}' not found in '${resource}'`,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/not-found",
+            title: "Record not found",
+            status: 404,
+            detail: `Record with id '${id}' not found in '${resource}'`,
+          },
+          404
+        );
       }
 
       let result = item as Record<string, unknown>;
@@ -307,49 +326,55 @@ export const createDataExplorerRoutes = (
         });
       }
 
-      res.json({
+      return c.json({
         item: result,
         adminBypass: true,
         warning: "Admin bypass active - all scopes bypassed",
       });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Internal error",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Internal error",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
   if (!isReadOnly) {
-    router.post("/data/:resource", async (req: Request, res: Response) => {
-      const resource = req.params.resource as string;
-      const adminUser = requireAdminUser(req, res);
-      if (!adminUser) return;
+    router.post("/data/:resource", async (c) => {
+      const resource = c.req.param("resource");
+      const adminUser = requireAdminUser(c);
 
       if (!isResourceAllowed(resource)) {
-        res.status(404).json({
-          type: "/__concave/problems/not-found",
-          title: "Resource not found",
-          status: 404,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/not-found",
+            title: "Resource not found",
+            status: 404,
+          },
+          404
+        );
       }
 
       const entry = getResourceSchema(resource);
       if (!entry) {
-        res.status(404).json({
-          type: "/__concave/problems/not-found",
-          title: "Resource not found",
-          status: 404,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/not-found",
+            title: "Resource not found",
+            status: 404,
+          },
+          404
+        );
       }
 
       const db = entry.db;
       const schema = entry.schema;
-      const data = req.body;
+      const data = (await readJsonBody(c)) as Record<string, unknown>;
 
       try {
         const [created] = await db.insert(schema).values(data).returning();
@@ -364,69 +389,82 @@ export const createDataExplorerRoutes = (
           afterValue: created as Record<string, unknown>,
         });
 
-        res.status(201).json({
-          item: created,
-          adminBypass: true,
-        });
+        return c.json(
+          {
+            item: created,
+            adminBypass: true,
+          },
+          201
+        );
       } catch (error) {
-        res.status(400).json({
-          type: "/__concave/problems/validation-error",
-          title: "Create failed",
-          status: 400,
-          detail: error instanceof Error ? error.message : "Unknown error",
-        });
+        return c.json(
+          {
+            type: "/__concave/problems/validation-error",
+            title: "Create failed",
+            status: 400,
+            detail: error instanceof Error ? error.message : "Unknown error",
+          },
+          400
+        );
       }
     });
 
-    router.patch("/data/:resource/:id", async (req: Request, res: Response) => {
-      const resource = req.params.resource as string;
-      const id = req.params.id as string;
-      const adminUser = requireAdminUser(req, res);
-      if (!adminUser) return;
+    router.patch("/data/:resource/:id", async (c) => {
+      const resource = c.req.param("resource");
+      const id = c.req.param("id");
+      const adminUser = requireAdminUser(c);
 
       if (!isResourceAllowed(resource)) {
-        res.status(404).json({
-          type: "/__concave/problems/not-found",
-          title: "Resource not found",
-          status: 404,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/not-found",
+            title: "Resource not found",
+            status: 404,
+          },
+          404
+        );
       }
 
       const entry = getResourceSchema(resource);
       if (!entry) {
-        res.status(404).json({
-          type: "/__concave/problems/not-found",
-          title: "Resource not found",
-          status: 404,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/not-found",
+            title: "Resource not found",
+            status: 404,
+          },
+          404
+        );
       }
 
       const db = entry.db;
       const schema = entry.schema;
       const columns = getTableColumns(schema);
       const idColumn = columns[entry.idColumn.name];
-      const data = req.body;
+      const data = (await readJsonBody(c)) as Record<string, unknown>;
 
       if (!idColumn) {
-        res.status(500).json({
-          type: "/__concave/problems/internal-error",
-          title: "Internal error",
-          status: 500,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/internal-error",
+            title: "Internal error",
+            status: 500,
+          },
+          500
+        );
       }
 
       try {
         const [existing] = await db.select().from(schema).where(eq(idColumn, id));
         if (!existing) {
-          res.status(404).json({
-            type: "/__concave/problems/not-found",
-            title: "Record not found",
-            status: 404,
-          });
-          return;
+          return c.json(
+            {
+              type: "/__concave/problems/not-found",
+              title: "Record not found",
+              status: 404,
+            },
+            404
+          );
         }
 
         const [updated] = await db
@@ -446,43 +484,49 @@ export const createDataExplorerRoutes = (
           afterValue: updated as Record<string, unknown>,
         });
 
-        res.json({
+        return c.json({
           item: updated,
           adminBypass: true,
         });
       } catch (error) {
-        res.status(400).json({
-          type: "/__concave/problems/validation-error",
-          title: "Update failed",
-          status: 400,
-          detail: error instanceof Error ? error.message : "Unknown error",
-        });
+        return c.json(
+          {
+            type: "/__concave/problems/validation-error",
+            title: "Update failed",
+            status: 400,
+            detail: error instanceof Error ? error.message : "Unknown error",
+          },
+          400
+        );
       }
     });
 
-    router.delete("/data/:resource/:id", async (req: Request, res: Response) => {
-      const resource = req.params.resource as string;
-      const id = req.params.id as string;
-      const adminUser = requireAdminUser(req, res);
-      if (!adminUser) return;
+    router.delete("/data/:resource/:id", async (c) => {
+      const resource = c.req.param("resource");
+      const id = c.req.param("id");
+      const adminUser = requireAdminUser(c);
 
       if (!isResourceAllowed(resource)) {
-        res.status(404).json({
-          type: "/__concave/problems/not-found",
-          title: "Resource not found",
-          status: 404,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/not-found",
+            title: "Resource not found",
+            status: 404,
+          },
+          404
+        );
       }
 
       const entry = getResourceSchema(resource);
       if (!entry) {
-        res.status(404).json({
-          type: "/__concave/problems/not-found",
-          title: "Resource not found",
-          status: 404,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/not-found",
+            title: "Resource not found",
+            status: 404,
+          },
+          404
+        );
       }
 
       const db = entry.db;
@@ -491,23 +535,27 @@ export const createDataExplorerRoutes = (
       const idColumn = columns[entry.idColumn.name];
 
       if (!idColumn) {
-        res.status(500).json({
-          type: "/__concave/problems/internal-error",
-          title: "Internal error",
-          status: 500,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/internal-error",
+            title: "Internal error",
+            status: 500,
+          },
+          500
+        );
       }
 
       try {
         const [existing] = await db.select().from(schema).where(eq(idColumn, id));
         if (!existing) {
-          res.status(404).json({
-            type: "/__concave/problems/not-found",
-            title: "Record not found",
-            status: 404,
-          });
-          return;
+          return c.json(
+            {
+              type: "/__concave/problems/not-found",
+              title: "Record not found",
+              status: 404,
+            },
+            404
+          );
         }
 
         await db.delete(schema).where(eq(idColumn, id));
@@ -522,14 +570,17 @@ export const createDataExplorerRoutes = (
           beforeValue: existing as Record<string, unknown>,
         });
 
-        res.status(204).send();
+        return c.body(null, 204);
       } catch (error) {
-        res.status(400).json({
-          type: "/__concave/problems/validation-error",
-          title: "Delete failed",
-          status: 400,
-          detail: error instanceof Error ? error.message : "Unknown error",
-        });
+        return c.json(
+          {
+            type: "/__concave/problems/validation-error",
+            title: "Delete failed",
+            status: 400,
+            detail: error instanceof Error ? error.message : "Unknown error",
+          },
+          400
+        );
       }
     });
   }

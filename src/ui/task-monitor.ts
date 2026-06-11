@@ -1,4 +1,4 @@
-import { Router, Request, Response } from "express";
+import { Hono } from "hono";
 import { TaskScheduler, TaskRegistry, TaskWorker } from "@/tasks";
 import { DeadLetterQueue } from "@/tasks/dlq";
 import { logAdminAction, getAdminUser, requireAdminUser } from "./admin-auth";
@@ -11,23 +11,20 @@ export interface TaskMonitorConfig {
   workers?: TaskWorker[];
 }
 
-export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Router => {
-  const router = Router();
+export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Hono => {
+  const router = new Hono();
 
   if (!config.enabled) {
-    router.use((_req: Request, res: Response) => {
-      res.json({ enabled: false });
-    });
+    router.all("*", (c) => c.json({ enabled: false }));
     return router;
   }
 
-  router.get("/queue", async (req: Request, res: Response) => {
+  router.get("/queue", async (c) => {
     if (!config.scheduler) {
-      res.json({ enabled: false, queueDepth: 0 });
-      return;
+      return c.json({ enabled: false, queueDepth: 0 });
     }
 
-    const adminUser = getAdminUser(req);
+    const adminUser = getAdminUser(c);
 
     try {
       const queueDepth = await config.scheduler.getQueueDepth();
@@ -56,7 +53,7 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Router 
         });
       }
 
-      res.json({
+      return c.json({
         enabled: true,
         queueDepth,
         pending: pendingTasks,
@@ -64,55 +61,60 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Router 
         running: runningTasks,
       });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to fetch queue",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to fetch queue",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
-  router.get("/task/:id", async (req: Request, res: Response) => {
+  router.get("/task/:id", async (c) => {
     if (!config.scheduler) {
-      res.json({ enabled: false });
-      return;
+      return c.json({ enabled: false });
     }
 
-    const id = req.params.id as string;
+    const id = c.req.param("id");
 
     try {
       const task = await config.scheduler.getTask(id);
       if (!task) {
-        res.status(404).json({
-          type: "/__concave/problems/not-found",
-          title: "Task not found",
-          status: 404,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/not-found",
+            title: "Task not found",
+            status: 404,
+          },
+          404
+        );
       }
 
-      res.json({ task });
+      return c.json({ task });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to fetch task",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to fetch task",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
-  router.post("/task/:id/cancel", async (req: Request, res: Response) => {
+  router.post("/task/:id/cancel", async (c) => {
     if (!config.scheduler) {
-      res.json({ enabled: false });
-      return;
+      return c.json({ enabled: false });
     }
 
-    const adminUser = requireAdminUser(req, res);
-    if (!adminUser) return;
+    const adminUser = requireAdminUser(c);
 
-    const id = req.params.id as string;
+    const id = c.req.param("id");
 
     try {
       const cancelled = await config.scheduler.cancel(id);
@@ -126,26 +128,28 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Router 
         details: { success: cancelled },
       });
 
-      res.json({ cancelled });
+      return c.json({ cancelled });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to cancel task",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to cancel task",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
-  router.get("/dlq", async (req: Request, res: Response) => {
+  router.get("/dlq", async (c) => {
     if (!config.dlq) {
-      res.json({ enabled: false, entries: [] });
-      return;
+      return c.json({ enabled: false, entries: [] });
     }
 
-    const adminUser = getAdminUser(req);
-    const limit = parseInt((req.query.limit as string) ?? "50", 10);
-    const offset = parseInt((req.query.offset as string) ?? "0", 10);
+    const adminUser = getAdminUser(c);
+    const limit = parseInt(c.req.query("limit") ?? "50", 10);
+    const offset = parseInt(c.req.query("offset") ?? "0", 10);
 
     try {
       const entries = await config.dlq.list(limit, offset);
@@ -160,57 +164,62 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Router 
         });
       }
 
-      res.json({ enabled: true, entries, total });
+      return c.json({ enabled: true, entries, total });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to fetch DLQ",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to fetch DLQ",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
-  router.get("/dlq/:id", async (req: Request, res: Response) => {
+  router.get("/dlq/:id", async (c) => {
     if (!config.dlq) {
-      res.json({ enabled: false });
-      return;
+      return c.json({ enabled: false });
     }
 
-    const id = req.params.id as string;
+    const id = c.req.param("id");
 
     try {
       const entry = await config.dlq.get(id);
       if (!entry) {
-        res.status(404).json({
-          type: "/__concave/problems/not-found",
-          title: "DLQ entry not found",
-          status: 404,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/not-found",
+            title: "DLQ entry not found",
+            status: 404,
+          },
+          404
+        );
       }
 
-      res.json({ entry });
+      return c.json({ entry });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to fetch DLQ entry",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to fetch DLQ entry",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
-  router.post("/dlq/:id/retry", async (req: Request, res: Response) => {
+  router.post("/dlq/:id/retry", async (c) => {
     if (!config.dlq) {
-      res.json({ enabled: false });
-      return;
+      return c.json({ enabled: false });
     }
 
-    const adminUser = requireAdminUser(req, res);
-    if (!adminUser) return;
+    const adminUser = requireAdminUser(c);
 
-    const id = req.params.id as string;
+    const id = c.req.param("id");
 
     try {
       const newTaskId = await config.dlq.retry(id);
@@ -224,37 +233,40 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Router 
         details: { newTaskId },
       });
 
-      res.json({ success: !!newTaskId, newTaskId });
+      return c.json({ success: !!newTaskId, newTaskId });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to retry task",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to retry task",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
-  router.delete("/dlq/:id", async (req: Request, res: Response) => {
+  router.delete("/dlq/:id", async (c) => {
     if (!config.dlq) {
-      res.json({ enabled: false });
-      return;
+      return c.json({ enabled: false });
     }
 
-    const adminUser = requireAdminUser(req, res);
-    if (!adminUser) return;
+    const adminUser = requireAdminUser(c);
 
-    const id = req.params.id as string;
+    const id = c.req.param("id");
 
     try {
       const entry = await config.dlq.get(id);
       if (!entry) {
-        res.status(404).json({
-          type: "/__concave/problems/not-found",
-          title: "DLQ entry not found",
-          status: 404,
-        });
-        return;
+        return c.json(
+          {
+            type: "/__concave/problems/not-found",
+            title: "DLQ entry not found",
+            status: 404,
+          },
+          404
+        );
       }
 
       await config.dlq.purge(Date.now() - entry.failedAt + 1000);
@@ -267,40 +279,44 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Router 
         reason: "Admin purged DLQ entry",
       });
 
-      res.status(204).send();
+      return c.body(null, 204);
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to purge DLQ entry",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to purge DLQ entry",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
-  router.get("/workers", (_req: Request, res: Response) => {
+  router.get("/workers", (c) => {
     if (!config.workers || config.workers.length === 0) {
-      res.json({ enabled: false, workers: [] });
-      return;
+      return c.json({ enabled: false, workers: [] });
     }
 
     try {
       const workers = config.workers.map((w) => w.getStats());
-      res.json({ enabled: true, workers });
+      return c.json({ enabled: true, workers });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to fetch workers",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to fetch workers",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 
-  router.get("/definitions", (_req: Request, res: Response) => {
+  router.get("/definitions", (c) => {
     if (!config.registry) {
-      res.json({ enabled: false, definitions: [] });
-      return;
+      return c.json({ enabled: false, definitions: [] });
     }
 
     try {
@@ -314,14 +330,17 @@ export const createTaskMonitorRoutes = (config: TaskMonitorConfig = {}): Router 
         retry: d.retry,
       }));
 
-      res.json({ enabled: true, definitions });
+      return c.json({ enabled: true, definitions });
     } catch (error) {
-      res.status(500).json({
-        type: "/__concave/problems/internal-error",
-        title: "Failed to fetch definitions",
-        status: 500,
-        detail: error instanceof Error ? error.message : "Unknown error",
-      });
+      return c.json(
+        {
+          type: "/__concave/problems/internal-error",
+          title: "Failed to fetch definitions",
+          status: 500,
+          detail: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
+      );
     }
   });
 

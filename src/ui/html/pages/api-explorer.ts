@@ -1,5 +1,5 @@
 import { html, escapeHtml, formatJson } from '../utils';
-import { card, badge, button, input, select, methodBadge, statusBadge, emptyState } from '../components';
+import { card, badge, button, methodBadge, statusBadge, emptyState } from '../components';
 
 export interface EndpointInfo {
   method: string;
