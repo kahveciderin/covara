@@ -1,6 +1,6 @@
 {
   "name": "@kahveciderin/concave",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "Real-time resource API framework built on Hono — runs standalone (Node) and on Cloudflare Workers, with a TypeScript client",
   "type": "module",
   "main": "./dist/index.js",
