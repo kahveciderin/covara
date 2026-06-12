@@ -74,6 +74,8 @@ export interface ChangelogEntry {
   object?: Record<string, unknown>;
   previousObject?: Record<string, unknown>;
   timestamp: number;
+  // ID of the authenticated user who performed the mutation, when known.
+  userId?: string;
 }
 
 export interface Subscription {
@@ -237,6 +239,8 @@ export interface SSEConfig {
   heartbeatMs?: number;
   maxQueueBytes?: number;
   onBackpressure?: "drop" | "invalidate" | "disconnect";
+  // Debounce window (ms) for recomputing live aggregations after a mutation.
+  aggregateDebounceMs?: number;
 }
 
 export interface FilterConfig {

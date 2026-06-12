@@ -286,6 +286,19 @@ export const transformAggregationResults = (
   return { groups };
 };
 
+// Order-independent fingerprint of an aggregation result, used by live
+// aggregate subscriptions to decide whether the result actually changed. A
+// `GROUP BY` without `ORDER BY` may return groups in a different order across
+// executions, so comparing the raw serialization would resend identical
+// results. Each group's own fields are emitted in a fixed order (groupBy /
+// sum / avg / ... arrays), so only the group array order needs normalizing.
+export const canonicalizeAggregation = (result: AggregationResult): string => {
+  const groupKeys = result.groups
+    .map((group) => JSON.stringify(group))
+    .sort();
+  return JSON.stringify(groupKeys);
+};
+
 export const createQueryHelper = <TConfig extends TableConfig>(
   schema: Table<TConfig>
 ) => {

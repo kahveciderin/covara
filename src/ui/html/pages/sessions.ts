@@ -72,13 +72,15 @@ export const sessionsList = (sessions: SessionInfo[]): string => card({
             <tr>
               <td>
                 <span class="code-inline" style="font-size: 11px;">
-                  ${escapeHtml(session.id.slice(0, 16))}...
+                  ${escapeHtml((session.id ?? '').slice(0, 16))}...
                 </span>
               </td>
               <td>
                 ${session.userEmail
                   ? html`<span style="font-size: 13px;">${escapeHtml(session.userEmail)}</span>`
-                  : html`<span class="code-inline" style="font-size: 11px;">${escapeHtml(session.userId.slice(0, 12))}...</span>`}
+                  : session.userId
+                    ? html`<span class="code-inline" style="font-size: 11px;">${escapeHtml(session.userId.slice(0, 12))}...</span>`
+                    : html`<span style="color: var(--text-3);">-</span>`}
               </td>
               <td style="color: var(--text-2); font-size: 12px; white-space: nowrap;">
                 ${formatRelativeTime(session.createdAt)}
@@ -112,7 +114,6 @@ export const sessionsList = (sessions: SessionInfo[]): string => card({
         </tbody>
       </table>
     </div>
-    <style>.btn-danger { color: var(--error); } .btn-danger:hover { background: var(--error-bg); }</style>
   ` : emptyState('\u26A1', 'No active sessions', 'Sessions will appear here when users log in')}
 `);
 

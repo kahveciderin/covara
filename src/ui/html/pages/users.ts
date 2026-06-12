@@ -188,7 +188,7 @@ export const userDetail = (data: UserDetailData): string => html`
             ${data.user.sessions.map(session => html`
               <div class="list-item" style="padding: 8px; font-size: 12px;">
                 <div style="flex: 1;">
-                  <div class="code-inline" style="font-size: 10px; margin-bottom: 4px;">${escapeHtml(session.id.slice(0, 16))}...</div>
+                  <div class="code-inline" style="font-size: 10px; margin-bottom: 4px;">${escapeHtml((session.id ?? '').slice(0, 16))}...</div>
                   <div style="color: var(--text-2);">${escapeHtml(session.userAgent || 'Unknown')}</div>
                 </div>
                 <div style="text-align: right; color: var(--text-3); font-size: 11px;">

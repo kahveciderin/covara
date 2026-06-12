@@ -1,4 +1,4 @@
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { eq, and, count, getTableColumns } from "drizzle-orm";
 import { getResourceSchema, getSchemaInfo, getAllResourcesForDisplay } from "./schema-registry";
 import { createResourceFilter } from "@/resource/filter";
@@ -19,6 +19,7 @@ import { layout } from "./html/layout";
 import { runtimeScript } from "./html/client/runtime";
 import { dataExplorerScript } from "./html/client/data-explorer-app";
 import { htmxScript } from "./html/client/htmx-vendor";
+import { logoSvg } from "./html/logo";
 import * as pages from "./html/pages";
 import { html, escapeHtml } from "./html/utils";
 import { emptyState } from "./html/components";
@@ -34,7 +35,8 @@ export interface AdminUIConfig {
     getCurrentSequence: () => Promise<number>;
     getEntries: (fromSeq: number, limit: number) => Promise<any[]>;
   };
-  getActiveSubscriptions?: () => any[];
+  getActiveSubscriptions?: () => any[] | Promise<any[]>;
+  disconnectSubscription?: (subscriptionId: string) => boolean | Promise<boolean>;
   userManager?: {
     listUsers: (limit?: number, offset?: number) => Promise<{ users: any[]; total: number }>;
     getUser: (id: string) => Promise<any | null>;
@@ -91,6 +93,38 @@ export const logRequest = (log: RequestLog) => {
 export const logError = (log: ErrorLog) => {
   errorLogs.unshift(log);
   if (errorLogs.length > MAX_LOGS) errorLogs.pop();
+};
+
+export interface AdminRequestLoggerOptions {
+  // Path prefixes to exclude from the log (defaults to the admin UI itself so
+  // it doesn't record its own traffic).
+  skipPaths?: string[];
+}
+
+// Middleware that records each request into the admin dashboard's request/error
+// log. `createCovara` mounts this automatically when the admin UI is enabled;
+// mount it yourself (early, before your routes) when wiring the admin UI by hand.
+export const createAdminRequestLogger = (
+  options: AdminRequestLoggerOptions = {}
+): MiddlewareHandler => {
+  const skip = options.skipPaths ?? ["/__covara"];
+  const reqId = (): string =>
+    (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+
+  return async (c, next) => {
+    const start = Date.now();
+    await next();
+    const path = c.req.path;
+    if (skip.some((p) => path.startsWith(p))) return;
+    const status = c.res?.status ?? 0;
+    const id = reqId();
+    const timestamp = Date.now();
+    logRequest({ id, method: c.req.method, path, status, duration: timestamp - start, timestamp });
+    if (status >= 500) {
+      logError({ id, timestamp, path, method: c.req.method, error: `HTTP ${status}`, statusCode: status });
+    }
+  };
 };
 
 export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
@@ -261,11 +295,32 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
     }
   });
 
-  router.get("/api/subscriptions", (c) => {
+  router.get("/api/subscriptions", async (c) => {
     if (!config.getActiveSubscriptions) {
       return c.json({ subscriptions: [], enabled: false });
     }
-    return c.json({ subscriptions: config.getActiveSubscriptions(), enabled: true });
+    return c.json({ subscriptions: await config.getActiveSubscriptions(), enabled: true });
+  });
+
+  router.delete("/api/subscriptions/:id", async (c) => {
+    if (!config.disconnectSubscription) {
+      return c.json({ error: "Subscription management not configured" }, 501);
+    }
+    try {
+      const disconnected = await config.disconnectSubscription(c.req.param("id"));
+      if (isHtmxRequest(c)) {
+        // The Disconnect button swaps out its table row on success.
+        return disconnected
+          ? c.html("")
+          : c.html(html`<tr><td colspan="7" class="alert alert-error">Subscription not found</td></tr>`);
+      }
+      if (!disconnected) {
+        return c.json({ error: "Subscription not found" }, 404);
+      }
+      return c.body(null, 204);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400);
+    }
   });
 
   router.post("/api/query", async (c) => {
@@ -318,7 +373,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
       return c.json({ error: "User management not configured" }, 501);
     }
     try {
-      const body = (await readJsonBody(c)) as { email: string; name?: string; metadata?: any };
+      const body = (await readFlexibleBody(c)) as { email: string; name?: string; metadata?: any };
       const user = await config.userManager.createUser(body);
       return c.json({ user }, 201);
     } catch (e: any) {
@@ -332,7 +387,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
     }
     try {
       const userId = c.req.param("id");
-      const body = (await readJsonBody(c)) as { email?: string; name?: string; metadata?: any };
+      const body = (await readFlexibleBody(c)) as { email?: string; name?: string; metadata?: any };
       const user = await config.userManager.updateUser(userId, body);
       return c.json({ user });
     } catch (e: any) {
@@ -360,7 +415,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
     }
     try {
       const limit = parseInt(String(c.req.query("limit"))) || 50;
-      const sessions = await config.sessionManager.listSessions(limit);
+      const sessions = (await config.sessionManager.listSessions(limit)).map(normalizeSession);
       return c.json({ sessions, enabled: true });
     } catch (e: any) {
       return c.json({ error: e.message }, 500);
@@ -373,7 +428,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
     }
     try {
       const userId = c.req.param("userId");
-      const sessions = await config.sessionManager.getSessionsByUser(userId);
+      const sessions = (await config.sessionManager.getSessionsByUser(userId)).map(normalizeSession);
       return c.json({ sessions });
     } catch (e: any) {
       return c.json({ error: e.message }, 500);
@@ -385,16 +440,38 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
       return c.json({ error: "Session management not configured" }, 501);
     }
     try {
-      const { userId, expiresIn } = (await readJsonBody(c)) as {
+      const body = (await readFlexibleBody(c)) as {
         userId?: string;
-        expiresIn?: number;
+        expiresIn?: number | string;
       };
+      const htmx = isHtmxRequest(c);
+      const userId = typeof body.userId === "string" ? body.userId : undefined;
+      const expiresInRaw =
+        body.expiresIn != null ? Number(body.expiresIn) : undefined;
+      // The mint form sends the TTL in seconds; convert to ms for that path.
+      // JSON API callers pass the value through unchanged.
+      const expiresIn =
+        expiresInRaw != null && !Number.isNaN(expiresInRaw)
+          ? htmx
+            ? expiresInRaw * 1000
+            : expiresInRaw
+          : undefined;
       if (!userId) {
+        if (htmx) {
+          return c.html(html`<div class="alert alert-error">userId is required</div>`);
+        }
         return c.json({ error: "userId is required" }, 400);
       }
       const session = await config.sessionManager.createSession(userId, expiresIn);
+      if (htmx) {
+        const sessions = (await config.sessionManager.listSessions(100)).map(normalizeSession);
+        return c.html(pages.sessionsList(sessions));
+      }
       return c.json({ session }, 201);
     } catch (e: any) {
+      if (isHtmxRequest(c)) {
+        return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
+      }
       return c.json({ error: e.message }, 400);
     }
   });
@@ -590,6 +667,119 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   // Helper to check if this is an HTMX request
   const isHtmxRequest = (c: Context) => c.req.header('hx-request') === 'true';
 
+  // Read a request body whether it arrives as JSON or as a form submission
+  // (HTMX forms post application/x-www-form-urlencoded by default).
+  const readFlexibleBody = async (c: Context): Promise<Record<string, any>> => {
+    const contentType = c.req.header("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      return (await readJsonBody(c)) as Record<string, any>;
+    }
+    if (
+      contentType.includes("form-urlencoded") ||
+      contentType.includes("multipart/form-data")
+    ) {
+      return (await c.req.parseBody()) as Record<string, any>;
+    }
+    try {
+      return (await readJsonBody(c)) as Record<string, any>;
+    } catch {
+      return (await c.req.parseBody()) as Record<string, any>;
+    }
+  };
+
+  // Normalize whatever shape a sessionManager returns into the canonical
+  // SessionInfo the admin pages render. Accepts common field aliases
+  // (id/sessionToken/token, expiresAt/expires) so any session store works.
+  const toIso = (v: unknown): string | undefined => {
+    if (v == null) return undefined;
+    if (v instanceof Date) return v.toISOString();
+    if (typeof v === "number") return new Date(v).toISOString();
+    return String(v);
+  };
+  const normalizeSession = (s: any): pages.SessionInfo => ({
+    ...s,
+    id: s?.id ?? s?.sessionToken ?? s?.token ?? "",
+    userId: s?.userId ?? "",
+    createdAt: toIso(s?.createdAt) ?? "",
+    expiresAt: toIso(s?.expiresAt ?? s?.expires) ?? "",
+    // Activity metadata is captured into session.data by the auth layer
+    // (login stamps ip/user-agent; getSession stamps lastActiveAt).
+    lastActiveAt: toIso(s?.lastActiveAt ?? s?.data?.lastActiveAt),
+    ipAddress: s?.ipAddress ?? s?.data?.ipAddress,
+    userAgent: s?.userAgent ?? s?.data?.userAgent,
+  });
+
+  // The changelog system stores `{type, objectId, object, previousObject}`;
+  // the admin pages render `{operation, recordId, after, before}`. Accept both
+  // shapes so custom `config.changelog` providers keep working.
+  const normalizeChangelogEntry = (e: any): pages.ChangelogEntry => ({
+    ...e,
+    operation: e?.operation ?? e?.type ?? "update",
+    recordId: e?.recordId ?? e?.objectId ?? "",
+    before: e?.before ?? e?.previousObject,
+    after: e?.after ?? e?.object,
+  });
+
+  // Build the API explorer's endpoint catalog. The path uses each resource's
+  // captured mount path (e.g. "/api/todos") so the explorer's test runner hits
+  // the real endpoint; it falls back to "/<name>" before the resource is first
+  // requested (mount paths are captured lazily on the first hit).
+  const buildApiEndpoints = (): pages.EndpointInfo[] => {
+    const endpoints: pages.EndpointInfo[] = [];
+    for (const resource of getAllResourcesForDisplay()) {
+      const caps = resource.capabilities || {};
+      const base = resource.mountPath ?? `/${resource.name}`;
+
+      endpoints.push({
+        method: "GET",
+        path: base,
+        description: `List ${resource.name} with filtering and pagination`,
+        parameters: [
+          { name: "filter", in: "query", type: "string", description: "RSQL filter expression" },
+          { name: "limit", in: "query", type: "number", description: "Max results (default: 50)" },
+          { name: "cursor", in: "query", type: "string", description: "Pagination cursor" },
+          { name: "orderBy", in: "query", type: "string", description: "Sort field:direction" },
+        ],
+      });
+
+      endpoints.push({
+        method: "GET",
+        path: `${base}/:id`,
+        description: `Get a single ${resource.name} by ID`,
+        parameters: [{ name: "id", in: "path", type: "string", required: true }],
+      });
+
+      if (caps.enableCreate) {
+        endpoints.push({
+          method: "POST",
+          path: base,
+          description: `Create a new ${resource.name}`,
+          requestBody: { contentType: "application/json" },
+        });
+      }
+
+      if (caps.enableUpdate) {
+        endpoints.push({
+          method: "PATCH",
+          path: `${base}/:id`,
+          description: `Update a ${resource.name}`,
+          parameters: [{ name: "id", in: "path", type: "string", required: true }],
+          requestBody: { contentType: "application/json" },
+        });
+      }
+
+      if (caps.enableDelete) {
+        endpoints.push({
+          method: "DELETE",
+          path: `${base}/:id`,
+          description: `Delete a ${resource.name}`,
+          parameters: [{ name: "id", in: "path", type: "string", required: true }],
+        });
+      }
+    }
+    return endpoints;
+  };
+
   // Helper to send HTML response (full page or fragment for HTMX)
   const sendHtml = (c: Context, activePage: string, content: string) => {
     if (isHtmxRequest(c)) {
@@ -609,6 +799,14 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   router.get("/ui/htmx.js", (c) => sendJs(c, htmxScript));
   router.get("/ui/covara-runtime.js", (c) => sendJs(c, runtimeScript));
   router.get("/ui/data-explorer-app.js", (c) => sendJs(c, dataExplorerScript));
+
+  // Logo / favicon — served outside the auth gate so the favicon also shows on
+  // the login challenge page.
+  router.get("/logo.svg", (c) => {
+    c.header("Content-Type", "image/svg+xml; charset=utf-8");
+    c.header("Cache-Control", "public, max-age=3600");
+    return c.body(logoSvg);
+  });
 
   // ============================================
   // HTMX UI Routes - Full Page Renders
@@ -635,7 +833,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
       } catch {}
     }
 
-    const subscriptions = config.getActiveSubscriptions?.() || [];
+    const subscriptions = (await config.getActiveSubscriptions?.()) || [];
 
     const content = pages.dashboardPage({
       stats: {
@@ -732,7 +930,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
 
     if (config.sessionManager) {
       try {
-        sessions = await config.sessionManager.listSessions(100);
+        sessions = (await config.sessionManager.listSessions(100)).map(normalizeSession);
       } catch {}
     }
 
@@ -745,8 +943,8 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   });
 
   // Subscriptions
-  router.get("/ui/subscriptions", (c) => {
-    const subscriptions = config.getActiveSubscriptions?.() || [];
+  router.get("/ui/subscriptions", async (c) => {
+    const subscriptions = (await config.getActiveSubscriptions?.()) || [];
 
     const byResource: Record<string, number> = {};
     for (const sub of subscriptions) {
@@ -773,7 +971,9 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
     if (config.changelog) {
       try {
         stats.currentSeq = await config.changelog.getCurrentSequence();
-        entries = await config.changelog.getEntries(Math.max(0, stats.currentSeq - 100), 100);
+        entries = (
+          await config.changelog.getEntries(Math.max(0, stats.currentSeq - 100), 100)
+        ).map(normalizeChangelogEntry);
         stats.total = entries.length;
         for (const e of entries) {
           if (e.operation === 'create') stats.creates++;
@@ -826,65 +1026,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
 
   // API Explorer
   router.get("/ui/api-explorer", (c) => {
-    const resources = getAllResourcesForDisplay();
-    const endpoints: pages.EndpointInfo[] = [];
-
-    for (const resource of resources) {
-      const caps = resource.capabilities || {};
-
-      // GET list
-      endpoints.push({
-        method: 'GET',
-        path: resource.name,
-        description: `List ${resource.name} with filtering and pagination`,
-        parameters: [
-          { name: 'filter', in: 'query', type: 'string', description: 'RSQL filter expression' },
-          { name: 'limit', in: 'query', type: 'number', description: 'Max results (default: 50)' },
-          { name: 'cursor', in: 'query', type: 'string', description: 'Pagination cursor' },
-          { name: 'orderBy', in: 'query', type: 'string', description: 'Sort field:direction' },
-        ],
-      });
-
-      // GET single
-      endpoints.push({
-        method: 'GET',
-        path: `${resource.name}/:id`,
-        description: `Get a single ${resource.name} by ID`,
-        parameters: [
-          { name: 'id', in: 'path', type: 'string', required: true },
-        ],
-      });
-
-      if (caps.enableCreate) {
-        endpoints.push({
-          method: 'POST',
-          path: resource.name,
-          description: `Create a new ${resource.name}`,
-          requestBody: { contentType: 'application/json' },
-        });
-      }
-
-      if (caps.enableUpdate) {
-        endpoints.push({
-          method: 'PATCH',
-          path: `${resource.name}/:id`,
-          description: `Update a ${resource.name}`,
-          parameters: [{ name: 'id', in: 'path', type: 'string', required: true }],
-          requestBody: { contentType: 'application/json' },
-        });
-      }
-
-      if (caps.enableDelete) {
-        endpoints.push({
-          method: 'DELETE',
-          path: `${resource.name}/:id`,
-          description: `Delete a ${resource.name}`,
-          parameters: [{ name: 'id', in: 'path', type: 'string', required: true }],
-        });
-      }
-    }
-
-    const content = pages.apiExplorerPage({ endpoints, baseUrl: '' });
+    const content = pages.apiExplorerPage({ endpoints: buildApiEndpoints(), baseUrl: '' });
     return sendHtml(c, 'api-explorer', content);
   });
 
@@ -1002,7 +1144,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
       let sessions: any[] = [];
       if (config.sessionManager) {
         try {
-          sessions = await config.sessionManager.getSessionsByUser(id);
+          sessions = (await config.sessionManager.getSessionsByUser(id)).map(normalizeSession);
         } catch {}
       }
 
@@ -1033,7 +1175,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
     }
 
     try {
-      const sessions = await config.sessionManager.listSessions(100);
+      const sessions = (await config.sessionManager.listSessions(100)).map(normalizeSession);
       return c.html(pages.sessionsList(sessions));
     } catch (e: any) {
       return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
@@ -1041,8 +1183,8 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   });
 
   // Subscriptions list partial
-  router.get("/ui/subscriptions/list", (c) => {
-    const subscriptions = config.getActiveSubscriptions?.() || [];
+  router.get("/ui/subscriptions/list", async (c) => {
+    const subscriptions = (await config.getActiveSubscriptions?.()) || [];
     return c.html(pages.subscriptionsList(subscriptions));
   });
 
@@ -1063,7 +1205,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
         entries = entries.filter((e: any) => e.resource?.includes(resource));
       }
 
-      return c.html(pages.changelogList(entries));
+      return c.html(pages.changelogList(entries.map(normalizeChangelogEntry)));
     } catch (e: any) {
       return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
     }
@@ -1084,7 +1226,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
         return c.html(emptyState('✕', 'Entry not found', ''));
       }
 
-      return c.html(pages.changelogDetail({ entry }));
+      return c.html(pages.changelogDetail({ entry: normalizeChangelogEntry(entry) }));
     } catch (e: any) {
       return c.html(html`<div class="alert alert-error">${escapeHtml(e.message)}</div>`);
     }
@@ -1374,66 +1516,157 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   // API explorer endpoint detail partial
   router.get("/ui/api-explorer/endpoint/:index", (c) => {
     const index = parseInt(c.req.param("index"));
-    const resources = getAllResourcesForDisplay();
-    const endpoints: pages.EndpointInfo[] = [];
-
-    for (const resource of resources) {
-      const caps = resource.capabilities || {};
-
-      endpoints.push({
-        method: 'GET',
-        path: resource.name,
-        description: `List ${resource.name} with filtering and pagination`,
-        parameters: [
-          { name: 'filter', in: 'query', type: 'string', description: 'RSQL filter expression' },
-          { name: 'limit', in: 'query', type: 'number', description: 'Max results (default: 50)' },
-          { name: 'cursor', in: 'query', type: 'string', description: 'Pagination cursor' },
-          { name: 'orderBy', in: 'query', type: 'string', description: 'Sort field:direction' },
-        ],
-      });
-
-      endpoints.push({
-        method: 'GET',
-        path: `${resource.name}/:id`,
-        description: `Get a single ${resource.name} by ID`,
-        parameters: [{ name: 'id', in: 'path', type: 'string', required: true }],
-      });
-
-      if (caps.enableCreate) {
-        endpoints.push({
-          method: 'POST',
-          path: resource.name,
-          description: `Create a new ${resource.name}`,
-          requestBody: { contentType: 'application/json' },
-        });
-      }
-
-      if (caps.enableUpdate) {
-        endpoints.push({
-          method: 'PATCH',
-          path: `${resource.name}/:id`,
-          description: `Update a ${resource.name}`,
-          parameters: [{ name: 'id', in: 'path', type: 'string', required: true }],
-          requestBody: { contentType: 'application/json' },
-        });
-      }
-
-      if (caps.enableDelete) {
-        endpoints.push({
-          method: 'DELETE',
-          path: `${resource.name}/:id`,
-          description: `Delete a ${resource.name}`,
-          parameters: [{ name: 'id', in: 'path', type: 'string', required: true }],
-        });
-      }
-    }
-
-    const endpoint = endpoints[index];
+    const endpoint = buildApiEndpoints()[index];
     if (!endpoint) {
       return c.html(emptyState('✕', 'Endpoint not found', ''));
     }
 
     return c.html(pages.endpointDetail({ endpoint, baseUrl: '' }));
+  });
+
+  // API explorer request runner — performs the configured request against this
+  // same server (forwarding the caller's cookies for auth) and renders the
+  // response. The form posts method/path plus param_<name> fields and a body.
+  router.post("/ui/api-explorer/execute", async (c) => {
+    const body = (await c.req.parseBody()) as Record<string, string>;
+    const method = (body.method ?? "GET").toUpperCase();
+    let path = body.path ?? "";
+    const requestBody = typeof body.body === "string" ? body.body.trim() : "";
+
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(body)) {
+      if (!key.startsWith("param_")) continue;
+      if (value == null || value === "") continue;
+      const paramName = key.slice("param_".length);
+      if (path.includes(`:${paramName}`)) {
+        path = path.replace(`:${paramName}`, encodeURIComponent(value));
+      } else {
+        query.set(paramName, value);
+      }
+    }
+
+    const origin = new URL(c.req.url).origin;
+    const qs = query.toString();
+    const target = `${origin}${path.startsWith("/") ? "" : "/"}${path}${qs ? `?${qs}` : ""}`;
+
+    const headers: Record<string, string> = {};
+    const cookie = c.req.header("cookie");
+    if (cookie) headers["cookie"] = cookie;
+    const auth = c.req.header("authorization");
+    if (auth) headers["authorization"] = auth;
+
+    const init: RequestInit = { method, headers };
+    if (method !== "GET" && method !== "HEAD" && requestBody) {
+      headers["content-type"] = "application/json";
+      init.body = requestBody;
+    }
+
+    const started = Date.now();
+    try {
+      const res = await fetch(target, init);
+      const duration = Date.now() - started;
+      const text = await res.text();
+      let parsed: unknown = text;
+      try {
+        parsed = JSON.parse(text);
+      } catch {}
+      const resHeaders: Record<string, string> = {};
+      res.headers.forEach((value, key) => {
+        resHeaders[key] = value;
+      });
+      return c.html(
+        pages.apiResponse({
+          status: res.status,
+          statusText: res.statusText,
+          headers: resHeaders,
+          body: parsed,
+          duration,
+        })
+      );
+    } catch (e: any) {
+      return c.html(
+        pages.apiResponse({
+          status: 0,
+          statusText: "Request Failed",
+          headers: {},
+          body: "",
+          duration: Date.now() - started,
+          error: e?.message ?? String(e),
+        })
+      );
+    }
+  });
+
+  // Filter tester — run an RSQL expression against a resource's live data
+  // (in-memory matching, so it exercises the same predicate logic used for
+  // subscription matching) and report which records match.
+  router.post("/ui/filter/test", async (c) => {
+    const body = (await c.req.parseBody()) as Record<string, string>;
+    const filter = typeof body.filter === "string" ? body.filter : "";
+    const resource = typeof body.resource === "string" ? body.resource : "";
+
+    if (!resource) {
+      return c.html(
+        pages.filterTestResult({
+          filter,
+          resource,
+          matchCount: 0,
+          totalCount: 0,
+          matches: [],
+          executionTime: 0,
+          error: "Select a resource to test against",
+        })
+      );
+    }
+
+    const entry = getResourceSchema(resource);
+    if (!entry) {
+      return c.html(
+        pages.filterTestResult({
+          filter,
+          resource,
+          matchCount: 0,
+          totalCount: 0,
+          matches: [],
+          executionTime: 0,
+          error: `Unknown resource: ${resource}`,
+        })
+      );
+    }
+
+    const started = Date.now();
+    try {
+      const rows = (await (entry.db as any)
+        .select()
+        .from(entry.schema)
+        .limit(500)) as Record<string, unknown>[];
+      const filterer = createResourceFilter(entry.schema, {});
+      const matches = filter
+        ? rows.filter((row) => filterer.execute(filter, row as any))
+        : rows;
+      return c.html(
+        pages.filterTestResult({
+          filter,
+          resource,
+          matchCount: matches.length,
+          totalCount: rows.length,
+          matches: matches.slice(0, 50),
+          executionTime: Date.now() - started,
+        })
+      );
+    } catch (e: any) {
+      return c.html(
+        pages.filterTestResult({
+          filter,
+          resource,
+          matchCount: 0,
+          totalCount: 0,
+          matches: [],
+          executionTime: Date.now() - started,
+          error: e?.message ?? String(e),
+        })
+      );
+    }
   });
 
   return router;

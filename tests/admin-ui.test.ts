@@ -154,6 +154,18 @@ describe("Admin UI Tests", () => {
       expect(res.body).toContain("/__covara/ui/htmx.js");
     });
 
+    it("serves the logo and wires it as favicon + sidebar mark", async () => {
+      const logo = await get(app, "/__covara/logo.svg");
+      expect(logo.status).toBe(200);
+      expect(logo.headers.get("content-type")).toContain("image/svg+xml");
+      expect(logo.body).toContain("<svg");
+
+      const page = await get(app, "/__covara/ui");
+      expect(page.body).toContain('rel="icon"');
+      expect(page.body).toContain("/__covara/logo.svg");
+      expect(page.body).toContain("sidebar-logo-img");
+    });
+
     it("serves htmx locally", async () => {
       const res = await get(app, "/__covara/ui/htmx.js");
       expect(res.status).toBe(200);

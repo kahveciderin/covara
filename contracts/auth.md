@@ -48,6 +48,8 @@
 - **Session rotation**: Session ID rotated on login (prior session invalidated, prevents fixation)
 - **Logout invalidation**: All session tokens invalidated on logout
 - **Bulk invalidation**: Adapters may implement `invalidateUserSessions(userId, exceptSessionId?)`; password reset uses it when `logoutEverywhere` is set
+- **Indexed bulk invalidation**: When the session store implements the per-user index (`getByUser`/`deleteByUser` — the Redis, Drizzle, and in-memory stores all do), bulk invalidation touches only that user's sessions; the scan-all `getAll()` path is a fallback for stores without the index
+- **Session activity metadata**: Login/signup store the client IP and user agent in `session.data` (`ipAddress`, `userAgent`); session use stamps `session.data.lastActiveAt`, throttled to at most one persisted write per minute per session and fire-and-forget (activity tracking never blocks or fails auth)
 - **Cookie security**: HttpOnly, Secure (in production), SameSite attributes set
 
 ### Multi-Tenant

@@ -107,6 +107,7 @@ export const getAllResourceSchemas = (): SchemaRegistryEntry[] => {
 
 export interface ResourceDisplayInfo {
   name: string;
+  mountPath?: string;
   fields: string[];
   capabilities: {
     enableCreate?: boolean;
@@ -151,6 +152,7 @@ export const getAllResourcesForDisplay = (): ResourceDisplayInfo[] => {
 
     results.push({
       name: entry.name,
+      mountPath: entry.mountPath,
       fields,
       capabilities: {
         enableCreate: caps?.enableCreate,

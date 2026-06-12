@@ -6,7 +6,9 @@ import { observabilityMiddleware, type ObservabilityConfig } from "@/middleware/
 import { useResource } from "@/resource/hook";
 import type { ResourceConfig } from "@/resource/types";
 import { createHealthEndpoints, type HealthConfig } from "@/health";
-import { createAdminUI, type AdminUIConfig } from "@/ui";
+import { createAdminUI, createAdminRequestLogger, setResourceMountPath, type AdminUIConfig } from "@/ui";
+import { listActiveSubscriptions, disconnectSubscription } from "@/resource/subscription";
+import { changelog } from "@/resource/changelog";
 import { createCovaraRouter, type CovaraRouterConfig } from "@/openapi/schema";
 import { createSecurityHeaders, type SecurityHeadersOptions } from "@/middleware/securityHeaders";
 import { onShutdown } from "@/server/lifecycle";
@@ -73,6 +75,12 @@ export class CovaraApp extends Hono {
       );
     }
 
+    // Feed the admin dashboard's request/error logs from real traffic so it
+    // works out of the box (the admin UI's own routes are skipped).
+    if (options.adminUI) {
+      this.use("*", createAdminRequestLogger());
+    }
+
     for (const mw of options.middleware ?? []) {
       this.use("*", mw);
     }
@@ -93,10 +101,20 @@ export class CovaraApp extends Hono {
     }
 
     if (options.adminUI) {
-      this.route(
-        "/__covara",
-        createAdminUI(options.adminUI === true ? {} : options.adminUI)
-      );
+      const userAdmin = options.adminUI === true ? {} : options.adminUI;
+      // Auto-wire the admin UI's live data sources (active subscriptions +
+      // changelog) so the dashboard works out of the box; explicit user config
+      // still takes precedence.
+      const adminConfig: AdminUIConfig = {
+        getActiveSubscriptions: () => listActiveSubscriptions(),
+        disconnectSubscription: (id) => disconnectSubscription(id),
+        changelog: {
+          getCurrentSequence: () => changelog.getCurrentSequence(),
+          getEntries: (fromSeq, limit) => changelog.getEntriesInRange(fromSeq, limit),
+        },
+        ...userAdmin,
+      };
+      this.route("/__covara", createAdminUI(adminConfig));
     }
 
     if (options.openapi !== false) {
@@ -139,7 +157,12 @@ export class CovaraApp extends Hono {
       config = schemaOrConfig as ResourceConfig<TConfig, Table<TConfig>>;
     }
 
-    this.route(`${this.resourceBasePath}${path}`, useResource(schema, config));
+    const mountPath = `${this.resourceBasePath}${path}`;
+    this.route(mountPath, useResource(schema, config));
+    // Register the mount path eagerly so OpenAPI and the admin API explorer
+    // show the real path before the resource receives its first request
+    // (useResource alone only captures it lazily).
+    setResourceMountPath(getTableName(schema), mountPath);
     return this;
   }
 }

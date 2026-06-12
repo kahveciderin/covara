@@ -221,7 +221,6 @@ const dlqCard = (entries: DLQEntry[]): string => card({
           </tbody>
         </table>
       </div>
-      <style>.btn-danger { color: var(--error); } .btn-danger:hover { background: var(--error-bg); }</style>
     ` : emptyState('\u2713', 'No failed tasks', 'Failed tasks will appear here for retry')}
   </div>
 

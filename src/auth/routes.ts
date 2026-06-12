@@ -32,6 +32,18 @@ import {
   type PasswordPolicyOptions,
 } from "./password-policy";
 
+// Request metadata stored in session.data so the admin UI can show where a
+// session came from. Lives inside `data` because every session store already
+// persists that field unchanged.
+const sessionRequestMeta = (c: Context): Record<string, unknown> => {
+  const meta: Record<string, unknown> = {};
+  const ip = getClientIP(c);
+  if (ip) meta.ipAddress = ip;
+  const ua = c.req.header("user-agent");
+  if (ua) meta.userAgent = ua;
+  return meta;
+};
+
 export interface AuthUser {
   id: string;
   email?: string | null;
@@ -215,7 +227,7 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
       await adapter.invalidateSession(priorSessionId);
     }
 
-    const session = await adapter.createSession(userId);
+    const session = await adapter.createSession(userId, sessionRequestMeta(c));
     const authResult = await adapter.validateCredentials({
       type: "session",
       sessionId: session.id,
@@ -386,7 +398,7 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
         throw new Error("Adapter does not support session creation");
       }
 
-      const session = await adapter.createSession(user.id);
+      const session = await adapter.createSession(user.id, sessionRequestMeta(c));
 
       setCookie(c, cookieName, session.id, toCookieOptions({
         ...finalCookieOptions,

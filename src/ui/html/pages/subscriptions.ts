@@ -87,10 +87,10 @@ export const subscriptionsList = (subscriptions: SubscriptionInfo[]): string => 
                     : html`<span style="color: var(--text-3);">Anonymous</span>`}
               </td>
               <td style="color: var(--text-2); font-size: 12px; white-space: nowrap;">
-                ${formatRelativeTime(sub.connectedAt)}
+                ${sub.connectedAt ? formatRelativeTime(sub.connectedAt) : '-'}
               </td>
               <td>
-                ${badge(sub.eventCount.toString(), 'info')}
+                ${badge(String(sub.eventCount ?? 0), 'info')}
               </td>
               <td style="color: var(--text-2); font-size: 12px; white-space: nowrap;">
                 ${sub.lastEventAt ? formatRelativeTime(sub.lastEventAt) : '-'}
@@ -111,7 +111,6 @@ export const subscriptionsList = (subscriptions: SubscriptionInfo[]): string => 
         </tbody>
       </table>
     </div>
-    <style>.btn-danger { color: var(--error); } .btn-danger:hover { background: var(--error-bg); }</style>
   ` : emptyState('\u26A1', 'No active subscriptions', 'Subscriptions will appear when clients connect')}
 `);
 

@@ -31,6 +31,7 @@ import {
   sendInvalidateEvent,
   registerKnownIds,
   registerResourceMask,
+  registerAggregateWatcher,
 } from "./subscription";
 import {
   createPagination,
@@ -44,6 +45,7 @@ import {
   buildAggregationSelections,
   buildHavingCondition,
   transformAggregationResults,
+  canonicalizeAggregation,
 } from "./query";
 import {
   executeProcedure,
@@ -436,7 +438,7 @@ export const useResource = <TConfig extends TableConfig>(
 
       for (const item of createdArray) {
         await executeAfterCreate(hooks, ctx, item as any);
-        recordCreate(resourceName, String(item[idColumnName]), item);
+        recordCreate(resourceName, String(item[idColumnName]), item, getUser(c)?.id);
         await indexDocument(String(item[idColumnName]), item);
       }
 
@@ -501,10 +503,10 @@ export const useResource = <TConfig extends TableConfig>(
         const previous = previousMap.get(id);
         if (previous) {
           await executeAfterUpdate(hooks, ctx, item as any);
-          recordUpdate(resourceName, id, item, previous);
+          recordUpdate(resourceName, id, item, previous, getUser(c)?.id);
         } else {
           await executeAfterCreate(hooks, ctx, item as any);
-          recordCreate(resourceName, id, item);
+          recordCreate(resourceName, id, item, getUser(c)?.id);
         }
         await indexDocument(id, item);
       }
@@ -568,7 +570,7 @@ export const useResource = <TConfig extends TableConfig>(
       // rolled-back update never leaves a phantom entry.
       for (const item of result.items) {
         const id = String(item[idColumnName]);
-        await recordUpdate(resourceName, id, item, result.previousMap.get(id));
+        await recordUpdate(resourceName, id, item, result.previousMap.get(id), getUser(c)?.id);
         await indexDocument(id, item);
       }
 
@@ -624,14 +626,18 @@ export const useResource = <TConfig extends TableConfig>(
       // Record to changelog only after the transaction has committed, so a
       // rolled-back delete never leaves a phantom entry.
       for (const item of result.items) {
-        await recordDelete(resourceName, String(item[idColumnName]), item);
+        await recordDelete(resourceName, String(item[idColumnName]), item, getUser(c)?.id);
       }
 
       for (const id of result.deletedIds) {
         await deleteFromIndex(id);
       }
 
-      await pushDeletesToSubscriptions(resourceName, result.deletedIds);
+      await pushDeletesToSubscriptions(
+        resourceName,
+        result.deletedIds,
+        result.items as Record<string, unknown>[]
+      );
 
       return c.json({ count: result.count });
     });
@@ -822,10 +828,10 @@ export const useResource = <TConfig extends TableConfig>(
     return response;
   });
 
-  router.get("/aggregate", async (c) => {
-    const filter = await applyFilters(c, "read");
-    const params = parseAggregationParams(c.req.query() as Record<string, unknown>);
-
+  const runAggregate = async (
+    filter: SQL<unknown> | undefined,
+    params: ReturnType<typeof parseAggregationParams>
+  ) => {
     const { groupByColumns, aggregateColumns } = buildAggregationSelections(
       schema,
       params
@@ -860,12 +866,154 @@ export const useResource = <TConfig extends TableConfig>(
     }
 
     const results = await query;
-    const transformed = transformAggregationResults(
-      results as Record<string, unknown>[],
-      params
-    );
+    return transformAggregationResults(results as Record<string, unknown>[], params);
+  };
 
-    return c.json(transformed);
+  router.get("/aggregate", async (c) => {
+    const filter = await applyFilters(c, "read");
+    const params = parseAggregationParams(c.req.query() as Record<string, unknown>);
+    return c.json(await runAggregate(filter, params));
+  });
+
+  // Live aggregations: stream the aggregate result, then recompute and re-emit
+  // whenever the resource is mutated (debounced). Recompute-on-change keeps the
+  // result exact for any grouping/having combination without per-row tracking.
+  router.get("/aggregate/subscribe", async (c) => {
+    const user = getUser(c);
+    const filter = await applyFilters(c, "read");
+    const params = parseAggregationParams(c.req.query() as Record<string, unknown>);
+    const handlerId = uuidv4();
+
+    // In-memory matcher mirroring the aggregate's read scope + filter. Used to
+    // skip recompute when a mutated row can't be in this subscription's scope
+    // (e.g. another user's row), so a per-user aggregate doesn't recompute on
+    // every other user's mutation. Falls back to recompute when the mutation
+    // carries no row data or the aggregate is unscoped (matcher null).
+    const readScope = await scopeResolver.resolve("read", user);
+    const matcherFilter = combineScopes(readScope, c.req.query("filter") ?? "");
+    const matcher =
+      matcherFilter && matcherFilter !== "*" ? filterer.compile(matcherFilter) : null;
+    const affectsAggregate = (changed?: Record<string, unknown>[]): boolean => {
+      if (!changed || !matcher) return true;
+      return changed.some((obj) => {
+        try {
+          return matcher.execute(obj);
+        } catch {
+          return true;
+        }
+      });
+    };
+
+    const userId = user?.id ?? "anonymous";
+    const clientIP = getClientIP(c);
+
+    const userCount = userSubscriptionCounts.get(userId) ?? 0;
+    if (userCount >= sseConfig.maxSubscriptionsPerUser) {
+      return c.json(
+        {
+          type: "/__covara/problems/rate-limit-exceeded",
+          title: "Too many subscriptions",
+          status: 429,
+          detail: `Maximum ${sseConfig.maxSubscriptionsPerUser} subscriptions per user`,
+        },
+        429
+      );
+    }
+
+    const ipCount = ipSubscriptionCounts.get(clientIP) ?? 0;
+    if (ipCount >= sseConfig.maxSubscriptionsPerIP) {
+      return c.json(
+        {
+          type: "/__covara/problems/rate-limit-exceeded",
+          title: "Too many subscriptions",
+          status: 429,
+          detail: `Maximum ${sseConfig.maxSubscriptionsPerIP} subscriptions per IP`,
+        },
+        429
+      );
+    }
+
+    const { writer, response } = createSSEStream({
+      signal: c.req.raw.signal,
+      maxQueueBytes: sseConfig.maxQueueBytes,
+    });
+
+    userSubscriptionCounts.set(userId, userCount + 1);
+    ipSubscriptionCounts.set(clientIP, ipCount + 1);
+
+    registerHandler(handlerId, writer, sseConfig.onBackpressure);
+    activeClients++;
+    startEventPolling();
+
+    let lastFingerprint: string | undefined;
+    const emit = async () => {
+      if (writer.closed) return;
+      try {
+        const data = await runAggregate(filter, params);
+        const seq = await changelog.getCurrentSequence();
+        // Order-independent compare so a reordered-but-identical result (GROUP
+        // BY has no stable ORDER BY) isn't resent.
+        const fingerprint = canonicalizeAggregation(data);
+        if (fingerprint === lastFingerprint) return;
+        lastFingerprint = fingerprint;
+        writer.write(`id: ${seq}\nevent: aggregate\ndata: ${JSON.stringify({ data, seq })}\n\n`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        writer.write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`);
+      }
+    };
+
+    // Coalesce bursts of mutations into a single recompute.
+    let recomputeTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRecompute = () => {
+      if (recomputeTimer) return;
+      recomputeTimer = setTimeout(() => {
+        recomputeTimer = null;
+        void emit();
+      }, config.sse?.aggregateDebounceMs ?? 150);
+    };
+
+    const unwatch = registerAggregateWatcher(resourceName, (changed) => {
+      if (affectsAggregate(changed)) scheduleRecompute();
+    });
+
+    const heartbeat = setInterval(() => {
+      if (writer.closed) {
+        clearInterval(heartbeat);
+        return;
+      }
+      writer.write(`: ping ${Date.now()}\n\n`);
+    }, sseConfig.heartbeatMs);
+
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      if (recomputeTimer) {
+        clearTimeout(recomputeTimer);
+        recomputeTimer = null;
+      }
+      unwatch();
+      activeClients--;
+      userSubscriptionCounts.set(
+        userId,
+        Math.max(0, (userSubscriptionCounts.get(userId) ?? 1) - 1)
+      );
+      ipSubscriptionCounts.set(
+        clientIP,
+        Math.max(0, (ipSubscriptionCounts.get(clientIP) ?? 1) - 1)
+      );
+      if (activeClients === 0) {
+        stopEventPolling();
+      }
+      void unregisterHandler(handlerId);
+    };
+
+    writer.onClose(cleanup);
+
+    const currentSeq = await changelog.getCurrentSequence();
+    writer.write(`id: ${currentSeq}\nevent: connected\ndata: ${JSON.stringify({ seq: currentSeq })}\n\n`);
+    await emit();
+
+    return response;
   });
 
   router.get("/count", async (c) => {
@@ -1037,7 +1185,7 @@ export const useResource = <TConfig extends TableConfig>(
 
     await executeAfterCreate(hooks, ctx, created);
 
-    recordCreate(resourceName, String(createdObj[idColumnName]), createdObj);
+    recordCreate(resourceName, String(createdObj[idColumnName]), createdObj, getUser(c)?.id);
     await indexDocument(String(createdObj[idColumnName]), createdObj);
 
     const optimisticId = c.req.header("x-covara-optimistic-id");
@@ -1214,7 +1362,7 @@ export const useResource = <TConfig extends TableConfig>(
 
     await executeAfterUpdate(hooks, ctx, updated);
 
-    recordUpdate(resourceName, id, updated, existing);
+    recordUpdate(resourceName, id, updated, existing, getUser(c)?.id);
     await indexDocument(id, updated);
 
     const previousMap = new Map<string, Record<string, unknown>>();
@@ -1268,7 +1416,7 @@ export const useResource = <TConfig extends TableConfig>(
 
     await executeAfterUpdate(hooks, ctx, updated);
 
-    recordUpdate(resourceName, id, updated, existing);
+    recordUpdate(resourceName, id, updated, existing, getUser(c)?.id);
     await indexDocument(id, updated);
 
     const previousMap = new Map<string, Record<string, unknown>>();
@@ -1339,10 +1487,12 @@ export const useResource = <TConfig extends TableConfig>(
 
     await executeAfterDelete(hooks, ctx, existing);
 
-    recordDelete(resourceName, id, existing);
+    recordDelete(resourceName, id, existing, getUser(c)?.id);
     await deleteFromIndex(id);
 
-    await pushDeletesToSubscriptions(resourceName, [id]);
+    await pushDeletesToSubscriptions(resourceName, [id], [
+      existing as Record<string, unknown>,
+    ]);
 
     return c.body(null, 204);
   });

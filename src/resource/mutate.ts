@@ -32,18 +32,21 @@ export interface ChangelogRecorder {
   recordCreate: (
     resource: string,
     objectId: string,
-    object: Record<string, unknown>
+    object: Record<string, unknown>,
+    userId?: string
   ) => Promise<void>;
   recordUpdate: (
     resource: string,
     objectId: string,
     object: Record<string, unknown>,
-    previousObject?: Record<string, unknown>
+    previousObject?: Record<string, unknown>,
+    userId?: string
   ) => Promise<void>;
   recordDelete: (
     resource: string,
     objectId: string,
-    previousObject?: Record<string, unknown>
+    previousObject?: Record<string, unknown>,
+    userId?: string
   ) => Promise<void>;
 }
 
@@ -189,7 +192,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
         const id = String(createdObj[idColumnName]);
 
         if (!options?.skipChangelog) {
-          await changelogRecorder.recordCreate(resourceName, id, createdObj);
+          await changelogRecorder.recordCreate(resourceName, id, createdObj, ctx.user?.id);
         }
 
         if (!options?.skipHooks && hooks) {
@@ -251,7 +254,8 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
             resourceName,
             id,
             updatedObj,
-            existingObj
+            existingObj,
+            ctx.user?.id
           );
         }
 
@@ -312,7 +316,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
         const existingObj = existing as unknown as Record<string, unknown>;
 
         if (!options?.skipChangelog) {
-          await changelogRecorder.recordDelete(resourceName, id, existingObj);
+          await changelogRecorder.recordDelete(resourceName, id, existingObj, ctx.user?.id);
         }
 
         if (!options?.skipHooks && hooks) {
@@ -320,7 +324,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
         }
 
         if (!options?.skipSubscriptions) {
-          await pushDeletesToSubscriptions(resourceName, [id]);
+          await pushDeletesToSubscriptions(resourceName, [id], [existingObj]);
         }
 
         return { item: existing };
@@ -358,7 +362,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
           const id = String(itemObj[idColumnName]);
 
           if (!options?.skipChangelog) {
-            await changelogRecorder.recordCreate(resourceName, id, itemObj);
+            await changelogRecorder.recordCreate(resourceName, id, itemObj, ctx.user?.id);
           }
 
           if (!options?.skipHooks && hooks) {
@@ -432,7 +436,8 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
               resourceName,
               id,
               itemObj,
-              previousObj
+              previousObj,
+              ctx.user?.id
             );
           }
 
@@ -489,7 +494,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
           const id = String(itemObj[idColumnName]);
 
           if (!options?.skipChangelog) {
-            await changelogRecorder.recordDelete(resourceName, id, itemObj);
+            await changelogRecorder.recordDelete(resourceName, id, itemObj, ctx.user?.id);
           }
 
           if (!options?.skipHooks && hooks) {
@@ -498,7 +503,11 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
         }
 
         if (!options?.skipSubscriptions) {
-          await pushDeletesToSubscriptions(resourceName, deletedIds);
+          await pushDeletesToSubscriptions(
+            resourceName,
+            deletedIds,
+            items as unknown as Record<string, unknown>[]
+          );
         }
 
         return { items: items as SelectModel[], count: items.length };

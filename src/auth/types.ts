@@ -75,6 +75,10 @@ export interface SessionStore {
   delete(sessionId: string): Promise<void>;
   touch(sessionId: string, ttlMs: number): Promise<void>;
   getAll?(): Promise<SessionData[]>;
+  // Per-user index. When implemented, per-user operations (e.g. "log out
+  // everywhere") avoid scanning every user's sessions.
+  getByUser?(userId: string): Promise<SessionData[]>;
+  deleteByUser?(userId: string): Promise<number>;
 }
 
 export class InMemorySessionStore implements SessionStore {
@@ -120,6 +124,18 @@ export class InMemorySessionStore implements SessionStore {
   async getAll(): Promise<SessionData[]> {
     this.cleanup();
     return Array.from(this.sessions.values()).map(entry => entry.data);
+  }
+
+  async getByUser(userId: string): Promise<SessionData[]> {
+    return (await this.getAll()).filter((s) => s.userId === userId);
+  }
+
+  async deleteByUser(userId: string): Promise<number> {
+    const sessions = await this.getByUser(userId);
+    for (const s of sessions) {
+      this.sessions.delete(s.id);
+    }
+    return sessions.length;
   }
 }
 

@@ -21,8 +21,10 @@ export const formatDate = (date: Date | string | number): string => {
   return d.toLocaleString();
 };
 
-export const formatRelativeTime = (date: Date | string | number): string => {
+export const formatRelativeTime = (date: Date | string | number | null | undefined): string => {
+  if (date == null) return '-';
   const d = new Date(date);
+  if (Number.isNaN(d.getTime())) return '-';
   const now = Date.now();
   const diff = now - d.getTime();
 

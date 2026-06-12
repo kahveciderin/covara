@@ -7,7 +7,6 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import {
   rsql,
   createMetricsCollector,
-  createAdminUI,
   createCovara,
   createPassportAdapter,
   useAuth,
@@ -120,9 +119,142 @@ const auth = useAuth({
   },
 });
 
+// Admin UI config — passed to createCovara so it auto-mounts the dashboard,
+// wires live request/subscription/changelog data, and captures all API traffic.
+const adminUI = {
+  title: "Todo App Admin",
+  metricsCollector,
+  // Security configuration - development mode allows unauthenticated access
+  security: {
+    mode:
+      (process.env.NODE_ENV as "development" | "staging" | "production") ||
+      "development",
+    auth: {
+      disabled: process.env.NODE_ENV !== "production",
+    },
+  },
+  dataExplorer: {
+    enabled: true,
+    readOnly: process.env.NODE_ENV === "production",
+    excludeFields: {
+      users: ["passwordHash"],
+    },
+    maxLimit: 100,
+  },
+  kvInspector: {
+    enabled: process.env.NODE_ENV !== "production",
+    kv: getGlobalKV(),
+    readOnly: process.env.NODE_ENV === "staging",
+  },
+  userManager: {
+    listUsers: async (limit = 50, offset = 0) => {
+      const [users, totalResult] = await Promise.all([
+        db
+          .select({
+            id: usersTable.id,
+            email: usersTable.email,
+            name: usersTable.name,
+            createdAt: usersTable.createdAt,
+          })
+          .from(usersTable)
+          .limit(limit)
+          .offset(offset)
+          .orderBy(desc(usersTable.createdAt)),
+        db.select({ total: count() }).from(usersTable),
+      ]);
+      const withLastLogin = await Promise.all(
+        users.map(async (u) => {
+          const sessions =
+            (await authAdapter.sessionStore.getByUser?.(u.id)) ?? [];
+          const lastLoginAt = sessions.reduce<Date | undefined>(
+            (latest, s) =>
+              !latest || s.createdAt > latest ? s.createdAt : latest,
+            undefined
+          );
+          return { ...u, lastLoginAt };
+        })
+      );
+      return { users: withLastLogin, total: totalResult[0]?.total ?? 0 };
+    },
+    getUser: async (id: string) => {
+      const [user] = await db
+        .select()
+        .from(usersTable)
+        .where(eq(usersTable.id, id))
+        .limit(1);
+      return user ?? null;
+    },
+    createUser: async (data: { email: string; name?: string }) => {
+      const [user] = await db
+        .insert(usersTable)
+        .values({
+          id: randomUUID(),
+          email: data.email,
+          name: data.name || "User",
+          passwordHash: hashPassword("password123"),
+        })
+        .returning();
+      return user;
+    },
+    updateUser: async (id: string, data: { email?: string; name?: string }) => {
+      const [user] = await db
+        .update(usersTable)
+        .set(data)
+        .where(eq(usersTable.id, id))
+        .returning();
+      return user;
+    },
+    deleteUser: async (id: string) => {
+      await db.delete(usersTable).where(eq(usersTable.id, id));
+    },
+  },
+  sessionManager: {
+    listSessions: async () => {
+      const sessions = (await authAdapter.sessionStore.getAll?.()) ?? [];
+      return sessions.map((s) => ({
+        id: s.id,
+        userId: s.userId,
+        expiresAt: s.expiresAt,
+        createdAt: s.createdAt,
+        data: s.data,
+      }));
+    },
+    getSessionsByUser: async (userId: string) => {
+      const sessions =
+        (await authAdapter.sessionStore.getByUser?.(userId)) ?? [];
+      return sessions.map((s) => ({
+        id: s.id,
+        userId: s.userId,
+        expiresAt: s.expiresAt,
+        createdAt: s.createdAt,
+        data: s.data,
+      }));
+    },
+    createSession: async (userId: string) => {
+      const session = await authAdapter.createSession(userId);
+      return { token: session.id, expiresAt: session.expiresAt };
+    },
+    revokeSession: async (sessionId: string) => {
+      await authAdapter.invalidateSession(sessionId);
+    },
+    revokeAllUserSessions: async (userId: string) => {
+      const sessions = (await authAdapter.sessionStore.getAll?.()) ?? [];
+      let revokedCount = 0;
+      for (const s of sessions) {
+        if (s.userId === userId) {
+          await authAdapter.invalidateSession(s.id);
+          revokedCount++;
+        }
+      }
+      return revokedCount;
+    },
+  },
+};
+
 const app = createCovara({
   observability: { metrics: metricsCollector },
   auth,
+  adminUI,
   health: {
     version: "1.0.0",
     checks: {
@@ -274,133 +406,6 @@ app.use(
   })
 );
 
-app.route(
-  "/__covara",
-  createAdminUI({
-    title: "Todo App Admin",
-    metricsCollector,
-    changelog: {
-      getCurrentSequence: () => changelog.getCurrentSequence(),
-      getEntries: (fromSeq, limit) =>
-        changelog.getEntriesInRange(fromSeq, limit),
-    },
-    // Security configuration - development mode allows unauthenticated access
-    security: {
-      mode:
-        (process.env.NODE_ENV as "development" | "staging" | "production") ||
-        "development",
-      auth: {
-        // In development, auth is disabled by default
-        // In production, you'd set an API key: apiKey: process.env.ADMIN_API_KEY
-        disabled: process.env.NODE_ENV !== "production",
-      },
-    },
-    // Data explorer configuration
-    dataExplorer: {
-      enabled: true,
-      readOnly: process.env.NODE_ENV === "production",
-      excludeFields: {
-        users: ["passwordHash"], // Hide password hashes
-      },
-      maxLimit: 100,
-    },
-    // KV inspector configuration
-    kvInspector: {
-      enabled: process.env.NODE_ENV !== "production",
-      kv: getGlobalKV(),
-      readOnly: process.env.NODE_ENV === "staging",
-    },
-    userManager: {
-      listUsers: async (limit = 50, offset = 0) => {
-        const [users, totalResult] = await Promise.all([
-          db
-            .select({
-              id: usersTable.id,
-              email: usersTable.email,
-              name: usersTable.name,
-              createdAt: usersTable.createdAt,
-            })
-            .from(usersTable)
-            .limit(limit)
-            .offset(offset)
-            .orderBy(desc(usersTable.createdAt)),
-          db.select({ total: count() }).from(usersTable),
-        ]);
-        return { users, total: totalResult[0]?.total ?? 0 };
-      },
-      getUser: async (id) => {
-        const [user] = await db
-          .select()
-          .from(usersTable)
-          .where(eq(usersTable.id, id))
-          .limit(1);
-        return user ?? null;
-      },
-      createUser: async (data) => {
-        const [user] = await db
-          .insert(usersTable)
-          .values({
-            id: randomUUID(),
-            email: data.email,
-            name: data.name || "User",
-            passwordHash: hashPassword("password123"),
-          })
-          .returning();
-        return user;
-      },
-      updateUser: async (id, data) => {
-        const [user] = await db
-          .update(usersTable)
-          .set(data)
-          .where(eq(usersTable.id, id))
-          .returning();
-        return user;
-      },
-      deleteUser: async (id) => {
-        await db.delete(usersTable).where(eq(usersTable.id, id));
-      },
-    },
-    sessionManager: {
-      listSessions: async () => {
-        const sessions = (await authAdapter.sessionStore.getAll?.()) ?? [];
-        return sessions.map((s) => ({
-          sessionToken: s.id,
-          userId: s.userId,
-          expires: s.expiresAt,
-          createdAt: s.createdAt,
-        }));
-      },
-      getSessionsByUser: async (userId) => {
-        const sessions = (await authAdapter.sessionStore.getAll?.()) ?? [];
-        return sessions
-          .filter((s) => s.userId === userId)
-          .map((s) => ({
-            sessionToken: s.id,
-            userId: s.userId,
-            expires: s.expiresAt,
-          }));
-      },
-      createSession: async (userId, expiresIn = 86400000) => {
-        const session = await authAdapter.createSession(userId);
-        return { token: session.id, expiresAt: session.expiresAt };
-      },
-      revokeSession: async (sessionId) => {
-        await authAdapter.invalidateSession(sessionId);
-      },
-      revokeAllUserSessions: async (userId) => {
-        const sessions = (await authAdapter.sessionStore.getAll?.()) ?? [];
-        let revokedCount = 0;
-        for (const s of sessions) {
-          if (s.userId === userId) {
-            await authAdapter.invalidateSession(s.id);
-            revokedCount++;
-          }
-        }
-        return revokedCount;
-      },
-    },
-  })
-);
 
 const publicDir = path.join(__dirname, "../public");
 app.use("*", serveStatic({ root: publicDir }));

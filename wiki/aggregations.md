@@ -271,6 +271,75 @@ async function getDashboardStats() {
 }
 ```
 
+## Live Aggregations (Subscriptions)
+
+Every resource also exposes `GET /aggregate/subscribe`, an SSE endpoint that
+streams the aggregate result and **recomputes + re-emits it whenever the
+resource is mutated**. The result is recomputed from the database, so it stays
+exact for any `groupBy`/`having` combination — there is no incremental-aggregation
+drift.
+
+### React
+
+```tsx
+import { useLiveAggregate } from "covara/client/react";
+
+function TodoStats() {
+  const { groups, isLive } = useLiveAggregate("/api/todos", {
+    groupBy: ["completed"],
+    count: true,
+  });
+
+  const completed = groups.find((g) => g.key?.completed)?.count ?? 0;
+  return <div>{completed} completed {isLive ? "🟢" : "…"}</div>;
+}
+```
+
+### Imperative client
+
+```typescript
+const todos = client.resource<Todo>("/api/todos");
+
+const sub = todos.subscribeAggregate(
+  { groupBy: ["status"], count: true, sum: ["amount"] },
+  {
+    onData: (result) => console.log(result.groups),
+    onConnectionChange: (connected) => console.log("live:", connected),
+  }
+);
+
+// later
+sub.unsubscribe();
+```
+
+### Semantics
+
+- On connect the server emits `connected` then one `aggregate` event with the
+  current snapshot (even when the resource is empty).
+- **Scope-aware**: a subscription only recomputes when a mutated row could be in
+  its scope. Each subscription carries its compiled read scope + `filter` and is
+  handed the changed rows — the new row for inserts, new **and** previous state
+  for updates, and the deleted rows' prior content for deletes — so a per-user
+  aggregate like `userId==<me>` does **not** recompute on other users' inserts,
+  updates, or deletes. This is what keeps the cost bounded with many concurrent
+  per-user subscriptions. Unscoped/global aggregates always recompute.
+- Raw-SQL/external invalidations and cross-process notifications fall back to an
+  unconditional recompute (row data isn't shipped over pub/sub). Skipping is only
+  applied when provably safe — the result dedup below is the correctness backstop,
+  so over-recomputing never produces a wrong result.
+- Bursts of mutations coalesce into a single recompute (`sse.aggregateDebounceMs`,
+  default 150ms). An event is suppressed when the recomputed result matches the
+  previous one under an order-independent comparison (group order is normalized,
+  since `GROUP BY` has no stable `ORDER BY`).
+- In multi-process deployments, mutations fan out to watchers via the KV pub/sub
+  channel (the same KV that powers row subscriptions).
+- The read scope and `filter` are resolved once at connect and reused for the life
+  of the connection. Aggregate subscriptions do not support `resumeFrom`/catchup —
+  a reconnect simply re-emits the current snapshot.
+
+See [Subscriptions](subscriptions.md) for the underlying SSE transport and
+reconnection behavior.
+
 ## Best Practices
 
 1. **Use filters** to limit the dataset before aggregating

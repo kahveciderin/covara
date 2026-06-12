@@ -20,6 +20,11 @@ import {
 } from "./types";
 import { Transport } from "./transport";
 import { createSubscription } from "./subscription-manager";
+import {
+  createAggregateSubscription,
+  AggregateSubscription,
+  AggregateSubscriptionCallbacks,
+} from "./aggregate-subscription";
 import { OfflineManager } from "./offline";
 import { ResourceQueryBuilder } from "./resource-query-builder";
 
@@ -333,6 +338,18 @@ export class Repository<
       transport: this.transport,
       resourcePath: this.resourcePath,
       idField: this.idField,
+      options,
+      callbacks,
+    });
+  }
+
+  subscribeAggregate(
+    options: AggregateOptions = {},
+    callbacks: AggregateSubscriptionCallbacks = {}
+  ): AggregateSubscription {
+    return createAggregateSubscription({
+      transport: this.transport,
+      resourcePath: this.resourcePath,
       options,
       callbacks,
     });

@@ -415,7 +415,11 @@ function wrapDeleteBuilder(
                 }
 
                 if (context.config.pushToSubscriptions !== false && deletedIds.length > 0) {
-                  await pushDeletesToSubscriptions(tableInfo.resourceName, deletedIds);
+                  await pushDeletesToSubscriptions(
+                    tableInfo.resourceName,
+                    deletedIds,
+                    itemsToDelete
+                  );
                 }
 
                 if (context.config.cache?.enabled) {

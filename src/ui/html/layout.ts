@@ -65,6 +65,7 @@ export const layout = (props: LayoutProps, content: string): string => html`
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(props.title)} - Covara Admin</title>
+  <link rel="icon" type="image/svg+xml" href="/__covara/logo.svg">
   <script src="/__covara/ui/htmx.js"></script>
   <style>${styles}</style>
   <script>
@@ -146,7 +147,10 @@ export const layout = (props: LayoutProps, content: string): string => html`
   <div class="app">
     <aside class="sidebar">
       <div class="sidebar-header">
-        <span class="sidebar-logo">Covara</span>
+        <span class="sidebar-logo">
+          <img class="sidebar-logo-img" src="/__covara/logo.svg" alt="Covara" width="24" height="24">
+          Covara
+        </span>
         ${envBadge(props.mode)}
       </div>
       <nav class="sidebar-nav">

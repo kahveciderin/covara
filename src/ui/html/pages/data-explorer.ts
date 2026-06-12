@@ -122,11 +122,6 @@ export const dataTable = (data: DataTableData): string => {
     ` : emptyState('\u2637', 'No records found', data.filter ? 'Try adjusting your filter' : 'This resource has no data')}
 
     <div id="detail-panel" style="margin-top: 16px;"></div>
-
-    <style>
-      .btn-danger { color: var(--error); }
-      .btn-danger:hover { background: var(--error-bg); }
-    </style>
   `);
 };
 

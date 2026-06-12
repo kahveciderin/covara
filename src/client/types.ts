@@ -136,6 +136,25 @@ export interface SubscribeOptions {
   knownIds?: string[];
 }
 
+export interface AggregateSubscriptionState {
+  data: AggregationResponse | null;
+  isConnected: boolean;
+  error: Error | null;
+  lastSeq: number;
+}
+
+export interface AggregateSubscriptionCallbacks {
+  onData?: (data: AggregationResponse, seq: number) => void;
+  onError?: (error: Error) => void;
+  onConnectionChange?: (connected: boolean) => void;
+}
+
+export interface AggregateSubscription {
+  readonly state: AggregateSubscriptionState;
+  unsubscribe(): void;
+  reconnect(): void;
+}
+
 export interface CreateOptions {
   optimistic?: boolean;
   optimisticId?: string;
@@ -367,6 +386,10 @@ export interface ResourceClient<
     options?: SubscribeOptions,
     callbacks?: SubscriptionCallbacks<T>
   ): Subscription<T>;
+  subscribeAggregate(
+    options?: AggregateOptions,
+    callbacks?: AggregateSubscriptionCallbacks
+  ): AggregateSubscription;
   rpc<N extends keyof P>(name: N, input: P[N]["input"]): Promise<P[N]["output"]>;
   // Loose escape hatch: only active when no procedures map is declared
   // (`keyof P` is `never`), so a declared map rejects unknown names/inputs.

@@ -52,7 +52,29 @@ export abstract class BaseAuthAdapter implements AuthAdapter {
   abstract validateCredentials(credentials: AuthCredentials): Promise<AuthResult>;
 
   async getSession(token: string): Promise<SessionData | null> {
-    return this.sessionStore.get(token);
+    const session = await this.sessionStore.get(token);
+    if (session) {
+      void this.recordSessionActivity(session);
+    }
+    return session;
+  }
+
+  // Stamp session.data.lastActiveAt so the admin UI can show when a session
+  // was last used. Throttled to one persisted write per minute per session and
+  // fire-and-forget, so it adds no latency or write amplification to requests.
+  private async recordSessionActivity(session: SessionData): Promise<void> {
+    const now = Date.now();
+    const last =
+      typeof session.data?.lastActiveAt === "number" ? session.data.lastActiveAt : 0;
+    if (now - last < 60_000) return;
+    const remainingTtl = session.expiresAt.getTime() - now;
+    if (remainingTtl <= 0) return;
+    session.data = { ...session.data, lastActiveAt: now };
+    try {
+      await this.sessionStore.set(session.id, session, remainingTtl);
+    } catch {
+      // best effort — activity tracking must never break auth
+    }
   }
 
   async invalidateSession(token: string): Promise<void> {
@@ -80,6 +102,21 @@ export abstract class BaseAuthAdapter implements AuthAdapter {
   }
 
   async invalidateUserSessions(userId: string, exceptSessionId?: string): Promise<void> {
+    // Prefer the store's per-user index (Redis/Drizzle stores maintain one) so
+    // this never scans every user's sessions to log out one user.
+    if (!exceptSessionId && this.sessionStore.deleteByUser) {
+      await this.sessionStore.deleteByUser(userId);
+      return;
+    }
+    if (this.sessionStore.getByUser) {
+      const sessions = await this.sessionStore.getByUser(userId);
+      await Promise.all(
+        sessions
+          .filter((s) => s.id !== exceptSessionId)
+          .map((s) => this.sessionStore.delete(s.id))
+      );
+      return;
+    }
     if (!this.sessionStore.getAll) return;
     const sessions = await this.sessionStore.getAll();
     await Promise.all(

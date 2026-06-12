@@ -48,16 +48,78 @@ const compiledFiltersCache = new Map<string, CompiledFilterExpression>();
 // Track which handler IDs are local to this process
 const localHandlerIds = new Set<string>();
 
+// Aggregate subscriptions don't track individual rows — they recompute when
+// anything on the resource changes. Watchers are local to the process that owns
+// the SSE connection; cross-process mutations reach them via AGGREGATE_CHANNEL.
+//
+// The watcher receives the raw changed rows (when the mutation path has them)
+// so it can skip recompute when none of them fall in its scope/filter — this is
+// what keeps a per-user aggregate from recomputing on every other user's
+// mutation. `changed` is undefined when row data isn't available (deletes, raw
+// SQL, cross-process notifications), in which case the watcher must recompute
+// conservatively.
+type AggregateWatcher = (changed?: Record<string, unknown>[]) => void;
+const aggregateWatchers = new Map<string, Set<AggregateWatcher>>();
+
 // In-memory fallback storage (used when KV is not configured)
 const localSubscriptions = new Map<string, Subscription>();
 const localRelevantObjects = new Map<string, Set<string>>();
 const localSeqCounters = new Map<string, number>();
+const localSubsByResource = new Map<string, Set<string>>();
+
+// Last event delivery time per subscription (process-local, best effort) for
+// the admin UI's "Last Event" column.
+const localEventTimestamps = new Map<string, number>();
+
+// SSE handlers are strictly process-local, so every subscription created for a
+// handler is known to this process. Tracking handler → subscription IDs here
+// lets disconnect cleanup run in O(own subscriptions) without scanning KV.
+const localHandlerSubs = new Map<string, Set<string>>();
+const localSubHandlers = new Map<string, string>();
+
+const trackHandlerSubscription = (handlerId: string, subscriptionId: string): void => {
+  let subs = localHandlerSubs.get(handlerId);
+  if (!subs) {
+    subs = new Set();
+    localHandlerSubs.set(handlerId, subs);
+  }
+  subs.add(subscriptionId);
+  localSubHandlers.set(subscriptionId, handlerId);
+};
+
+const untrackSubscription = (subscriptionId: string): void => {
+  const handlerId = localSubHandlers.get(subscriptionId);
+  if (handlerId === undefined) return;
+  localSubHandlers.delete(subscriptionId);
+  const subs = localHandlerSubs.get(handlerId);
+  if (subs) {
+    subs.delete(subscriptionId);
+    if (subs.size === 0) localHandlerSubs.delete(handlerId);
+  }
+};
 
 // KV keys
-const SUBSCRIPTIONS_HASH = "covara:subscriptions";
+// Subscriptions are sharded into one hash per resource so a mutation only ever
+// loads the subscriptions of the resource it touched — never the whole fleet.
+// A small set of resource names (the index) lets cold paths (stats, admin
+// listing, clearAll) enumerate the shards.
+const SUBSCRIPTIONS_BY_RESOURCE_PREFIX = "covara:subs:byres:";
+const SUBSCRIPTIONS_RESOURCE_INDEX = "covara:subs:resources";
+
+const subscriptionHashKey = (resource: string): string =>
+  `${SUBSCRIPTIONS_BY_RESOURCE_PREFIX}${resource}`;
+
+// The resource is embedded in the subscription ID (`<uuid>:<resource>`) so
+// ID-only operations (get/remove/updateSeq) can address the right shard
+// without a secondary lookup. UUIDs are exactly 36 chars and contain no colon.
+const resourceFromSubscriptionId = (subscriptionId: string): string | null =>
+  subscriptionId.length > 37 && subscriptionId[36] === ":"
+    ? subscriptionId.slice(37)
+    : null;
 const SUBSCRIPTION_OBJECTS_PREFIX = "covara:sub:objects:";
 const SUBSCRIPTION_SEQ_PREFIX = "covara:sub:seq:";
 const EVENTS_CHANNEL = "covara:events";
+const AGGREGATE_CHANNEL = "covara:aggregate";
 
 interface SerializedSubscription {
   id: string;
@@ -113,6 +175,68 @@ const deserializeSubscription = (data: string): Subscription => {
 
 const getKV = (): KVAdapter | null => {
   return hasGlobalKV() ? getGlobalKV() : null;
+};
+
+// Register a callback invoked whenever the given resource is mutated, for
+// aggregate subscriptions to recompute. Returns an unsubscribe function.
+export const registerAggregateWatcher = (
+  resource: string,
+  watcher: AggregateWatcher
+): (() => void) => {
+  let set = aggregateWatchers.get(resource);
+  if (!set) {
+    set = new Set();
+    aggregateWatchers.set(resource, set);
+  }
+  set.add(watcher);
+  return () => {
+    const current = aggregateWatchers.get(resource);
+    if (!current) return;
+    current.delete(watcher);
+    if (current.size === 0) aggregateWatchers.delete(resource);
+  };
+};
+
+const notifyLocalAggregateWatchers = (
+  resource: string,
+  changed?: Record<string, unknown>[]
+): void => {
+  const set = aggregateWatchers.get(resource);
+  if (!set) return;
+  for (const watcher of set) {
+    try {
+      watcher(changed);
+    } catch {
+      // a failing watcher must not break mutation processing
+    }
+  }
+};
+
+// Signal that a resource was mutated so aggregate subscriptions recompute.
+// Notifies local watchers immediately (with the changed rows, when available,
+// so watchers can skip recompute for out-of-scope mutations) and (when KV is
+// configured) publishes to other processes. The cross-process notification
+// carries no row data — remote watchers recompute conservatively — to avoid
+// shipping raw rows over pub/sub. Double-delivery to the publisher is harmless;
+// watchers debounce before recomputing.
+export const notifyAggregateWatchers = async (
+  resource: string,
+  changed?: Record<string, unknown>[]
+): Promise<void> => {
+  if (aggregateWatchers.size > 0) {
+    notifyLocalAggregateWatchers(resource, changed);
+  }
+  const kv = getKV();
+  if (kv) {
+    await kv.publish(AGGREGATE_CHANNEL, JSON.stringify({ resource }));
+  }
+};
+
+export const getAggregateWatcherCount = (resource?: string): number => {
+  if (resource) return aggregateWatchers.get(resource)?.size ?? 0;
+  let total = 0;
+  for (const set of aggregateWatchers.values()) total += set.size;
+  return total;
 };
 
 // Load relevant object IDs from KV or local storage
@@ -194,7 +318,7 @@ export interface CreateSubscriptionOptions {
 export const createSubscription = async (
   options: CreateSubscriptionOptions
 ): Promise<string> => {
-  const subscriptionId = uuidv4();
+  const subscriptionId = `${uuidv4()}:${options.resource}`;
   const subscription: Subscription = {
     id: subscriptionId,
     createdAt: new Date(),
@@ -211,28 +335,60 @@ export const createSubscription = async (
 
   const kv = getKV();
   if (kv) {
-    await kv.hset(SUBSCRIPTIONS_HASH, subscriptionId, serializeSubscription(subscription));
+    await kv.hset(
+      subscriptionHashKey(options.resource),
+      subscriptionId,
+      serializeSubscription(subscription)
+    );
+    await kv.sadd(SUBSCRIPTIONS_RESOURCE_INDEX, options.resource);
     await kv.set(`${SUBSCRIPTION_SEQ_PREFIX}${subscriptionId}`, "0");
   } else {
     // Store in local memory
     localSubscriptions.set(subscriptionId, subscription);
     localSeqCounters.set(subscriptionId, 0);
+    let byResource = localSubsByResource.get(options.resource);
+    if (!byResource) {
+      byResource = new Set();
+      localSubsByResource.set(options.resource, byResource);
+    }
+    byResource.add(subscriptionId);
   }
+
+  trackHandlerSubscription(options.handlerId, subscriptionId);
 
   return subscriptionId;
 };
 
 export const removeSubscription = async (subscriptionId: string): Promise<void> => {
   compiledFiltersCache.delete(subscriptionId);
+  untrackSubscription(subscriptionId);
+  localEventTimestamps.delete(subscriptionId);
 
   const kv = getKV();
   if (kv) {
-    await kv.hdel(SUBSCRIPTIONS_HASH, subscriptionId);
+    const resource = resourceFromSubscriptionId(subscriptionId);
+    if (resource) {
+      await kv.hdel(subscriptionHashKey(resource), subscriptionId);
+    } else {
+      // Unknown ID format: clear it from every shard (cold fallback).
+      const resources = await kv.smembers(SUBSCRIPTIONS_RESOURCE_INDEX);
+      for (const res of resources) {
+        await kv.hdel(subscriptionHashKey(res), subscriptionId);
+      }
+    }
     await kv.del(
       `${SUBSCRIPTION_OBJECTS_PREFIX}${subscriptionId}`,
       `${SUBSCRIPTION_SEQ_PREFIX}${subscriptionId}`
     );
   } else {
+    const sub = localSubscriptions.get(subscriptionId);
+    if (sub) {
+      const byResource = localSubsByResource.get(sub.resource);
+      if (byResource) {
+        byResource.delete(subscriptionId);
+        if (byResource.size === 0) localSubsByResource.delete(sub.resource);
+      }
+    }
     localSubscriptions.delete(subscriptionId);
     localRelevantObjects.delete(subscriptionId);
     localSeqCounters.delete(subscriptionId);
@@ -242,7 +398,18 @@ export const removeSubscription = async (subscriptionId: string): Promise<void> 
 export const getSubscription = async (subscriptionId: string): Promise<Subscription | undefined> => {
   const kv = getKV();
   if (kv) {
-    const data = await kv.hget(SUBSCRIPTIONS_HASH, subscriptionId);
+    const resource = resourceFromSubscriptionId(subscriptionId);
+    let data: string | null = null;
+    if (resource) {
+      data = await kv.hget(subscriptionHashKey(resource), subscriptionId);
+    } else {
+      // Unknown ID format: check every shard (cold fallback).
+      const resources = await kv.smembers(SUBSCRIPTIONS_RESOURCE_INDEX);
+      for (const res of resources) {
+        data = await kv.hget(subscriptionHashKey(res), subscriptionId);
+        if (data) break;
+      }
+    }
     if (!data) return undefined;
     const subscription = deserializeSubscription(data);
     subscription.relevantObjectIds = await loadRelevantObjects(subscriptionId);
@@ -271,27 +438,28 @@ export const unregisterHandler = async (handlerId: string): Promise<void> => {
   localHandlerIds.delete(handlerId);
   localHandlerPolicies.delete(handlerId);
 
-  const kv = getKV();
-  if (kv) {
-    // Get all subscriptions and remove those belonging to this handler
-    const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
-    for (const [subId, data] of Object.entries(allSubs)) {
-      const sub = deserializeSubscription(data);
-      if (sub.handlerId === handlerId) {
-        await removeSubscription(subId);
-      }
+  // Handlers are process-local, so their subscriptions were created here and
+  // are tracked locally — disconnect cleanup is O(own subscriptions), no scan.
+  const tracked = localHandlerSubs.get(handlerId);
+  if (tracked) {
+    for (const subId of Array.from(tracked)) {
+      await removeSubscription(subId);
     }
-  } else {
-    // Clean up local subscriptions for this handler
-    for (const [subId, sub] of localSubscriptions.entries()) {
-      if (sub.handlerId === handlerId) {
-        await removeSubscription(subId);
-      }
+    return;
+  }
+
+  // Untracked handler (e.g. cleanup of subscriptions created by a previous
+  // process incarnation): fall back to scanning every shard.
+  const allSubs = await getAllSubscriptions();
+  for (const [subId, sub] of allSubs) {
+    if (sub.handlerId === handlerId) {
+      await removeSubscription(subId);
     }
   }
 };
 
 const getNextSeq = async (subscriptionId: string): Promise<number> => {
+  localEventTimestamps.set(subscriptionId, Date.now());
   const kv = getKV();
   if (kv) {
     return kv.incr(`${SUBSCRIPTION_SEQ_PREFIX}${subscriptionId}`);
@@ -302,14 +470,44 @@ const getNextSeq = async (subscriptionId: string): Promise<number> => {
   return next;
 };
 
-// Helper to get all subscriptions from KV or local storage
+// Load one resource's subscriptions. This is the hot-path accessor used by the
+// mutation push functions — cost scales with that resource's subscriber count,
+// not the total subscription count.
+const getSubscriptionsForResourceMap = async (
+  resource: string
+): Promise<Map<string, Subscription>> => {
+  const kv = getKV();
+  if (kv) {
+    const result = new Map<string, Subscription>();
+    const subs = await kv.hgetall(subscriptionHashKey(resource));
+    for (const [subId, data] of Object.entries(subs)) {
+      result.set(subId, deserializeSubscription(data));
+    }
+    return result;
+  }
+
+  const result = new Map<string, Subscription>();
+  const ids = localSubsByResource.get(resource);
+  if (!ids) return result;
+  for (const id of ids) {
+    const sub = localSubscriptions.get(id);
+    if (sub) result.set(id, sub);
+  }
+  return result;
+};
+
+// Enumerate every shard. Cold paths only (stats, admin listing, fallback
+// cleanup) — never called per mutation.
 const getAllSubscriptions = async (): Promise<Map<string, Subscription>> => {
   const kv = getKV();
   if (kv) {
     const result = new Map<string, Subscription>();
-    const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
-    for (const [subId, data] of Object.entries(allSubs)) {
-      result.set(subId, deserializeSubscription(data));
+    const resources = await kv.smembers(SUBSCRIPTIONS_RESOURCE_INDEX);
+    for (const resource of resources) {
+      const subs = await kv.hgetall(subscriptionHashKey(resource));
+      for (const [subId, data] of Object.entries(subs)) {
+        result.set(subId, deserializeSubscription(data));
+      }
     }
     return result;
   }
@@ -416,6 +614,18 @@ export const initializeEventSubscription = async (): Promise<void> => {
       // Ignore malformed messages
     }
   });
+
+  // Fan out cross-process mutation signals to local aggregate watchers.
+  await kv.subscribe(AGGREGATE_CHANNEL, (message: string) => {
+    try {
+      const { resource } = JSON.parse(message) as { resource?: string };
+      if (typeof resource === "string") {
+        notifyLocalAggregateWatchers(resource);
+      }
+    } catch {
+      // Ignore malformed messages
+    }
+  });
 };
 
 export const sendExistingItems = async <T extends Record<string, unknown>>(
@@ -458,7 +668,7 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
   optimisticIds?: Map<string, string>,
   relationLoader?: RelationLoader<T>
 ): Promise<void> => {
-  const allSubs = await getAllSubscriptions();
+  const allSubs = await getSubscriptionsForResourceMap(resource);
 
   // Cache for items with relations loaded (keyed by include string)
   const itemsWithRelationsCache = new Map<string, Map<string, T>>();
@@ -521,6 +731,8 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
       }
     }
   }
+
+  await notifyAggregateWatchers(resource, items as Record<string, unknown>[]);
 };
 
 export const pushUpdatesToSubscriptions = async <T extends Record<string, unknown>>(
@@ -531,7 +743,7 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
   previousItems?: Map<string, T>,
   relationLoader?: RelationLoader<T>
 ): Promise<void> => {
-  const allSubs = await getAllSubscriptions();
+  const allSubs = await getSubscriptionsForResourceMap(resource);
 
   // Cache for items with relations loaded (keyed by include string)
   const itemsWithRelationsCache = new Map<string, Map<string, T>>();
@@ -627,13 +839,22 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
       }
     }
   }
+
+  // Pass both new and previous state: an update can move a row into or out of a
+  // filtered aggregate's scope, so a watcher must recompute if either matches.
+  const changed: Record<string, unknown>[] = [...(items as Record<string, unknown>[])];
+  if (previousItems) {
+    for (const prev of previousItems.values()) changed.push(prev as Record<string, unknown>);
+  }
+  await notifyAggregateWatchers(resource, changed);
 };
 
 export const pushDeletesToSubscriptions = async (
   resource: string,
-  deletedIds: string[]
+  deletedIds: string[],
+  deletedObjects?: Record<string, unknown>[]
 ): Promise<void> => {
-  const allSubs = await getAllSubscriptions();
+  const allSubs = await getSubscriptionsForResourceMap(resource);
 
   for (const [subId, subscription] of allSubs) {
     if (subscription.resource !== resource) continue;
@@ -658,6 +879,11 @@ export const pushDeletesToSubscriptions = async (
       }
     }
   }
+
+  // When the deleted rows' prior content is available, watchers can scope-skip:
+  // a row that wasn't in a subscription's scope can't change its aggregate.
+  // Without it (IDs only) every watcher must recompute conservatively.
+  await notifyAggregateWatchers(resource, deletedObjects);
 };
 
 export const sendInvalidateEvent = async (
@@ -688,11 +914,12 @@ export const invalidateResourceSubscriptions = async (
   resource: string,
   reason?: string
 ): Promise<void> => {
-  const allSubs = await getAllSubscriptions();
-  for (const [subId, subscription] of allSubs) {
-    if (subscription.resource !== resource) continue;
+  const allSubs = await getSubscriptionsForResourceMap(resource);
+  for (const subId of allSubs.keys()) {
     await sendInvalidateEvent(subId, reason);
   }
+
+  await notifyAggregateWatchers(resource);
 };
 
 export const processChangelogEntries = async (
@@ -741,14 +968,11 @@ export const getSubscriptionsForResource = async (resource: string): Promise<Sub
   if (!kv) return [];
 
   const result: Subscription[] = [];
-  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
+  const subs = await getSubscriptionsForResourceMap(resource);
 
-  for (const data of Object.values(allSubs)) {
-    const subscription = deserializeSubscription(data);
-    if (subscription.resource === resource) {
-      subscription.relevantObjectIds = await loadRelevantObjects(subscription.id);
-      result.push(subscription);
-    }
+  for (const subscription of subs.values()) {
+    subscription.relevantObjectIds = await loadRelevantObjects(subscription.id);
+    result.push(subscription);
   }
 
   return result;
@@ -761,12 +985,16 @@ export const updateSubscriptionSeq = async (
   const kv = getKV();
   if (!kv) return;
 
-  const data = await kv.hget(SUBSCRIPTIONS_HASH, subscriptionId);
+  const resource = resourceFromSubscriptionId(subscriptionId);
+  if (!resource) return;
+
+  const hashKey = subscriptionHashKey(resource);
+  const data = await kv.hget(hashKey, subscriptionId);
   if (!data) return;
 
   const subscription = deserializeSubscription(data);
   subscription.lastSeq = seq;
-  await kv.hset(SUBSCRIPTIONS_HASH, subscriptionId, serializeSubscription(subscription));
+  await kv.hset(hashKey, subscriptionId, serializeSubscription(subscription));
 };
 
 export const getCatchupEvents = async (
@@ -797,11 +1025,14 @@ export const getHandlerSubscriptions = async (handlerId: string): Promise<string
   const kv = getKV();
   if (!kv) return [];
 
-  const result: string[] = [];
-  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
+  // Fast path: handlers are process-local, so their subscriptions are tracked.
+  const tracked = localHandlerSubs.get(handlerId);
+  if (tracked) return Array.from(tracked);
 
-  for (const [id, data] of Object.entries(allSubs)) {
-    const sub = deserializeSubscription(data);
+  const result: string[] = [];
+  const allSubs = await getAllSubscriptions();
+
+  for (const [id, sub] of allSubs) {
     if (sub.handlerId === handlerId) {
       result.push(id);
     }
@@ -836,16 +1067,15 @@ export const getSubscriptionStats = async (): Promise<{
   }
 
   const subscriptionsByResource: Record<string, number> = {};
-  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
+  const allSubs = await getAllSubscriptions();
 
-  for (const data of Object.values(allSubs)) {
-    const sub = deserializeSubscription(data);
+  for (const sub of allSubs.values()) {
     subscriptionsByResource[sub.resource] =
       (subscriptionsByResource[sub.resource] ?? 0) + 1;
   }
 
   return {
-    totalSubscriptions: Object.keys(allSubs).length,
+    totalSubscriptions: allSubs.size,
     totalHandlers: localHandlers.size,
     subscriptionsByResource,
   };
@@ -869,25 +1099,101 @@ export const closeAllHandlers = (): number => {
 
 export const getActiveHandlerCount = (): number => localHandlers.size;
 
+export interface ActiveSubscriptionInfo {
+  id: string;
+  resource: string;
+  filter?: string;
+  userId?: string;
+  connectedAt: string;
+  eventCount: number;
+  lastEventAt?: string;
+  connected: boolean;
+}
+
+// Snapshot of registered subscriptions (KV-backed or local), flagged by whether
+// their SSE handler is connected to this process. Shaped for the admin UI's
+// subscriptions view.
+export const listActiveSubscriptions = async (): Promise<ActiveSubscriptionInfo[]> => {
+  const all = await getAllSubscriptions();
+  const kv = getKV();
+  const result: ActiveSubscriptionInfo[] = [];
+  for (const s of all.values()) {
+    // The per-subscription seq counter increments once per delivered event, so
+    // it doubles as the event count.
+    let eventCount = 0;
+    if (kv) {
+      const raw = await kv.get(`${SUBSCRIPTION_SEQ_PREFIX}${s.id}`);
+      eventCount = raw ? parseInt(raw, 10) || 0 : 0;
+    } else {
+      eventCount = localSeqCounters.get(s.id) ?? 0;
+    }
+    const lastEventAt = localEventTimestamps.get(s.id);
+    result.push({
+      id: s.id,
+      resource: s.resource,
+      filter: s.filter || undefined,
+      userId: s.authId ?? undefined,
+      connectedAt:
+        s.createdAt instanceof Date ? s.createdAt.toISOString() : String(s.createdAt ?? ""),
+      eventCount,
+      lastEventAt: lastEventAt ? new Date(lastEventAt).toISOString() : undefined,
+      connected: localHandlerIds.has(s.handlerId),
+    });
+  }
+  return result;
+};
+
+// Force-close a subscription from the admin UI. Closing the local SSE writer
+// triggers the route's cleanup (handler unregister + record removal). When the
+// connection lives on another process, invalidate it (so the client refetches)
+// and drop the record so delivery stops.
+export const disconnectSubscription = async (subscriptionId: string): Promise<boolean> => {
+  const subscription = await getSubscription(subscriptionId);
+  if (!subscription) return false;
+
+  const handler = localHandlers.get(subscription.handlerId);
+  if (handler) {
+    handler.close();
+    return true;
+  }
+
+  await sendInvalidateEvent(subscriptionId, "Disconnected by admin");
+  await removeSubscription(subscriptionId);
+  return true;
+};
+
 export const clearAllSubscriptions = async (): Promise<void> => {
   compiledFiltersCache.clear();
   localHandlers.clear();
   localHandlerIds.clear();
   localHandlerPolicies.clear();
+  localHandlerSubs.clear();
+  localSubHandlers.clear();
+  localSubscriptions.clear();
+  localRelevantObjects.clear();
+  localSeqCounters.clear();
+  localSubsByResource.clear();
+  localEventTimestamps.clear();
   eventSubscriptionInitialized = false;
 
   const kv = getKV();
   if (!kv) return;
 
-  // Get all subscription IDs to clear their related keys
-  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
-  const keysToDelete: string[] = [SUBSCRIPTIONS_HASH];
+  // Enumerate every resource shard and clear it plus each subscription's
+  // related keys, then drop the resource index itself.
+  const resources = await kv.smembers(SUBSCRIPTIONS_RESOURCE_INDEX);
+  const keysToDelete: string[] = [SUBSCRIPTIONS_RESOURCE_INDEX];
 
-  for (const subId of Object.keys(allSubs)) {
-    keysToDelete.push(
-      `${SUBSCRIPTION_OBJECTS_PREFIX}${subId}`,
-      `${SUBSCRIPTION_SEQ_PREFIX}${subId}`
-    );
+  for (const resource of resources) {
+    const hashKey = subscriptionHashKey(resource);
+    keysToDelete.push(hashKey);
+    const subs = await kv.hgetall(hashKey);
+    for (const subId of Object.keys(subs)) {
+      keysToDelete.push(
+        `${SUBSCRIPTION_OBJECTS_PREFIX}${subId}`,
+        `${SUBSCRIPTION_SEQ_PREFIX}${subId}`
+      );
+    }
   }
 
   if (keysToDelete.length > 0) {

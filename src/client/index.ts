@@ -381,6 +381,13 @@ export {
 } from "./subscription-manager";
 
 export {
+  AggregateSubscriptionManager,
+  createAggregateSubscription,
+  buildAggregateParams,
+} from "./aggregate-subscription";
+export type { AggregateSubscriptionConfig } from "./aggregate-subscription";
+
+export {
   fetchSchema,
   generateTypes,
   createTypegenCLI,

@@ -195,6 +195,7 @@ export type {
 // Admin UI
 export {
   createAdminUI,
+  createAdminRequestLogger,
   registerResourceSchema,
   unregisterResourceSchema,
   getResourceSchema,
@@ -272,7 +273,8 @@ export type {
 } from "./kv";
 
 // Subscription initialization (for multi-process deployments)
-export { initializeEventSubscription } from "./resource/subscription";
+export { initializeEventSubscription, listActiveSubscriptions, disconnectSubscription, getActiveHandlerCount, registerAggregateWatcher, notifyAggregateWatchers, getAggregateWatcherCount } from "./resource/subscription";
+export type { ActiveSubscriptionInfo } from "./resource/subscription";
 
 // OIDC Provider
 export {

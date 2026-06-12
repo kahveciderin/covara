@@ -99,7 +99,6 @@ export const kvKeysList = (data: KVKeysData): string => html`
         </div>
       ` : emptyState('\u26C1', 'No keys found', 'Try a different pattern')}
 
-      <style>.btn-danger { color: var(--error); } .btn-danger:hover { background: var(--error-bg); }</style>
     `)}
   </div>
   <div id="kv-value"></div>

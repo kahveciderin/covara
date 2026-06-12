@@ -159,12 +159,18 @@ body {
   justify-content: space-between;
   padding: 0 20px;
   background: var(--bg-1);
+  gap: 20px;
 }
 
 .header-left {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex: 1;
+}
+
+.header-left > button {
+  width: 100%;
 }
 
 .header-right {
@@ -261,6 +267,7 @@ body {
   border-radius: var(--radius);
   font-size: 12px;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .badge-neutral {
@@ -701,10 +708,7 @@ body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; lette
 .sidebar { width: 248px; background: var(--bg-1); }
 .sidebar-header { padding: 18px 18px; gap: 10px; }
 .sidebar-logo { font-size: 17px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 9px; }
-.sidebar-logo::before {
-  content: ""; width: 20px; height: 20px; border-radius: 6px;
-  background: var(--accent); flex-shrink: 0;
-}
+.sidebar-logo-img { width: 24px; height: 24px; border-radius: 6px; flex-shrink: 0; display: block; }
 .sidebar-nav { padding: 10px 10px; }
 .nav-section-title { font-size: 10.5px; letter-spacing: 0.7px; color: var(--text-3); padding: 10px 12px 5px; }
 .nav-item {
@@ -759,6 +763,11 @@ kbd {
 .btn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
 .btn-danger { background: var(--error); color: #fff; }
 .btn-danger:hover { filter: brightness(1.06); }
+/* Subtle destructive row actions: keep the variant's base look, tint it red. */
+.btn-secondary.btn-danger { background: var(--bg-1); color: var(--error); border-color: var(--border-strong); }
+.btn-secondary.btn-danger:hover { background: var(--error-bg); border-color: var(--error); filter: none; }
+.btn-ghost.btn-danger { background: transparent; color: var(--error); }
+.btn-ghost.btn-danger:hover { background: var(--error-bg); color: var(--error); filter: none; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Cards */
@@ -814,6 +823,7 @@ textarea.input { height: auto; padding: 9px 11px; line-height: 1.5; resize: vert
 .badge {
   display: inline-flex; align-items: center; gap: 5px; height: 21px; padding: 0 8px; border-radius: 999px;
   font-size: 11.5px; font-weight: 600; line-height: 1; border: 1px solid transparent;
+  white-space: nowrap; flex-shrink: 0;
 }
 .badge-success { background: var(--success-bg); color: var(--success); }
 .badge-error, .badge-delete { background: var(--error-bg); color: var(--error); }

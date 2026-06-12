@@ -1,5 +1,5 @@
 import { useSyncExternalStore, useRef, useEffect, useCallback, useState, useMemo } from "react";
-import type { LiveListResourceClient, SearchableResourceClient, SearchResponse, SearchOptions, LiveQueryLike, ResourceClient } from "./types";
+import type { LiveListResourceClient, SearchableResourceClient, SearchResponse, SearchOptions, LiveQueryLike, ResourceClient, AggregateOptions, AggregationResponse } from "./types";
 import { getClient, getAuthErrorHandler } from "./globals";
 import { createLiveQuery, LiveQuery, LiveQueryOptions, LiveQueryState, LiveQueryMutations, statusLabel } from "./live-store";
 import { createMutation, resourceMutationFn, MutationOptions, MutationState, ResourceMutationVars } from "./mutation";
@@ -337,6 +337,89 @@ export function useInfiniteList<
     fetchNextPage,
     hasNextPage: base.hasMore,
     isFetchingNextPage: isFetchingNextPage || base.isLoadingMore,
+  };
+}
+
+export interface UseLiveAggregateOptions extends AggregateOptions {
+  enabled?: boolean;
+}
+
+export interface UseLiveAggregateResult {
+  data: AggregationResponse | null;
+  groups: AggregationResponse["groups"];
+  status: LiveStatus;
+  error: Error | null;
+  isLoading: boolean;
+  isLive: boolean;
+  isReconnecting: boolean;
+}
+
+/**
+ * Subscribe to a live aggregation. The server streams the aggregate result and
+ * re-emits it whenever the resource is mutated, so grouped counts/sums/avgs stay
+ * realtime without refetching.
+ *
+ * @example
+ * const { groups, isLive } = useLiveAggregate('/api/todos', {
+ *   groupBy: ['status'],
+ *   count: true,
+ * });
+ */
+export function useLiveAggregate(
+  pathOrRepo: string | ResourceClient<any>,
+  options: UseLiveAggregateOptions = {}
+): UseLiveAggregateResult {
+  const { enabled = true, filter, groupBy, count, sum, avg, min, max } = options;
+
+  const aggOptions: AggregateOptions = useMemo(
+    () => ({ filter, groupBy, count, sum, avg, min, max }),
+    [filter, JSON.stringify(groupBy), count, JSON.stringify(sum), JSON.stringify(avg), JSON.stringify(min), JSON.stringify(max)]
+  );
+
+  const [data, setData] = useState<AggregationResponse | null>(null);
+  const [status, setStatus] = useState<LiveStatus>("loading");
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    if (!enabled) {
+      setStatus("loading");
+      return;
+    }
+
+    const resource =
+      typeof pathOrRepo === "string"
+        ? getClient().resource<any>(pathOrRepo)
+        : pathOrRepo;
+
+    setStatus("loading");
+    setError(null);
+
+    const sub = resource.subscribeAggregate(aggOptions, {
+      onData: (next) => {
+        setData(next);
+        setStatus("live");
+        setError(null);
+      },
+      onConnectionChange: (connected) => {
+        setStatus((prev) => (connected ? "live" : prev === "loading" ? "loading" : "reconnecting"));
+      },
+      onError: (err) => {
+        setError(err);
+        setStatus("error");
+      },
+    });
+
+    return () => sub.unsubscribe();
+  }, [typeof pathOrRepo === "string" ? pathOrRepo : pathOrRepo, aggOptions, enabled]);
+
+  return {
+    data,
+    groups: data?.groups ?? [],
+    status,
+    error,
+    isLoading: status === "loading",
+    isLive: status === "live",
+    isReconnecting: status === "reconnecting",
   };
 }
 

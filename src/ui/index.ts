@@ -1,5 +1,5 @@
-export { createAdminUI } from "./middleware";
-export type { AdminUIConfig } from "./middleware";
+export { createAdminUI, createAdminRequestLogger, logRequest, logError } from "./middleware";
+export type { AdminUIConfig, AdminRequestLoggerOptions } from "./middleware";
 export {
   registerResourceSchema,
   unregisterResourceSchema,

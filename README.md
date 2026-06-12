@@ -1,4 +1,8 @@
-# Covara
+<p align="center">
+  <img src="assets/logo.svg" alt="Covara" width="96" height="96">
+</p>
+
+<h1 align="center">Covara</h1>
 
 **Your Drizzle schema is already a backend.** Covara turns it into a complete, production-ready API — REST endpoints, real-time subscriptions, auth, file uploads, billing, email, and background jobs — with a type-safe, offline-first TypeScript client on the other end. Built on [Hono](https://hono.dev), it runs standalone on Node or at the edge on Cloudflare Workers.
 
@@ -15,7 +19,7 @@ Covara's goal is to make that 80% *one coherent system* derived from a single so
 
 The remaining 20% — your business logic — goes in lifecycle hooks, RPC procedures, and ordinary Hono routes, with the framework's tracking and typing intact.
 
-```typescript
+```tsx
 // server: a table becomes an API
 const app = createCovara({ cors: true })
   .resource("/todos", todosTable, {
@@ -43,7 +47,7 @@ function TodoList() {
 - **Relations & Joins** - `belongsTo`, `hasOne`, `hasMany`, `manyToMany` with efficient batch loading
 - **RSQL Filtering** - Comprehensive query language (30+ operators) plus custom operators
 - **Cursor Pagination** - Keyset pagination with multi-field ordering
-- **Aggregations** - Group by, count, sum, avg, min, max, with `HAVING` filtering on aggregate output
+- **Aggregations** - Group by, count, sum, avg, min, max, with `HAVING` filtering on aggregate output — available as a one-shot query or a live subscription (`useLiveAggregate`) that recomputes on every change
 - **Nested Write-Through** - Create `belongsTo` parents and `hasMany`/`hasOne` children in one atomic POST
 - **Soft Delete** - Mark rows deleted instead of removing them; reads hide them unless `?withDeleted=true`
 - **Batch Operations** - Bulk create, update, delete with limits, plus bulk upsert (`POST /batch/upsert`)
@@ -106,7 +110,7 @@ function TodoList() {
 
 ### Client Library
 - **Type-safe Client** - Full TypeScript inference, `select` projections that narrow return types, typed filter builder, generated types from your API
-- **React Hooks** - `useLiveList`, `useInfiniteList`, `useMutation`, `useSearch`, `useAuth`, `useJWTAuth`, `useFileUpload`/`useFile`/`useFiles`, `useCredits`/`useSubscription`/`useCheckout`, `usePublicEnv`, plus query invalidation and prefetch
+- **React Hooks** - `useLiveList`, `useInfiniteList`, `useLiveAggregate`, `useMutation`, `useSearch`, `useAuth`, `useJWTAuth`, `useFileUpload`/`useFile`/`useFiles`, `useCredits`/`useSubscription`/`useCheckout`, `usePublicEnv`, plus query invalidation and prefetch
 - **React Native Support** - No DOM assumptions: pluggable `TokenStorage` (AsyncStorage-compatible), environment-aware transport and offline backends, `getDownloadUrl()` for native file handling
 - **Resilient Transport** - Per-request `AbortSignal` + timeout, automatic 401 refresh-and-retry, SSE reconnect with jitter
 - **Offline Support** - Optimistic updates, mutation queue, field-level merge, multi-tab coherence, IndexedDB backend
@@ -240,6 +244,7 @@ export default app;
 | `DELETE` | `/api/users/:id` | Delete resource |
 | `GET` | `/api/users/count` | Count with filtering |
 | `GET` | `/api/users/aggregate` | Aggregations |
+| `GET` | `/api/users/aggregate/subscribe` | Live aggregation (SSE, recomputed on change) |
 | `GET` | `/api/users/subscribe` | SSE subscription |
 | `GET` | `/api/users/search` | Full-text search (when configured) |
 | `POST` | `/api/users/batch` | Batch create |
@@ -317,7 +322,7 @@ See [wiki/resources.md](./wiki/resources.md) for the full option reference (soft
 
 ## Client Library
 
-```typescript
+```tsx
 import { getOrCreateClient } from "covara/client";
 import { useLiveList, useAuth } from "covara/client/react";
 
@@ -358,7 +363,7 @@ The client supports OIDC (PKCE), JWT, bearer tokens, API keys, and cookie sessio
 
 **JWT** (works in React Native — bring your own token storage):
 
-```typescript
+```tsx
 import { initJWTClient } from "covara/client/react";
 import { useJWTAuth } from "covara/client/react";
 
@@ -451,7 +456,7 @@ app.route("/api/files", useFileResource(filesTable, {
 
 Upload from React with progress tracking:
 
-```typescript
+```tsx
 import { useFileUpload, useFiles } from "covara/client/react";
 
 function Uploader() {
@@ -610,7 +615,7 @@ app.route("/api/billing", createBillingRouter(billing, {
 }));
 ```
 
-```typescript
+```tsx
 import { useCredits, useSubscription, useCheckout } from "covara/client/react";
 
 function Account() {

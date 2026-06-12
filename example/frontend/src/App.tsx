@@ -1,5 +1,5 @@
 import { getOrCreateClient } from 'covara/client';
-import { useAuth, useLiveList, usePublicEnv, useSearch, useFileUpload } from 'covara/client/react';
+import { useAuth, useLiveList, useLiveAggregate, usePublicEnv, useSearch, useFileUpload } from 'covara/client/react';
 import { AuthForm } from './components/AuthForm';
 import { createTypedClient } from './generated/api-types';
 import type { PublicEnv } from './generated/api-types';
@@ -62,7 +62,6 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
   const [newCategoryColor, setNewCategoryColor] = useState('#6366f1');
   const [searchQuery, setSearchQuery] = useState('');
   const [uploadingTodoId, setUploadingTodoId] = useState<string | null>(null);
-  const [categoryStats, setCategoryStats] = useState<{ name: string; count: number }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch todos with relations using fluent API
@@ -83,6 +82,17 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
       .limit(5)
   );
 
+  // Live aggregation: server-side counts grouped by completion, streamed and
+  // recomputed on every mutation — independent of the paginated list above.
+  const { groups: completionGroups, isLive: statsLive } = useLiveAggregate(
+    '/api/todos',
+    { groupBy: ['completed'], count: true }
+  );
+  const liveCompleted =
+    completionGroups.find((g) => g.key?.completed === 1 || g.key?.completed === true)?.count ?? 0;
+  const liveRemaining =
+    completionGroups.find((g) => g.key?.completed === 0 || g.key?.completed === false)?.count ?? 0;
+
   // File upload hook
   const { upload, isUploading, progress } = useFileUpload({
     resourcePath: '/api/files',
@@ -96,42 +106,26 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
       .select('id', 'name', 'color')
   );
 
-  // Fetch category stats using the type-safe query builder
-  // This demonstrates aggregations with groupBy
-  useEffect(() => {
-    const fetchCategoryStats = async () => {
-      try {
-        // Type-safe aggregation: groupBy categoryId and count
-        const result = await client.resources.todos
-          .query()
-          .filter('categoryId=isnull=false')
-          .groupBy('categoryId')
-          .withCount()
-          .aggregate();
+  // Live category stats: a grouped aggregation subscription that recomputes on
+  // the server on every change (recategorize, complete, add, delete — even for
+  // todos outside the loaded page), so it never goes stale.
+  const { groups: categoryGroups } = useLiveAggregate('/api/todos', {
+    filter: 'categoryId=isnull=false',
+    groupBy: ['categoryId'],
+    count: true,
+  });
 
-        // Map category IDs to names
-        const stats = result.groups
-          .map(group => {
-            const categoryId = (group.key as { categoryId: string })?.categoryId;
-            const category = categories.find(c => c.id === categoryId);
-            return {
-              name: category?.name || 'Unknown',
-              count: (group as { count?: number }).count || 0,
-            };
-          })
-          .filter(s => s.count > 0)
-          .sort((a, b) => b.count - a.count);
-
-        setCategoryStats(stats);
-      } catch (error) {
-        console.error('Failed to fetch category stats:', error);
-      }
-    };
-
-    if (categories.length > 0) {
-      fetchCategoryStats();
-    }
-  }, [categories, todos.length]); // Refetch when todos change
+  const categoryStats = categoryGroups
+    .map((group) => {
+      const categoryId = (group.key as { categoryId?: string } | null)?.categoryId;
+      const category = categories.find((c) => c.id === categoryId);
+      return {
+        name: category?.name || 'Unknown',
+        count: group.count || 0,
+      };
+    })
+    .filter((s) => s.count > 0)
+    .sort((a, b) => b.count - a.count);
 
   // Search functionality using the useSearch hook
   // Type is inferred from client.resources.todos
@@ -454,6 +448,13 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
             )}
           </div>
         )}
+        {/* Live aggregate: totals across ALL todos (not just the loaded page),
+            streamed from the server and recomputed on every change. */}
+        <div className="stats">
+          <div><span>{liveCompleted}</span> completed (all)</div>
+          <div><span>{liveRemaining}</span> remaining (all)</div>
+          <div title="Live aggregate subscription">{statsLive ? '🟢 live' : '⚪ connecting…'}</div>
+        </div>
         {/* Category stats from type-safe aggregation query */}
         {categoryStats.length > 0 && (
           <div className="category-stats">

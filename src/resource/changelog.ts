@@ -284,7 +284,8 @@ export const changelog = new ChangelogManager();
 export const recordCreate = async (
   resource: string,
   objectId: string,
-  object: Record<string, unknown>
+  object: Record<string, unknown>,
+  userId?: string
 ): Promise<ChangelogEntry> => {
   return changelog.append({
     resource,
@@ -292,6 +293,7 @@ export const recordCreate = async (
     objectId,
     object,
     timestamp: Date.now(),
+    userId,
   });
 };
 
@@ -299,7 +301,8 @@ export const recordUpdate = async (
   resource: string,
   objectId: string,
   object: Record<string, unknown>,
-  previousObject?: Record<string, unknown>
+  previousObject?: Record<string, unknown>,
+  userId?: string
 ): Promise<ChangelogEntry> => {
   return changelog.append({
     resource,
@@ -308,13 +311,15 @@ export const recordUpdate = async (
     object,
     previousObject,
     timestamp: Date.now(),
+    userId,
   });
 };
 
 export const recordDelete = async (
   resource: string,
   objectId: string,
-  previousObject?: Record<string, unknown>
+  previousObject?: Record<string, unknown>,
+  userId?: string
 ): Promise<ChangelogEntry> => {
   return changelog.append({
     resource,
@@ -322,6 +327,7 @@ export const recordDelete = async (
     objectId,
     previousObject,
     timestamp: Date.now(),
+    userId,
   });
 };
 
