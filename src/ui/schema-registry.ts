@@ -1,5 +1,6 @@
 import { Table, TableConfig, getTableColumns, AnyColumn } from "drizzle-orm";
-import { ResourceConfig, DrizzleDatabase, RelationsConfig, FieldPolicies, ResourceCapabilities } from "@/resource/types";
+import { ResourceConfig, DrizzleDatabase, RelationsConfig, FieldPolicies, ResourceCapabilities, ScopeConfig } from "@/resource/types";
+import { createScopeResolver, ScopeResolver } from "@/auth/scope";
 
 export interface SchemaRegistryEntry {
   name: string;
@@ -16,6 +17,7 @@ export interface SchemaRegistryEntry {
     procedures?: string[];
     generatedFields?: string[];
     fields?: FieldPolicies;
+    isFileResource?: boolean;
   };
 }
 
@@ -34,6 +36,7 @@ export interface SchemaInfo {
   primaryKey: string;
   relations: string[];
   procedures: string[];
+  isFileResource?: boolean;
 }
 
 const schemaRegistry = new Map<string, SchemaRegistryEntry>();
@@ -56,6 +59,13 @@ export const setResourceMountPath = (name: string, mountPath: string): void => {
   const entry = schemaRegistry.get(name);
   if (entry && !entry.mountPath) {
     entry.mountPath = mountPath;
+  }
+};
+
+export const setResourceFileFlag = (name: string, isFileResource: boolean): void => {
+  const entry = schemaRegistry.get(name);
+  if (entry) {
+    entry.config.isFileResource = isFileResource;
   }
 };
 
@@ -99,6 +109,12 @@ const getRegistryEntry = (name: string): SchemaRegistryEntry | null => {
 
 export const getResourceSchema = (name: string): SchemaRegistryEntry | null => {
   return getRegistryEntry(name);
+};
+
+export const getResourceScopeResolver = (name: string): ScopeResolver | null => {
+  const entry = getRegistryEntry(name);
+  if (!entry) return null;
+  return createScopeResolver(entry.config.auth as ScopeConfig | undefined, entry.name);
 };
 
 export const getAllResourceSchemas = (): SchemaRegistryEntry[] => {
@@ -212,6 +228,7 @@ export const getSchemaInfo = (name: string): SchemaInfo | null => {
     primaryKey,
     relations,
     procedures,
+    isFileResource: entry.config.isFileResource,
   };
 };
 

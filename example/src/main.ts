@@ -19,7 +19,6 @@ import {
   setGlobalSearch,
   createOpenSearchAdapter,
   initializeStorage,
-  useFileResource,
 } from "covara";
 import { startServer } from "covara/node";
 
@@ -33,6 +32,7 @@ import {
   filesTable,
 } from "./db/schema";
 import { db } from "./db/db";
+import { todoHtmxPage } from "./htmx-page";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -378,34 +378,29 @@ const app = createCovara({
         updatedAt: new Date(),
       }),
     },
-  });
+  })
+  // Server-rendered htmx view of the same todos, served alongside the React SPA
+  // at /htmx. Shares the cookie session, so it's scoped to the logged-in user.
+  .page("/htmx", todoHtmxPage);
 
 app.route("/api/env", usePublicEnv(env));
 
-app.route(
-  "/api/files",
-  useFileResource(filesTable, {
-    db,
-    schema: filesTable,
-    id: filesTable.id,
-    allowedMimeTypes: ["image/jpeg", "image/png", "image/gif", "image/webp"],
-    maxFileSize: 5 * 1024 * 1024,
-    auth: {
-      read: async (user) => rsql`userId==${user?.id}`,
-      create: async (user) => (user ? rsql`*` : rsql``),
-      delete: async (user) => rsql`userId==${user?.id}`,
-    },
-  })
-);
+// File resources are first-class resources with an upload/download layer — they
+// chain like any other resource and gain hooks, relations, subscriptions, etc.
+app.fileResource("/files", filesTable, {
+  db,
+  id: filesTable.id,
+  allowedMimeTypes: ["image/jpeg", "image/png", "image/gif", "image/webp"],
+  maxFileSize: 5 * 1024 * 1024,
+  auth: {
+    read: async (user) => rsql`userId==${user?.id}`,
+    create: async (user) => (user ? rsql`*` : rsql``),
+    delete: async (user) => rsql`userId==${user?.id}`,
+  },
+});
 
-app.use(
-  "/uploads/*",
-  serveStatic({
-    root: uploadsDir,
-    rewriteRequestPath: (p) => p.replace(/^\/uploads/, ""),
-  })
-);
-
+// Local uploads are auto-served at the storage baseUrl (/uploads) by
+// createCovara — no manual serveStatic wiring needed.
 
 const publicDir = path.join(__dirname, "../public");
 app.use("*", serveStatic({ root: publicDir }));

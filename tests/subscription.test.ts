@@ -20,6 +20,8 @@ import {
   processChangelogEntries,
   updateSubscriptionSeq,
   getCatchupEvents,
+  sendCatchupEvents,
+  applyScopeChange,
   clearAllSubscriptions,
   addRelevantObject,
   registerKnownIds,
@@ -139,6 +141,149 @@ describe("Subscription System", () => {
 
       expect(writer.getEvents().some((e) => e.type === "invalidate")).toBe(false);
       await unregisterHandler("other-handler");
+    });
+  });
+
+  describe("Resume Catchup", () => {
+    it("replays missed changelog entries to a single subscription on resume", async () => {
+      const writer = createMockResponse();
+      const filter = createMockFilter();
+      registerHandler("catchup-handler", writer);
+      const subId = await createSubscription({
+        resource: "items",
+        filter: 'status=="active"',
+        handlerId: "catchup-handler",
+        authId: null,
+      });
+
+      // Mutations that happened while the client was disconnected.
+      await changelog.append({ resource: "items", type: "create", objectId: "a", object: { id: "a", status: "active" }, timestamp: Date.now() });
+      await changelog.append({ resource: "items", type: "update", objectId: "b", object: { id: "b", status: "active" }, previousObject: { id: "b", status: "active" }, timestamp: Date.now() });
+      await changelog.append({ resource: "items", type: "update", objectId: "c", object: { id: "c", status: "inactive" }, previousObject: { id: "c", status: "active" }, timestamp: Date.now() });
+      await changelog.append({ resource: "items", type: "delete", objectId: "d", previousObject: { id: "d", status: "active" }, timestamp: Date.now() });
+      // Unrelated resource — must be ignored.
+      await changelog.append({ resource: "others", type: "create", objectId: "x", object: { id: "x", status: "active" }, timestamp: Date.now() });
+
+      const upto = await changelog.getCurrentSequence();
+      const result = await sendCatchupEvents(subId, 0, upto, filter, "id");
+      expect(result).toBe("replayed");
+
+      const events = writer.getEvents();
+      // Created & in scope -> added.
+      expect(events.find((e) => e.type === "added" && e.object?.id === "a")).toBeTruthy();
+      // Updated, still in scope -> changed.
+      expect(events.find((e) => e.type === "changed" && e.object?.id === "b")).toBeTruthy();
+      // Updated out of scope -> removed (no ghost).
+      expect(events.find((e) => e.type === "removed" && e.objectId === "c")).toBeTruthy();
+      // Deleted -> removed.
+      expect(events.find((e) => e.type === "removed" && e.objectId === "d")).toBeTruthy();
+      // Unrelated resource is never delivered.
+      expect(events.find((e) => e.object?.id === "x")).toBeFalsy();
+
+      await unregisterHandler("catchup-handler");
+    });
+
+    it("falls back to invalidate when a missed entry carries no row data (raw SQL)", async () => {
+      const writer = createMockResponse();
+      registerHandler("catchup-raw", writer);
+      const subId = await createSubscription({
+        resource: "items",
+        filter: "",
+        handlerId: "catchup-raw",
+        authId: null,
+      });
+
+      await changelog.append({ resource: "items", type: "update", objectId: "*", timestamp: Date.now() });
+
+      const upto = await changelog.getCurrentSequence();
+      const result = await sendCatchupEvents(subId, 0, upto, createMockFilter(), "id");
+      expect(result).toBe("invalidate");
+      expect(writer.getEvents().some((e) => e.type === "invalidate")).toBe(true);
+
+      await unregisterHandler("catchup-raw");
+    });
+
+    it("returns 'invalidate' when the resume point has been pruned out of the changelog window", async () => {
+      const writer = createMockResponse();
+      registerHandler("catchup-gap", writer);
+      const subId = await createSubscription({
+        resource: "items",
+        filter: "",
+        handlerId: "catchup-gap",
+        authId: null,
+      });
+
+      await changelog.append({ resource: "items", type: "create", objectId: "a", object: { id: "a" }, timestamp: Date.now() });
+      const upto = await changelog.getCurrentSequence();
+
+      // Resume from a sequence far below the oldest retained entry -> gap.
+      vi.spyOn(changelog, "needsInvalidation").mockResolvedValueOnce(true);
+      const result = await sendCatchupEvents(subId, 1, upto, createMockFilter(), "id");
+      expect(result).toBe("invalidate");
+      expect(writer.getEvents().some((e) => e.type === "invalidate")).toBe(true);
+
+      await unregisterHandler("catchup-gap");
+    });
+  });
+
+  describe("Scope Re-check", () => {
+    it("diffs the new matching set: removes rows that left scope, adds rows that entered", async () => {
+      const writer = createMockResponse();
+      registerHandler("scope-handler", writer);
+      const subId = await createSubscription({
+        resource: "items",
+        filter: "",
+        handlerId: "scope-handler",
+        authId: "u1",
+        scopeFilter: 'owner=="u1"',
+      });
+
+      // Subscriber currently holds a and b.
+      await addRelevantObject(subId, "a");
+      await addRelevantObject(subId, "b");
+
+      // New scope's matching set is {b, c}: a left, c entered, b stayed.
+      const result = await applyScopeChange(
+        subId,
+        'owner=="u2"',
+        [
+          { id: "b", owner: "u2" },
+          { id: "c", owner: "u2" },
+        ],
+        "id"
+      );
+
+      expect(result).toEqual({ added: 1, removed: 1 });
+
+      const events = writer.getEvents();
+      expect(events.find((e) => e.type === "removed" && e.objectId === "a")).toBeTruthy();
+      expect(events.find((e) => e.type === "added" && e.object?.id === "c")).toBeTruthy();
+      expect(events.find((e) => e.objectId === "b" || e.object?.id === "b")).toBeFalsy();
+
+      // The persisted scope is updated so future live events honor it.
+      const sub = await getSubscription(subId);
+      expect(sub?.scopeFilter).toBe('owner=="u2"');
+
+      await unregisterHandler("scope-handler");
+    });
+
+    it("is a no-op event-wise when the matching set is unchanged", async () => {
+      const writer = createMockResponse();
+      registerHandler("scope-noop", writer);
+      const subId = await createSubscription({
+        resource: "items",
+        filter: "",
+        handlerId: "scope-noop",
+        authId: "u1",
+        scopeFilter: 'owner=="u1"',
+      });
+      await addRelevantObject(subId, "a");
+
+      const result = await applyScopeChange(subId, 'owner=="u1"', [{ id: "a", owner: "u1" }], "id");
+      expect(result).toEqual({ added: 0, removed: 0 });
+      expect(writer.getEvents().length).toBe(0);
+
+      await unregisterHandler("scope-noop");
     });
   });
 

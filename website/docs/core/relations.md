@@ -73,6 +73,20 @@ interface RelationConfig {
 }
 ```
 
+## Auto-discovery
+
+Set `autoRelations: true` to derive relations from your Drizzle foreign keys instead of declaring them by hand:
+
+```typescript
+useResource(postsTable, { db, id: postsTable.id, autoRelations: true });
+```
+
+- **`belongsTo`** is discovered from this table's own single-column FKs — `posts.authorId → users.id` becomes a relation named `author` (the FK column name with a trailing `Id`/`_id` stripped).
+- **`hasMany`** is discovered from other **registered resources** whose FKs reference this table — if `comments.postId → posts.id`, `posts` gains a relation named after the referencing table (`comments`).
+- Only single-column FKs to registered resources are discovered — no guessing. `manyToMany`, custom names, eager strategy, and `defaultSelect` must be declared explicitly.
+- **Explicit `relations` always win** over a discovered relation of the same name, so you can enable `autoRelations` and still override or add specific ones.
+- Discovered relations are **lazy** (loaded only via `?include=`) and run through the same scope-enforced loader as explicit relations (see [Scope enforcement](#scope-enforcement)).
+
 ## Including relations
 
 ```bash
@@ -92,6 +106,14 @@ GET /api/posts?include=comments(limit:5;select:id,text)    # with options
 | `filter` | [RSQL filter](./filtering.md) on related rows | `comments(filter:status=="approved")` |
 
 `limit`/`offset` apply **per parent row**, so each parent gets its own page of children. The `filter` is combined with the relation's join condition.
+
+## Scope enforcement
+
+Included relations honor the **target resource's `read` [auth scope](../auth/scopes.md)** for the requesting user — a relation can never reveal rows the user could not read by querying that resource directly. For each included relation, the target resource's read scope is resolved for the effective user (including an [impersonated](../tooling/admin-ui.md) one) and AND-ed into the relation query: rows outside the user's scope are filtered out (`belongsTo`/`hasOne` becomes `null`; `hasMany`/`manyToMany` omits them), and a user denied read on the target resource gets nothing. This applies identically to explicit and [auto-discovered](#auto-discovery) relations.
+
+Relations to tables that are **not** registered as resources have no scope to enforce — only expose such relations to data you intend to be readable through the parent.
+
+> **Subscriptions:** relations embedded in [subscription](../realtime/subscriptions.md) events are loaded once per `include` string and shared across subscribers, so they are **not** per-subscriber scope-filtered. Avoid including sensitive relations in subscriptions, or rely on [field masking](./fields.md).
 
 ### Eager relations
 

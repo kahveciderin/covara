@@ -360,10 +360,11 @@ export const createLiveQuery = <T extends { id: string }>(
     }
 
     // Check if this change is for an item that was optimistically created
-    // If so, we need to clean up the optimistic entry
+    // If so, we need to clean up the optimistic entry. idMappings is keyed
+    // optimisticId -> serverId, so match on the value and return the key.
     const mappedOptimisticId = Array.from(idMappings.entries()).find(
-      ([serverId]) => serverId === item.id
-    )?.[1];
+      ([, serverId]) => serverId === item.id
+    )?.[0];
 
     if (mappedOptimisticId && cache.has(mappedOptimisticId)) {
       cache.delete(mappedOptimisticId);
@@ -377,7 +378,7 @@ export const createLiveQuery = <T extends { id: string }>(
         if (serverId === item.id && cache.has(optimisticId)) {
           cache.delete(optimisticId);
           optimisticIds.delete(optimisticId);
-          idMappings.set(item.id, optimisticId);
+          idMappings.set(optimisticId, item.id);
         }
       }
     }
@@ -583,12 +584,16 @@ export const createLiveQuery = <T extends { id: string }>(
     await refresh();
     if (destroyed) return;
 
-    // Get the IDs we already have from the initial fetch
-    const knownIds = Array.from(cache.keys());
-
+    // Subscribe to the whole filter scope (skipExisting avoids re-receiving the
+    // page we just fetched). We deliberately do NOT cap tracking to the loaded
+    // ids: that id-window is unsound for pagination — it can't tell whether a
+    // row belongs in the visible range, and would miss live changes to rows on
+    // later pages and inserts that fall into the range. Tracking the full scope
+    // lets the subscription mode decide what to render (e.g. strict applies
+    // changes to rows it holds and defers the rest), and rows loaded later via
+    // loadMore receive live updates without any window bookkeeping.
     const subscribeOptions: SubscribeOptions = {
       skipExisting: true,
-      knownIds,
     };
     if (options.filter) subscribeOptions.filter = options.filter;
     if (options.include) subscribeOptions.include = options.include;

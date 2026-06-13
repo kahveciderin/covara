@@ -1,11 +1,16 @@
 import { Hono } from "hono";
+import { Readable } from "node:stream";
 import { SQL, getTableColumns, eq, and, count } from "drizzle-orm";
+import { hasGlobalStorage, getGlobalStorage } from "@/storage/types";
 import {
   getResourceSchema,
+  getResourceScopeResolver,
   getSchemaInfo,
   getAllSchemaInfos,
 } from "./schema-registry";
 import { createResourceFilter } from "@/resource/filter";
+import { combineScopes } from "@/auth/scope";
+import { resolveImpersonatedUser } from "@/server/impersonation";
 import {
   createPagination,
   decodeCursorLegacy,
@@ -149,9 +154,40 @@ export const createDataExplorerRoutes = (
 
       const orderByFields = parseOrderBy(orderByStr);
 
+      // When impersonating (verified: the real caller is an admin), AND the
+      // impersonated user's read scope into the browse filter so the explorer
+      // shows exactly what that user could read. Otherwise admin bypass applies.
+      let effectiveFilterStr = filterStr;
+      let impersonatingId: string | null = null;
+      let scopeDenied = false;
+      const impersonated = await resolveImpersonatedUser(c);
+      if (impersonated) {
+        impersonatingId = impersonated.id;
+        const resolver = getResourceScopeResolver(resource);
+        if (resolver && !resolver.isPublic("read")) {
+          const scope = await resolver.resolve("read", impersonated);
+          if (scope.isEmpty()) scopeDenied = true;
+          else effectiveFilterStr = combineScopes(scope, filterStr);
+        }
+      }
+
+      if (scopeDenied) {
+        if (adminUser) {
+          logAdminAction({
+            userId: adminUser.id,
+            userEmail: adminUser.email,
+            operation: "data_explorer_list",
+            resource,
+            reason: `Impersonating ${impersonatingId}: read denied by scope`,
+            details: { impersonatedUserId: impersonatingId },
+          });
+        }
+        return c.json({ items: [], nextCursor: null, impersonating: impersonatingId, denied: true });
+      }
+
       let filter: SQL<unknown> | undefined;
-      if (filterStr) {
-        filter = filterer.convert(filterStr) as SQL<unknown>;
+      if (effectiveFilterStr) {
+        filter = filterer.convert(effectiveFilterStr) as SQL<unknown>;
       }
 
       let query = db.select().from(schema);
@@ -227,10 +263,16 @@ export const createDataExplorerRoutes = (
           userEmail: adminUser.email,
           operation: "data_explorer_list",
           resource,
-          reason: `Admin browse: filter=${filterStr || "none"}, limit=${limitNum}`,
+          reason: impersonatingId
+            ? `Impersonating ${impersonatingId}: filter=${filterStr || "none"}, limit=${limitNum}`
+            : `Admin browse: filter=${filterStr || "none"}, limit=${limitNum}`,
+          details: impersonatingId ? { impersonatedUserId: impersonatingId } : undefined,
         });
       }
 
+      if (impersonatingId) {
+        return c.json({ ...result, impersonating: impersonatingId });
+      }
       return c.json({
         ...result,
         adminBypass: true,
@@ -247,6 +289,56 @@ export const createDataExplorerRoutes = (
         400
       );
     }
+  });
+
+  // Admin-gated file download: streams the stored object for a file-resource
+  // row via the storage adapter (admin already authorized by adminAuth), so the
+  // data explorer can download files regardless of the resource's own scopes.
+  router.get("/data/:resource/:id/file", async (c) => {
+    const resource = c.req.param("resource");
+    const id = c.req.param("id");
+    const adminUser = getAdminUser(c);
+
+    const notFound = () =>
+      c.json({ type: "/__covara/problems/not-found", title: "Not found", status: 404 }, 404);
+
+    if (!isResourceAllowed(resource)) return notFound();
+    const entry = getResourceSchema(resource);
+    if (!entry || !hasGlobalStorage()) return notFound();
+
+    const [row] = (await (entry.db as {
+      select: () => { from: (t: unknown) => { where: (c: unknown) => { limit: (n: number) => Promise<unknown[]> } } };
+    })
+      .select()
+      .from(entry.schema)
+      .where(eq(entry.idColumn, id))
+      .limit(1)) as Record<string, unknown>[];
+    if (!row) return notFound();
+
+    const storagePath = row.storagePath as string | undefined;
+    if (!storagePath) return notFound();
+
+    if (adminUser) {
+      logAdminAction({
+        userId: adminUser.id,
+        userEmail: adminUser.email,
+        operation: "data_explorer_download",
+        resource,
+        resourceId: id,
+        reason: `Admin file download: ${storagePath}`,
+      });
+    }
+
+    const storage = getGlobalStorage();
+    if (storage.supportsPresignedUrls()) {
+      const url = await storage.getDownloadUrl(storagePath, {});
+      if (url) return c.redirect(url, 302);
+    }
+    const stream = await storage.downloadStream(storagePath);
+    c.header("Content-Type", (row.mimeType as string) || "application/octet-stream");
+    c.header("Content-Disposition", `attachment; filename="${(row.filename as string) || id}"`);
+    if (typeof row.size === "number") c.header("Content-Length", String(row.size));
+    return c.body(Readable.toWeb(stream) as unknown as ReadableStream);
   });
 
   router.get("/data/:resource/:id", async (c) => {

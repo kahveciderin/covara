@@ -313,7 +313,17 @@ function wrapUpdateBase(
             const result = await target;
 
             if (context.trackingEnabled) {
-              const items = Array.isArray(result) ? result : (result ? [result] : []);
+              // With .returning() the driver yields the updated rows. Without it,
+              // the driver yields a result-summary object (e.g. { rowsAffected })
+              // that has no row data, so derive the affected rows from the
+              // pre-mutation SELECT (mirroring the delete path) and overlay the
+              // update values. This keeps empty updates from recording entries and
+              // avoids a bogus objectId "undefined" entry.
+              const items = Array.isArray(result)
+                ? result
+                : state.hasReturning
+                  ? (result ? [result] : [])
+                  : previousItems.map((prev) => ({ ...prev, ...updateValues }));
 
               await runOrDefer(context, async () => {
                 for (const item of items) {

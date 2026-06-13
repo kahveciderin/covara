@@ -150,7 +150,11 @@ describe("Admin UI Tests", () => {
       const res = await get(app, "/__covara/ui");
       expect(res.body).not.toContain("unpkg.com");
       expect(res.body).not.toContain("rsms.me");
-      expect(res.body).not.toContain("https://");
+      // No external RESOURCE loads (scripts, stylesheets, fonts, images) — those
+      // trigger network requests on render. Plain navigation links (e.g. an
+      // <a href> to the docs site) are fine and don't fetch anything.
+      expect(res.body).not.toMatch(/(?:src|@import|url\()\s*["'(]?https:\/\//);
+      expect(res.body).not.toMatch(/<link\b[^>]*\bhref=["']https:\/\//);
       expect(res.body).toContain("/__covara/ui/htmx.js");
     });
 

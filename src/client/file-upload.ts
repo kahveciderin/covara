@@ -48,7 +48,8 @@ export interface FileListOptions {
 }
 
 export interface FileListResponse {
-  data: UploadedFile[];
+  items: UploadedFile[];
+  nextCursor?: string | null;
 }
 
 export interface FileClientConfig {
@@ -89,7 +90,7 @@ export const createFileClient = (config: FileClientConfig): FileClient => {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const response = JSON.parse(xhr.responseText);
-            resolve(response.data as UploadedFile);
+            resolve(response as UploadedFile);
           } catch {
             reject(new Error("Invalid response format"));
           }
@@ -137,13 +138,13 @@ export const createFileClient = (config: FileClientConfig): FileClient => {
       contentType: file.type || "application/octet-stream",
     });
 
-    const presignedResponse = await transport.request<{ data: PresignedUploadResponse }>({
+    const presignedResponse = await transport.request<PresignedUploadResponse>({
       method: "GET",
       path: `${resourcePath}/upload-url`,
       params: Object.fromEntries(params),
     });
 
-    const { fileId, uploadUrl, fields } = presignedResponse.data.data;
+    const { fileId, uploadUrl, fields } = presignedResponse.data;
 
     await new Promise<void>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
@@ -184,20 +185,20 @@ export const createFileClient = (config: FileClientConfig): FileClient => {
       xhr.send(file);
     });
 
-    const confirmResponse = await transport.request<{ data: UploadedFile }>({
+    const confirmResponse = await transport.request<UploadedFile>({
       method: "POST",
       path: `${resourcePath}/${fileId}/confirm`,
     });
 
-    return confirmResponse.data.data;
+    return confirmResponse.data;
   };
 
   const get = async (id: string): Promise<UploadedFile> => {
-    const response = await transport.request<{ data: UploadedFile }>({
+    const response = await transport.request<UploadedFile>({
       method: "GET",
       path: `${resourcePath}/${id}`,
     });
-    return response.data.data;
+    return response.data;
   };
 
   const list = async (options?: FileListOptions): Promise<FileListResponse> => {
@@ -222,12 +223,12 @@ export const createFileClient = (config: FileClientConfig): FileClient => {
   };
 
   const deleteMany = async (ids: string[]): Promise<{ deleted: number }> => {
-    const response = await transport.request<{ data: { deleted: number } }>({
+    const response = await transport.request<{ deleted: number }>({
       method: "DELETE",
       path: `${resourcePath}/batch`,
       body: { ids },
     });
-    return response.data.data;
+    return response.data;
   };
 
   const getDownloadUrl = (id: string): string => {

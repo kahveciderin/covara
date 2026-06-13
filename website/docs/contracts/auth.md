@@ -62,12 +62,26 @@
 - **No client bypass**: A hidden column cannot be recovered via `?select=` or by subscribing — masking is enforced server-side after projection
 - **Column-only**: Only table columns are stripped; relation keys, computed values, and internal markers (`_etag`, `_optimisticId`) pass through
 
+### Relation Scope Enforcement
+- **Included relations respect target scope**: On the read path (`GET /` and `GET /:id` with `?include=`), each included relation AND-s the target resource's `read` scope (resolved for the effective/impersonated user) into its query — a relation cannot return rows the user could not read directly
+- **Deny semantics**: A user denied read on the target resource yields `null` (`belongsTo`/`hasOne`) or an empty array (`hasMany`/`manyToMany`) for that relation; out-of-scope rows are filtered, not just hidden
+- **Applies to discovered relations**: Auto-discovered (`autoRelations`) relations use the same enforced loader as explicit ones
+- **Unregistered targets**: Relations to tables not registered as resources have no scope to enforce (no resolver) — these are an explicit author choice
+- **Non-guarantee (subscriptions)**: Relations embedded in subscription events are loaded once per `include` string and shared across subscribers, so they are NOT per-subscriber scope-filtered — do not include sensitive relations in subscriptions
+
 ### Admin Scope Bypass (Admin UI)
 - **Identity re-verification, no secret**: The resource layer skips per-resource auth scopes only when the request carries the `x-covara-admin-bypass` marker **and** its authenticated user (or forwarded admin `apiKey`) passes the registered admin predicate. The marker is not a secret and grants nothing on its own
 - **Leaked marker is inert**: A non-admin presenting the marker is served under normal scope enforcement (fail-closed); the marker value is constant and confers no authority
 - **Disabled by default**: Bypass is inert unless an admin predicate is registered, which happens only when the [admin UI](../tooling/admin-ui.md) is mounted via `createCovara`; standalone `useResource` never bypasses
 - **Gated on admin auth**: The admin predicate is derived from the UI's `security` config — locking down the UI's auth locks down bypass
 - **Audited**: Every bypassed API-explorer request is recorded in the admin audit log (`api_explorer_execute`)
+
+### Admin Impersonation (Admin UI)
+- **Runs as the target, under their scope**: A request carrying the `x-covara-impersonate: <userId>` marker resolves the impersonated user's per-operation scope and attributes writes to them — it does NOT grant `allScope()`
+- **Identity re-verification, no secret**: The marker is honored only when the forwarded request's real authenticated user passes the admin predicate (same test as bypass) and a `userManager`-backed resolver yields the target user; a forged/leaked marker from a non-admin is inert
+- **Replaces bypass, never stacks**: When impersonation is active the scope layer uses the impersonated user's scope and skips the bypass branch entirely — impersonating an admin yields only that admin's scope, never full bypass (no escalation)
+- **Single effective-user swap**: A middleware swaps `c.get("user")` to the impersonated user once, so scope, write attribution, and hooks all observe the same identity; admin-UI routes (`/__covara/*`) are exempt so admin authorization is unaffected
+- **Audited with both ids**: Every impersonated action records the real admin id and the impersonated user id (`impersonate_execute`, `data_explorer_list`)
 
 ## Non-Guarantees
 

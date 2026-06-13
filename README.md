@@ -52,7 +52,7 @@ function TodoList() {
 ### Core API
 - **Automatic REST API** - Full CRUD endpoints from your Drizzle schema
 - **Real-time Subscriptions** - SSE with changelog-based updates, sequence numbers, and seamless reconnection
-- **Relations & Joins** - `belongsTo`, `hasOne`, `hasMany`, `manyToMany` with efficient batch loading
+- **Relations & Joins** - `belongsTo`, `hasOne`, `hasMany`, `manyToMany` with efficient batch loading, optional foreign-key **auto-discovery** (`autoRelations`), and **scope-enforced includes** (a relation never reveals rows the user couldn't read directly)
 - **RSQL Filtering** - Comprehensive query language (30+ operators) plus custom operators
 - **Cursor Pagination** - Keyset pagination with multi-field ordering
 - **Aggregations** - Group by, count, sum, avg, min, max, with `HAVING` filtering on aggregate output — available as a one-shot query or a live subscription (`useLiveAggregate`) that recomputes on every change
@@ -90,7 +90,8 @@ function TodoList() {
 
 ### File Storage
 - **Storage Adapters** - Local disk, S3, Cloudflare R2 (native binding or S3-compat), and in-memory behind one `StorageAdapter` interface
-- **File Resources** - `useFileResource` generates upload/download/list/delete endpoints with MIME and size validation, per-user key generation, and auth scopes
+- **File Resources** - First-class resources with an upload/download layer: `app.fileResource(...)` chains like any resource and inherits the full CRUD/hooks/procedures/relations/subscriptions/scopes surface, plus MIME/size validation, per-user keys, and storage cleanup on delete
+- **Zero-config local serving** - `createCovara` auto-serves a local adapter's `baseUrl` (no manual `serveStatic`); admin data explorer gets a per-row Download action
 - **Presigned URLs** - Optional direct-to-bucket uploads/downloads with configurable expiry
 - **React Hooks** - `useFileUpload` (with progress), `useFile`, `useFiles`; `getDownloadUrl()` for React Native
 
@@ -125,6 +126,13 @@ function TodoList() {
 - **Auth Strategies** - OIDC (PKCE flow, token refresh), JWT, bearer, API key, or cookie sessions — selected per client or auto-detected
 - **HMR-safe** - `getOrCreateClient` for development
 
+### Server-rendered htmx (Beta)
+- **One JSX page → full app** - `app.page(path, Component)` server-renders a page whose `<Live>` regions auto-generate the htmx endpoints (list/create/update/delete/subscribe). Covara generates wiring, not UI components
+- **Live by default** - each region streams server-rendered fragments over SSE (reusing the existing subscription engine); rows update in place as anyone mutates the resource
+- **Optimistic & offline** - new rows insert once via the live SSE (no duplicate/phantom), deletes are optimistic, and mutations queue offline and replay on reconnect
+- **No client framework** - vendored htmx core + a tiny runtime, served and injected automatically
+- **Beta** - newer than the JSON API + TypeScript client; the API may still change
+
 ### Environment Variables
 - **Type-safe Configuration** - Define and validate env vars with Zod via `createEnv` / `envVariable`
 - **Public and Private Vars** - `PUBLIC_`-prefixed or explicitly-marked vars served to clients via `usePublicEnv` (with ETag)
@@ -132,6 +140,7 @@ function TodoList() {
 
 ### Developer Experience
 - **Project Scaffolding** - `npx covara create my-app` (Node/Workers templates, SQLite/Postgres), plus `covara generate resource|migration`
+- **`covara dev` Loop** - Dev watcher: streams schema changes to the DB (additive auto-applied, destructive gated), regenerates the typed client, runs the server — no manual push. Plus `covara db` connection profiles (local/remote/Turso/Postgres), `push`/`migrate`/`studio`, and `data`/`import`/`export`/`run`/`types`
 - **Deploy-Ready Output** - Generated Dockerfile, docker-compose, complete wrangler.toml, GitHub Actions CI, `.env.example`
 - **Framework Migrations** - `covara/db` ships canonical internal-table schemas, an idempotent `autoMigrate`/`migrateInternal`, a generic seeder, and pool-sizing helpers
 - **App Factory** - `createCovara()` wires errors, auth, security headers, health, OpenAPI, admin UI
@@ -436,30 +445,69 @@ const subscription = users.subscribe(
 
 The client has no hard DOM dependencies: pass an AsyncStorage-backed `TokenStorage` for JWT auth, offline persistence picks an environment-appropriate backend, and the file hooks expose `getDownloadUrl()` for use with `Linking` instead of browser downloads.
 
+## Server-rendered htmx (Beta)
+
+> **Beta.** This is newer than the JSON API and TypeScript client and may still change between releases. The JSON API it builds on is stable.
+
+Prefer hypermedia over a client framework? Register a single JSX page; `<Live>` is the only special element, and Covara generates the htmx endpoints, the live SSE stream, and the optimistic/offline client runtime for you.
+
+```tsx
+// tsconfig: { "jsx": "react-jsx", "jsxImportSource": "hono/jsx" }
+import { createCovara } from "covara/server";
+import { Live } from "covara/htmx";
+import { todos } from "./schema";
+
+const app = createCovara()
+  .resource("/todos", todos, { id: todos.id, db })
+  .page("/todos", () => (
+    <Live
+      resource={todos}
+      query={{ orderBy: "position" }}
+      create={(c) => (
+        <form {...c.create()}>
+          <input name="title" />
+          <button>Add</button>
+        </form>
+      )}
+      container={(rows, c) => <ul {...c.container()}>{rows}</ul>}
+      render={(t, c) => (
+        <li {...c.row(t.id)}>
+          {t.title}
+          <button {...c.delete(t.id)}>Delete</button>
+        </li>
+      )}
+    />
+  ));
+```
+
+`GET /todos` is now a full server-rendered page. Creating a todo in one browser tab streams the new row into every other tab over SSE; updates and deletes patch rows in place. The helpers (`c.create()`, `c.row(id)`, `c.update(id)`, `c.delete(id)`, `c.container()`) emit plain htmx attributes pointing at auto-generated endpoints under `/__covara/live`. See the [htmx docs](https://kahveciderin.github.io/covara/htmx/overview) for optimistic/offline behavior, live aggregates, and scoping.
+
 ## File Storage
 
-Configure a storage backend once, then mount file resources like any other:
+Configure a storage backend once, then chain a file resource like any other. Local uploads are auto-served at `baseUrl` — no `serveStatic` wiring:
 
 ```typescript
-import { initializeStorage, useFileResource } from "covara";
+import { createCovara, initializeStorage } from "covara";
 
 initializeStorage({
   type: "local", // or "s3" | "r2" | "memory"
   local: { basePath: "./uploads", baseUrl: "/uploads" },
 });
 
-app.route("/api/files", useFileResource(filesTable, {
-  db,
-  schema: filesTable,
-  id: filesTable.id,
-  allowedMimeTypes: ["image/jpeg", "image/png"],
-  maxFileSize: 5 * 1024 * 1024,
-  auth: {
-    read: async (user) => rsql`userId==${user?.id}`,
-    delete: async (user) => rsql`userId==${user?.id}`,
-  },
-  usePresignedUrls: true, // direct-to-bucket on S3/R2
-}));
+const app = createCovara({ cors: true })
+  .resource("/todos", todosTable, { id: todosTable.id, db })
+  .fileResource("/files", filesTable, {
+    db,
+    id: filesTable.id,
+    allowedMimeTypes: ["image/jpeg", "image/png"],
+    maxFileSize: 5 * 1024 * 1024,
+    auth: {
+      read: async (user) => rsql`userId==${user?.id}`,
+      delete: async (user) => rsql`userId==${user?.id}`,
+    },
+    usePresignedUrls: true, // direct-to-bucket on S3/R2
+    // ...plus any resource option: hooks, relations, procedures, subscriptions
+  });
 ```
 
 Upload from React with progress tracking:

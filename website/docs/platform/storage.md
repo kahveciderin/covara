@@ -7,30 +7,32 @@ description: File uploads as first-class resources — local/S3/R2/in-memory ada
 
 # File storage
 
-Covara treats files as first-class [resources](../core/resources-and-app.md). `useFileResource` generates upload/download/list/delete endpoints with MIME and size validation, per-user key generation, and [auth scopes](../auth/scopes.md), all behind a single `StorageAdapter` interface backed by local disk, S3, Cloudflare R2, or memory.
+A file resource **is a regular [resource](../core/resources-and-app.md)** plus an upload/download layer. It gives you everything `useResource` does — cursor-paginated list, single get, update, delete, [subscriptions](../realtime/subscriptions.md), [RPC procedures](../core/procedures.md), [lifecycle hooks](../core/procedures.md), [relations](../core/relations.md), [field policies](../core/fields.md), and full [auth scopes](../auth/scopes.md) — and adds `upload`, `upload-url`, `confirm`, and `download` endpoints, all behind one `StorageAdapter` (local disk, S3, Cloudflare R2, or memory).
 
 ## Quick start
 
 ```typescript
-import { useFileResource, initializeStorage, rsql } from "covara";
-import { serveStatic } from "@hono/node-server/serve-static";
+import { createCovara, initializeStorage, rsql } from "covara";
 
 initializeStorage({ type: "local", local: { basePath: "./uploads", baseUrl: "/uploads" } });
-app.use("/uploads/*", serveStatic({ root: "./" })); // Node only
 
-app.route("/api/files", useFileResource(filesTable, {
-  db,
-  schema: filesTable,
-  id: filesTable.id,
-  allowedMimeTypes: ["image/jpeg", "image/png", "image/gif"],
-  maxFileSize: 5 * 1024 * 1024,
-  auth: {
-    read: async (user) => rsql`userId==${user?.id}`,
-    create: async (user) => (user ? rsql`*` : rsql``),
-    delete: async (user) => rsql`userId==${user?.id}`,
-  },
-}));
+const app = createCovara({ cors: true })
+  .resource("/todos", todosTable, { id: todosTable.id, db })
+  // Chains like any other resource:
+  .fileResource("/files", filesTable, {
+    id: filesTable.id,
+    db,
+    allowedMimeTypes: ["image/jpeg", "image/png", "image/gif"],
+    maxFileSize: 5 * 1024 * 1024,
+    auth: {
+      read: async (user) => rsql`userId==${user?.id}`,
+      create: async (user) => (user ? rsql`*` : rsql``),
+      delete: async (user) => rsql`userId==${user?.id}`,
+    },
+  });
 ```
+
+Local uploads are **served automatically** at the storage `baseUrl` (here `/uploads`) — `createCovara` mounts static serving for a local adapter with a `baseUrl`, so you no longer wire `serveStatic` by hand. (Opt out with `createCovara({ serveLocalStorage: false })`; on Workers use R2 and presigned URLs.) You can still mount `useFileResource(table, config)` manually with `app.route(...)` if you prefer.
 
 ## Adapters
 
@@ -84,9 +86,11 @@ export const filesTable = sqliteTable("files", {
 
 ## Configuration
 
+`FileResourceConfig` is a **superset of [`ResourceConfig`](../core/resources-and-app.md)** — every regular-resource option (`hooks`, `procedures`, `relations`, `autoRelations`, `fields`, `capabilities`, `auth` as a full scope config with `read`/`create`/`update`/`delete`/`subscribe`/`public`, etc.) plus the storage options below:
+
 ```typescript
-useFileResource(filesTable, {
-  db, schema: filesTable, id: filesTable.id,
+.fileResource("/files", filesTable, {
+  db, id: filesTable.id,
   storage: adapter,                 // override the global adapter
   allowedMimeTypes: ["image/jpeg", "image/png"],
   maxFileSize: 5 * 1024 * 1024,
@@ -94,24 +98,31 @@ useFileResource(filesTable, {
   usePresignedUrls: false,
   presignedUrlExpiry: 3600,
   generateKey: (filename, userId) => `${userId}/${Date.now()}-${filename}`,
-  auth: { /* read/create/delete scopes */ },
+  auth: { /* full scope config: read/create/update/delete/subscribe/public */ },
+  hooks: { onAfterCreate: async (ctx, file) => { /* runs after upload */ } },
+  relations: { owner: { resource: "users", schema: usersTable, type: "belongsTo", foreignKey: filesTable.userId, references: usersTable.id } },
 });
 ```
 
-**Validation** runs before any bytes are persisted; a rejected upload returns `400 ValidationError` and writes nothing. **Orphan cleanup**: `DELETE /:id` and `DELETE /batch` delete the blob from storage before the DB row, so you never accumulate orphaned objects.
+**Validation** runs before any bytes are persisted; a rejected upload returns `400 ValidationError` and writes nothing. **Orphan cleanup**: deleting a record removes the stored blob — storage cleanup is wired through an internal `onAfterDelete` hook (composed with yours), so `DELETE /:id` (and `DELETE /batch`) never leave orphaned objects.
 
 ## Endpoints
 
+A file resource exposes the **full resource API** — `GET /` (cursor pagination, `?select`, `?include`, `?filter`), `GET /:id`, `PATCH`/`PUT /:id`, `DELETE /:id`, `GET /count`, `GET /aggregate`, `GET /subscribe`, `POST /rpc/:name` — plus the file-specific routes:
+
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/` | Upload (multipart/form-data) → file record |
+| `POST` | `/` | Upload (multipart/form-data) → the created file record (fires create hooks + pushes an `added` subscription event) |
 | `GET` | `/upload-url` | Presigned upload URL (S3/R2) → `{ fileId, uploadUrl, expiresAt }` |
-| `POST` | `/:id/confirm` | Confirm a presigned upload completed |
-| `GET` | `/` | List files (filter + pagination) |
-| `GET` | `/:id` | File metadata |
+| `POST` | `/:id/confirm` | Confirm a presigned upload completed → the file record |
 | `GET` | `/:id/download` | Stream the file or redirect to a presigned URL |
-| `DELETE` | `/:id` | Delete from storage + DB |
-| `DELETE` | `/batch` | Delete many (`{ ids: [...] }`) |
+| `DELETE` | `/batch` | Delete many (`{ ids: [...] }`) → `{ deleted }` |
+
+> **Response shapes match regular resources** (no `{ data }` envelope): `GET /` returns `{ items, nextCursor }`, `GET /:id` and the upload/confirm endpoints return the raw record. The bundled `useFile`/`useFiles`/`useFileUpload` client hooks already speak this shape.
+
+### Admin download
+
+In the [admin data explorer](../tooling/admin-ui.md), rows of a file resource show a **Download** action that streams the stored object (admin-gated), so you can fetch any file regardless of the resource's per-user scopes.
 
 ### Direct upload
 

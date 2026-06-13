@@ -86,6 +86,11 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Server-rendered htmx (Beta)",
+      items: ["htmx/overview", "htmx/pages"],
+    },
+    {
+      type: "category",
       label: "Deployment",
       items: [
         "deployment/node",
@@ -108,11 +113,6 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: "category",
-      label: "Migration",
-      items: ["migration/from-express"],
-    },
-    {
-      type: "category",
       label: "Contracts (Invariants)",
       items: [
         "contracts/overview",
@@ -126,6 +126,7 @@ const sidebars: SidebarsConfig = {
         "contracts/search",
         "contracts/storage",
         "contracts/subscriptions",
+        "contracts/htmx-pages",
         "contracts/tasks",
         "contracts/track-mutations",
       ],

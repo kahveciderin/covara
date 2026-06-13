@@ -210,6 +210,68 @@ describe("Mutation Tracking", () => {
       expect(mutations).toHaveLength(2);
       expect(mutations.every(m => m.type === "update")).toBe(true);
     });
+
+    it("should track update without returning using the pre-mutation SELECT", async () => {
+      const mutations: ChangelogEntry[] = [];
+      const trackedDb = trackMutations(db, {
+        todos: { table: todosTable, id: todosTable.id },
+      }, {
+        onMutation: (entry) => { mutations.push(entry); },
+        pushToSubscriptions: false,
+      });
+
+      await trackedDb
+        .insert(todosTable)
+        .values([
+          { id: "1", title: "First", completed: false },
+          { id: "2", title: "Second", completed: false },
+        ])
+        .returning();
+
+      mutations.length = 0;
+      await changelog.clear();
+
+      // No .returning() — affected rows must be derived from the pre-mutation SELECT,
+      // not from the driver's result-summary object.
+      await trackedDb
+        .update(todosTable)
+        .set({ completed: true })
+        .where(eq(todosTable.completed, false));
+
+      expect(mutations).toHaveLength(2);
+      expect(mutations.every(m => m.type === "update")).toBe(true);
+      expect(mutations.map(m => m.objectId).sort()).toEqual(["1", "2"]);
+      for (const m of mutations) {
+        expect(m.objectId).not.toBe("undefined");
+        expect(m.object?.completed).toBe(true);
+        expect(m.previousObject?.completed).toBe(false);
+      }
+
+      const entries = await changelog.getEntriesSince("todos", 0);
+      expect(entries).toHaveLength(2);
+      expect(entries.map(e => e.objectId).sort()).toEqual(["1", "2"]);
+    });
+
+    it("should record no changelog entry for an update without returning that affects no rows", async () => {
+      const mutations: ChangelogEntry[] = [];
+      const trackedDb = trackMutations(db, {
+        todos: { table: todosTable, id: todosTable.id },
+      }, {
+        onMutation: (entry) => { mutations.push(entry); },
+        pushToSubscriptions: false,
+      });
+
+      await changelog.clear();
+
+      await trackedDb
+        .update(todosTable)
+        .set({ completed: true })
+        .where(eq(todosTable.id, "does-not-exist"));
+
+      expect(mutations).toHaveLength(0);
+      const entries = await changelog.getEntriesSince("todos", 0);
+      expect(entries).toHaveLength(0);
+    });
   });
 
   describe("Delete Tracking (Builder Pattern)", () => {

@@ -241,6 +241,14 @@ export interface SSEConfig {
   onBackpressure?: "drop" | "invalidate" | "disconnect";
   // Debounce window (ms) for recomputing live aggregations after a mutation.
   aggregateDebounceMs?: number;
+  // Interval (ms) at which each live subscription re-resolves its auth scope so
+  // out-of-band permission changes (e.g. losing org membership) emit added/removed
+  // without waiting for a reconnect. Default 30000; set to 0 to disable. Only the
+  // DB scan runs when the resolved scope actually changes. Reflects changes the
+  // scope resolver itself recomputes (e.g. resolvers that query current
+  // membership/roles); a resolver reading only static fields off the captured user
+  // still requires a reconnect.
+  scopeRecheckMs?: number;
 }
 
 export interface FilterConfig {
@@ -368,6 +376,13 @@ export interface ResourceConfig<
   capabilities?: ResourceCapabilities;
   generatedFields?: string[];
   relations?: RelationsConfig;
+  /**
+   * Auto-discover relations from the Drizzle schema's foreign keys (belongsTo
+   * from this table's FKs; hasMany from other registered resources' FKs that
+   * reference this table). Explicit `relations` always win over discovered
+   * ones. Discovered relations are still lazy — only loaded via `?include=`.
+   */
+  autoRelations?: boolean;
   include?: IncludeConfig;
   search?: ResourceSearchConfig;
   softDelete?: SoftDeleteConfig;

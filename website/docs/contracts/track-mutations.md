@@ -9,7 +9,8 @@
 
 ### Changelog Recording
 - **Builder pattern completeness**: Every `insert()`, `update()`, `delete()` operation using the builder pattern records a changelog entry
-- **Returning required for full tracking**: Mutations with `.returning()` capture the full object; without `.returning()`, only the ID is captured from input values
+- **Returning required for full insert tracking**: Inserts with `.returning()` capture the full row; without `.returning()`, only the ID is captured from the input values
+- **Update/delete affected rows from the pre-mutation SELECT**: Updates and deletes resolve their affected rows (and `previousObject`) from a pre-mutation SELECT over the `where` clause, so they record one accurate per-row entry **with or without `.returning()`** — they never key an entry off the driver's result-summary object. An update without `.returning()` reconstructs the new object by overlaying the `set` values on the previous row. (Requires `capturePreviousState` true, the default.)
 - **Previous state capture**: Updates and deletes capture `previousObject` via a pre-mutation SELECT (when `capturePreviousState` is true)
 
 ### Raw SQL Detection

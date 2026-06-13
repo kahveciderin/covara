@@ -1,6 +1,6 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { eq, and, count, getTableColumns } from "drizzle-orm";
-import { getResourceSchema, getSchemaInfo, getAllResourcesForDisplay } from "./schema-registry";
+import { getResourceSchema, getResourceScopeResolver, getSchemaInfo, getAllResourcesForDisplay } from "./schema-registry";
 import { createResourceFilter } from "@/resource/filter";
 import { createPagination, decodeCursorLegacy, parseOrderBy } from "@/resource/pagination";
 import { readJsonBody } from "@/server/request";
@@ -15,6 +15,8 @@ import {
   logAdminAction,
 } from "./admin-auth";
 import { markAdminBypass } from "@/server/admin-bypass";
+import { markImpersonate } from "@/server/impersonation";
+import { combineScopes, type Operation } from "@/auth/scope";
 import { createDataExplorerRoutes, DataExplorerConfig } from "./data-explorer";
 import { createTaskMonitorRoutes, TaskMonitorConfig } from "./task-monitor";
 import { createKVInspectorRoutes, KVInspectorConfig } from "./kv-inspector";
@@ -1558,13 +1560,27 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
     const auth = c.req.header("authorization");
     if (auth) headers["authorization"] = auth;
 
-    // A verified admin running a request through the explorer bypasses the
-    // resource's user scopes (matching the data explorer). The marker header
-    // carries no secret: the resource layer re-verifies that the forwarded
-    // request's authenticated user is an admin before honoring it, so a leaked
-    // or guessed marker is worthless to a non-admin.
+    // A verified admin running a request through the explorer either
+    // impersonates a user (runs under THAT user's scope, read-write) or, by
+    // default, bypasses scopes entirely. Both marker headers carry no secret:
+    // the resource layer re-verifies that the forwarded request's authenticated
+    // user is an admin before honoring either, so a leaked marker is worthless
+    // to a non-admin. Impersonation replaces bypass; the two never stack.
     const adminUser = getAdminUser(c);
-    if (adminUser) {
+    const impersonateId =
+      typeof body.impersonate_user_id === "string"
+        ? body.impersonate_user_id.trim()
+        : "";
+    if (adminUser && impersonateId) {
+      Object.assign(headers, markImpersonate(impersonateId));
+      logAdminAction({
+        userId: adminUser.id,
+        userEmail: adminUser.email,
+        operation: "impersonate_execute",
+        reason: `Impersonating ${impersonateId}: ${method} ${path}`,
+        details: { impersonatedUserId: impersonateId, method, path },
+      });
+    } else if (adminUser) {
       Object.assign(headers, markAdminBypass());
       logAdminAction({
         userId: adminUser.id,
@@ -1616,6 +1632,61 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
     }
   });
 
+  // Impersonation scope preview — resolves the auth scope a given user's
+  // request would carry for a resource+operation, so the explorers can show
+  // "appending filter userId==..." badges. Read-only; gated by adminAuth.
+  const OPERATIONS: Operation[] = ["read", "create", "update", "delete", "subscribe"];
+  router.get("/api/impersonation/scope", async (c) => {
+    const resource = c.req.query("resource") ?? "";
+    const operation = (c.req.query("operation") ?? "read") as Operation;
+    const userId = c.req.query("userId") ?? "";
+
+    if (!OPERATIONS.includes(operation)) {
+      return c.json({ error: `Invalid operation: ${operation}` }, 400);
+    }
+    const resolver = getResourceScopeResolver(resource);
+    if (!resolver) {
+      return c.json({ error: `Unknown resource: ${resource}` }, 404);
+    }
+    if (!config.userManager) {
+      return c.json({ error: "User management not configured" }, 404);
+    }
+    const u = await config.userManager.getUser(userId);
+    if (!u) {
+      return c.json({ error: `Unknown user: ${userId}` }, 404);
+    }
+    const user = {
+      id: String(u.id),
+      email: u.email ?? null,
+      name: u.name ?? null,
+      image: u.image ?? null,
+      emailVerified: u.emailVerified ?? null,
+      sessionId: "impersonation",
+      sessionExpiresAt: new Date(0),
+      metadata: u.metadata ?? undefined,
+    };
+
+    if (resolver.isPublic(operation)) {
+      return c.json({ resource, operation, userId, scope: "*", public: true, denied: false });
+    }
+    try {
+      const scope = await resolver.resolve(operation, user);
+      if (scope.isEmpty()) {
+        return c.json({ resource, operation, userId, scope: "", denied: true });
+      }
+      return c.json({
+        resource,
+        operation,
+        userId,
+        scope: scope.toString(),
+        filter: combineScopes(scope, ""),
+        denied: false,
+      });
+    } catch (e: any) {
+      return c.json({ resource, operation, userId, scope: "", denied: true, reason: e?.message ?? "denied" });
+    }
+  });
+
   // Filter tester — run an RSQL expression against a resource's live data
   // (in-memory matching, so it exercises the same predicate logic used for
   // subscription matching) and report which records match.
@@ -1660,9 +1731,42 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
         .from(entry.schema)
         .limit(500)) as Record<string, unknown>[];
       const filterer = createResourceFilter(entry.schema, {});
-      const matches = filter
-        ? rows.filter((row) => filterer.execute(filter, row as any))
-        : rows;
+
+      // When impersonating, AND the impersonated user's read scope into the
+      // tested filter so the result reflects what that user would actually see.
+      let effectiveFilter = filter;
+      let scopeDenied = false;
+      const impersonateId =
+        typeof body.impersonate_user_id === "string"
+          ? body.impersonate_user_id.trim()
+          : "";
+      if (getAdminUser(c) && impersonateId && config.userManager) {
+        const resolver = getResourceScopeResolver(resource);
+        const u = await config.userManager.getUser(impersonateId);
+        if (resolver && u && !resolver.isPublic("read")) {
+          const scope = await resolver.resolve("read", {
+            id: String(u.id),
+            email: u.email ?? null,
+            name: u.name ?? null,
+            image: u.image ?? null,
+            emailVerified: u.emailVerified ?? null,
+            sessionId: "impersonation",
+            sessionExpiresAt: new Date(0),
+            metadata: u.metadata ?? undefined,
+          });
+          if (scope.isEmpty()) {
+            scopeDenied = true;
+          } else {
+            effectiveFilter = combineScopes(scope, filter);
+          }
+        }
+      }
+
+      const matches = scopeDenied
+        ? []
+        : effectiveFilter
+          ? rows.filter((row) => filterer.execute(effectiveFilter, row as any))
+          : rows;
       return c.html(
         pages.filterTestResult({
           filter,

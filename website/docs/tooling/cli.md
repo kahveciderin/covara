@@ -2,12 +2,12 @@
 id: cli
 title: CLI
 sidebar_label: CLI
-description: The covara CLI — scaffold deploy-ready Node or Cloudflare Workers projects with create, and add resources, migrations, and types with generate.
+description: The covara CLI — scaffold projects, run a watch-and-auto-push dev loop, manage database profiles, push schema, browse/import/export data, and generate types.
 ---
 
 # CLI
 
-The `covara` CLI scaffolds new projects and generates code in existing ones.
+The `covara` CLI scaffolds projects, runs a dev loop that streams schema changes to your database, manages database connection profiles, and browses/imports/exports data.
 
 ## `covara create`
 
@@ -43,14 +43,80 @@ Scaffold incrementally inside an existing project.
 ```bash
 npx covara generate resource invoices   # writes a Drizzle table + a registration snippet
 npx covara generate migration           # runs drizzle-kit generate (pass -- to forward args)
-npx covara generate types --url http://localhost:3000 --out src/generated/api-types.ts
 ```
 
 | Command | What it does |
 |---------|--------------|
 | `generate resource <name>` | Adds a Drizzle table and a `.resource(...)` registration snippet. |
 | `generate migration` | Runs [`drizzle-kit generate`](https://orm.drizzle.team/kit-docs/overview) (forward args after `--`). |
-| `generate types` | Generates the [TypeScript client types](../client/typegen.md) from a running API. |
+
+## `covara dev`
+
+The continuous development loop. It runs your server under `tsx watch`, watches your Drizzle schema, and on every save **auto-applies additive changes** to the database (new tables, columns, indexes) so you never push by hand. Destructive changes (dropping/renaming a column, narrowing a type) are **not** auto-applied — they're printed with a hint to run `covara push --force`. With `--types-out`, it also regenerates the [typed client](../client/typegen.md) after each successful change.
+
+```bash
+npx covara dev                                   # auto-detects the server entry
+npx covara dev src/main.ts --types-out frontend/src/api-types.ts
+npx covara dev --no-server                       # only watch + push schema
+```
+
+| Flag | Default |
+|------|---------|
+| `[entry]` / `--entry` | auto-detected (`src/main.ts`, `src/index.ts`, …) |
+| `--types-out <path>` | off (skip type regen) |
+| `--server-url <url>` | `http://localhost:$PORT` |
+| `--profile <name>` | active profile |
+| `--no-server` | run only the schema watcher |
+
+> Loading TypeScript: schema-aware commands (`dev`, `push`, `studio`, `data`, `import`/`export`) run a worker via your project's `tsx`, so the framework stays dependency-light and your `.ts` schema/config load natively. `tsx` ships in scaffolded projects.
+
+## Schema & database
+
+```bash
+npx covara push                 # apply schema (additive auto; prompts on destructive)
+npx covara push --force         # apply even destructive changes (non-interactive)
+npx covara migrate              # apply migration files (drizzle-kit migrate)
+npx covara studio               # open Drizzle Studio for the active profile
+```
+
+`push` computes the diff with [`drizzle-kit`](https://orm.drizzle.team/kit-docs/overview) and classifies it: additive diffs apply immediately; destructive diffs (with possible data loss) require confirmation or `--force`.
+
+### Connection profiles — `covara db`
+
+Named profiles let you switch between local, staging, and remote databases (libsql/Turso URL + token, or a Postgres URL). Profiles live in `.covara/config.json`; the active one (or `DATABASE_URL`/`DB_FILE_NAME`) is used by every schema/data command, and an explicit `--profile <name>` or `--url <url>` overrides it.
+
+```bash
+npx covara db add local --url 'file:./dev.db'
+npx covara db add prod  --url 'libsql://app.turso.io' --token "$TURSO_TOKEN"
+npx covara db use prod
+npx covara db list        # * marks the active profile
+npx covara db current
+npx covara push --profile local
+```
+
+## Data
+
+```bash
+npx covara data todos --limit 20                 # browse rows (JSON)
+npx covara export todos --out todos.csv --format csv
+npx covara import todos --file todos.jsonl       # json | jsonl | csv
+npx covara seed                                  # run src/db/seed.ts via tsx
+```
+
+## Other
+
+```bash
+npx covara run todos.markDone '{"id":"abc"}'     # invoke an RPC on a running server
+npx covara types --out src/generated/api-types.ts --server-url http://localhost:3000
+npx covara env set DB_FILE_NAME dev.db           # manage the project .env
+npx covara env list
+```
+
+| Command | What it does |
+|---------|--------------|
+| `run <resource>.<rpc> [json]` | POSTs to a running server's RPC route (`--base`/`--server-url` to override). |
+| `types [--out <path>]` | Generates the [TypeScript client types](../client/typegen.md) from a running API. |
+| `env <list\|get\|set\|remove>` | Reads/writes the project `.env`. |
 
 ## Related
 

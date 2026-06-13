@@ -177,4 +177,48 @@ describe("Subscribe While Mutate Tests", () => {
       expect(cat).not.toBe("Electronics");
     });
   });
+
+  it("replays missed mutations on resume so a delete during disconnect is not a ghost", async () => {
+    // Connect, note the resume point, then disconnect.
+    const created = await post(app, "/items", { name: "Ghost", category: "C", price: 10 });
+    expect(created.status).toBe(201);
+    const ghostId = created.body.id;
+
+    const { collector: c1 } = await connect("/items/subscribe");
+    const connected = await c1.waitFor((e) => e.event === "connected", 2000);
+    const resumePoint = connected?.data?.seq;
+    expect(typeof resumePoint).toBe("number");
+    c1.close();
+    await flushAsync();
+
+    // Mutations that happen while the client is "disconnected".
+    const delRes = await del(app, `/items/${ghostId}`);
+    expect(delRes.status).toBe(204);
+    const newRes = await post(app, "/items", { name: "Fresh", category: "C", price: 20 });
+    expect(newRes.status).toBe(201);
+    const freshId = newRes.body.id;
+    await flushAsync();
+
+    // Reconnect from the saved sequence; the server must replay the missed window.
+    const { collector: c2 } = await connect(`/items/subscribe?resumeFrom=${resumePoint}`);
+    // The deleted row is delivered as a removed event (no ghost)...
+    const removed = await c2.waitFor(
+      (e) => e.data?.type === "removed" && String(e.data?.objectId) === String(ghostId),
+      2000
+    );
+    expect(removed).toBeTruthy();
+    // ...and the row created during the gap is delivered too.
+    const added = await c2.waitFor(
+      (e) => e.data?.object && String(e.data?.object?.id) === String(freshId),
+      2000
+    );
+    expect(added).toBeTruthy();
+    await flushAsync();
+
+    // The resume path must NOT replay an "existing" snapshot of the deleted row.
+    const ghostStillPresent = c2.events.some(
+      (e) => e.data?.object && String(e.data?.object?.id) === String(ghostId)
+    );
+    expect(ghostStillPresent).toBe(false);
+  });
 });

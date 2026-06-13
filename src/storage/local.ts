@@ -190,6 +190,12 @@ export class LocalStorageAdapter implements StorageAdapter {
     return `${this.baseUrl}/${key}`;
   }
 
+  // Used by startServer (Node) to auto-mount static serving so apps don't have
+  // to wire serveStatic by hand. Returns null when no public baseUrl is set.
+  getStaticServeConfig(): { basePath: string; baseUrl: string } | null {
+    return this.baseUrl ? { basePath: this.basePath, baseUrl: this.baseUrl } : null;
+  }
+
   async getDownloadUrl(
     key: string,
     _options?: PresignedUrlOptions

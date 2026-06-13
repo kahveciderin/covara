@@ -29,6 +29,8 @@ export const filterTesterPage = (data: FilterTesterPageData): string => html`
         <input type="text" class="input input-mono form-input filter-input" name="filter"
                placeholder='status=="active";createdAt=gt=2024-01-01'
                style="font-size: 14px;">
+        <div id="imp-scope-badge" hidden
+             style="font-size:12px;color:#c2410c;font-family:var(--font-mono,monospace);margin-top:6px;font-weight:600;"></div>
       </div>
 
       <div style="display: flex; gap: 8px;">
@@ -53,6 +55,19 @@ export const filterTesterPage = (data: FilterTesterPageData): string => html`
   </div>
 
   <div id="filter-result" style="margin-top: 16px;"></div>
+
+  <script>
+    (function () {
+      function upd() {
+        var sel = document.querySelector('[name="resource"]');
+        if (window.Covara) Covara.updateScopeBadge('imp-scope-badge', sel && sel.value, 'read');
+      }
+      var sel = document.querySelector('[name="resource"]');
+      if (sel) sel.addEventListener('change', upd);
+      document.addEventListener('covara:impersonation', upd);
+      upd();
+    })();
+  </script>
 `;
 
 const filterSyntaxHelp = (): string => card({

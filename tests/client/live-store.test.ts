@@ -120,6 +120,48 @@ describe("LiveStore", () => {
       query.destroy();
     });
 
+    it("honors a pending delete keyed by the optimistic id after a changed event remaps it (no ghost on refresh)", async () => {
+      // Regression: handleChange must record the remap as optimisticId -> serverId
+      // (the project-wide convention). If it stores it reversed, a later refresh
+      // can't map the returned server row back to the optimistic id, so a
+      // pending-deleted item reappears as a ghost.
+      const externalMappings = new Map<string, string>();
+      const repo = createMockRepo<Todo>();
+      const query = createLiveQuery<Todo>(repo, {}, {
+        getIdMappings: () => externalMappings,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Optimistic (offline-created) item in cache, known to the OfflineManager.
+      repo.triggerEvent("added", { item: { id: "opt_1", title: "Draft", completed: false } });
+      externalMappings.set("opt_1", "srv_1");
+
+      // Server confirms the row under its real id via a changed event.
+      repo.triggerEvent("changed", { id: "srv_1", title: "Draft", completed: false });
+
+      let snapshot = query.getSnapshot();
+      expect(snapshot.items).toHaveLength(1);
+      expect(snapshot.items[0].id).toBe("srv_1");
+
+      // Delete the item; the pending delete is keyed by the optimistic id.
+      query.mutate.delete("opt_1");
+
+      // A refresh returns the server row; it must be suppressed because opt_1
+      // (which maps to srv_1) has a pending delete.
+      repo.list = async () => ({
+        items: [{ id: "srv_1", title: "Draft", completed: false } as Todo],
+        nextCursor: null,
+        hasMore: false,
+      });
+      await query.refresh();
+
+      snapshot = query.getSnapshot();
+      expect(snapshot.items).toHaveLength(0);
+
+      query.destroy();
+    });
+
     it("should reconcile optimistic items with existing items via getIdMappings", async () => {
       // This test simulates the ghost todo scenario:
       // 1. Create todo optimistically while offline

@@ -182,6 +182,42 @@ describe("Pagination Cursor Hardening Tests", () => {
     });
   });
 
+  describe("Contract: cursor rejection (tamper detection)", () => {
+    it("should reject a cursor replayed under a different orderBy with a clear error", async () => {
+      const firstPage = await get(app, "/items?limit=5&orderBy=name:asc");
+      expect(firstPage.status).toBe(200);
+      const cursor = firstPage.body.nextCursor;
+      expect(cursor).toBeTruthy();
+
+      const res = await get(app, `/items?limit=5&orderBy=priority:desc&cursor=${cursor}`);
+      expect(res.status).toBe(400);
+      expect(res.body.code).toMatch(/CURSOR/i);
+    });
+
+    it("should reject a cursor when orderBy is dropped from the request", async () => {
+      const firstPage = await get(app, "/items?limit=5&orderBy=name:desc");
+      expect(firstPage.status).toBe(200);
+      const cursor = firstPage.body.nextCursor;
+      expect(cursor).toBeTruthy();
+
+      const res = await get(app, `/items?limit=5&cursor=${cursor}`);
+      expect(res.status).toBe(400);
+      expect(res.body.code).toMatch(/CURSOR/i);
+    });
+
+    it("should reject a structurally-corrupted cursor with a clear error", async () => {
+      const firstPage = await get(app, "/items?limit=5");
+      expect(firstPage.status).toBe(200);
+      const cursor: string = firstPage.body.nextCursor;
+      expect(cursor).toBeTruthy();
+
+      const truncated = cursor.slice(0, Math.floor(cursor.length / 2));
+      const res = await get(app, `/items?cursor=${truncated}`);
+      expect(res.status).toBe(400);
+      expect(res.body.code).toMatch(/CURSOR/i);
+    });
+  });
+
   describe("NULL Value Ordering", () => {
     it("should handle NULL values in ordering consistently", async () => {
       await libsqlClient.execute(

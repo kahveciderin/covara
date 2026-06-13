@@ -65,6 +65,14 @@ Because the marker carries no secret, a leaked or guessed marker is useless to a
 
 > An admin can also opt into the bypass on a direct API call by sending the `x-covara-admin-bypass: 1` header — it only takes effect for users the admin predicate accepts, and is audited. With `apiKey` admin auth the marker is honored when the request carries that key; with role/`authorize`-based auth it is honored when the authenticated user passes the same check.
 
+### User impersonation
+
+Where scope bypass lets an admin see *everything*, **impersonation** is the inverse: it runs requests **as a specific user, under that user's per-operation [auth scopes](../auth/scopes.md)** — a "see (and act) exactly as they would" tool. Click **Impersonate** on a user in the Users panel and a global amber badge ("Impersonating …") appears across the API Explorer, Filter Tester, and Data Explorer; the **✕** on the badge clears it. Near filter inputs a contextual badge shows the scope that user's request would carry (e.g. `appending filter userId==123`), resolved from the resource's `auth` config for the relevant operation.
+
+Impersonation is **full read-write** — mutations execute and are attributed to the impersonated user — so use it deliberately; every impersonated request is recorded in the admin **audit** log (`impersonate_execute` / `data_explorer_list`) carrying *both* the real admin id and the impersonated user id.
+
+Security model (mirrors scope bypass): the API Explorer forwards a non-secret marker header `x-covara-impersonate: <userId>`. The resource layer honors it **only when the forwarded request's real authenticated user passes the admin predicate**, then swaps the effective user to the target for scope resolution and write attribution. A leaked/forged marker from a non-admin is inert. Impersonation **replaces** scope bypass and never stacks with it — impersonating an admin grants only that admin's scope, never full bypass. Impersonation requires the admin UI's `userManager` to be configured (so the target user can be loaded); without it, impersonation is inert.
+
 ## Wiring live data
 
 The UI reads from the same [metrics collector](./middleware.md) and [KV](../platform/kv.md) your app uses. Pass a `metricsCollector` (from `createMetricsCollector`) so the Requests/Dashboard panels show real traffic, and `getGlobalKV()` to the KV inspector. The `userManager`/`sessionManager` callbacks bridge the Users/Sessions panels to your tables and auth adapter — see the [example app](https://github.com/kahveciderin/covara/tree/master/example) for a complete wiring.

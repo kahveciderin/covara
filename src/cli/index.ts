@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   scaffoldProject,
   detectPackageManager,
@@ -16,25 +16,73 @@ import {
   type TemplateName,
 } from "./options.js";
 import { generateResource, generateMigration } from "./generate.js";
+import { dbCommand } from "./commands/db.js";
+import { pushCommand } from "./commands/push.js";
+import { migrateCommand } from "./commands/migrate.js";
+import { studioCommand } from "./commands/studio.js";
+import { devCommand } from "./commands/dev.js";
+import { dataCommand } from "./commands/data.js";
+import { typesCommand } from "./commands/types.js";
+import { envCommand } from "./commands/env.js";
+import { runCommand } from "./commands/run.js";
+import { seedCommand } from "./commands/seed.js";
+import { exportCommand, importCommand } from "./commands/import-export.js";
 
-const HELP = `covara - scaffolding CLI for the Covara framework
+export type CommandHandler = (args: string[]) => number | Promise<number>;
+const COMMANDS: Record<string, CommandHandler> = {
+  db: dbCommand,
+  push: pushCommand,
+  migrate: migrateCommand,
+  studio: studioCommand,
+  dev: devCommand,
+  data: dataCommand,
+  types: typesCommand,
+  env: envCommand,
+  run: runCommand,
+  seed: seedCommand,
+  export: exportCommand,
+  import: importCommand,
+};
+
+const HELP = `covara - CLI for the Covara framework
 
 Usage:
-  covara create <app-name> [options]
-  covara generate resource <name>
-  covara generate migration [-- drizzle-kit args]
-  covara help
-  covara --version
+  covara <command> [options]
 
-Commands:
+Project:
   create <app-name>           Scaffold a new Covara project
   generate resource <name>    Scaffold a Drizzle table + registration snippet
-  generate migration          Generate a migration via drizzle-kit
+  generate migration          Generate a migration file (drizzle-kit)
 
-Options for create:
-  --template <node|cloudflare>   Deployment target (default: node)
-  --db <sqlite|postgres>         Database (default: sqlite)
-  --no-install                   Skip installing dependencies
+Develop:
+  dev [entry]                 Watch schema → auto-apply additive changes +
+                              regenerate types; runs the server (tsx watch)
+                              flags: --types-out <path> --server-url <url>
+                                     --profile <name> --no-server
+
+Schema & database:
+  push                        Apply schema to the DB (additive auto;
+                              prompts on destructive; --force to apply)
+  migrate                     Apply migration files (drizzle-kit migrate)
+  studio                      Open Drizzle Studio for the active profile
+  db <list|use|add|current|remove>   Manage connection profiles
+
+Data:
+  data <table> [--limit n]    Browse rows
+  export <table> [--out f --format json|jsonl|csv]
+  import <table> --file f      Import rows (json|jsonl|csv)
+  seed [file]                 Run a seed script (tsx)
+
+Other:
+  run <resource>.<rpc> [json] Invoke an RPC on a running server
+  types [--out f]             Generate the typed client from a running server
+  env <list|get|set|remove>   Manage the project .env
+
+Common options:
+  --profile <name>            DB profile (default: active / env)
+  --url <url>                 Inline DB url (overrides profile)
+
+  covara help | --version
 `;
 
 const readVersion = (): string => {
@@ -186,7 +234,7 @@ const runGenerate = (args: string[]): number => {
   return 1;
 };
 
-export const runCli = (argv: string[]): number => {
+export const runCli = async (argv: string[]): Promise<number> => {
   const [command, ...rest] = argv;
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
@@ -207,14 +255,26 @@ export const runCli = (argv: string[]): number => {
     return runGenerate(rest);
   }
 
+  const handler = COMMANDS[command];
+  if (handler) {
+    return handler(rest);
+  }
+
   console.error(`error: unknown command "${command}"\n`);
   console.log(HELP);
   return 1;
 };
 
-try {
-  process.exitCode = runCli(process.argv.slice(2));
-} catch (error) {
-  console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
+const invokedDirectly =
+  !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  runCli(process.argv.slice(2))
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((error) => {
+      console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    });
 }

@@ -24,8 +24,10 @@
 - **Fresh start**: Resume from sequence 0 sends all matching items as `existing` events
 
 ### Scope Changes
-- **Immediate effect**: When user loses scope to an item, they receive `removed` immediately
-- **Auth integration**: Scope changes (permission revocation) trigger appropriate events
+- **Row-data scope changes (immediate)**: When a *mutation* moves a row out of a subscriber's scope — including scopes expressed against the row's own columns, e.g. `ownerOnly()` / `userId==<me>` — they receive `removed` immediately as part of normal mutation processing. A row entering scope yields `added`.
+- **Out-of-band scope changes (periodic)**: Permission changes that are **not** driven by a row mutation (e.g. losing org membership, a revoked role) are caught by a periodic re-resolution of each subscription's scope. Every `sse.scopeRecheckMs` (default **30000ms**, per-resource, `0` disables) the subscription re-resolves its scope; if the resolved scope changed, the current matching set is recomputed and diffed against what the subscriber holds — rows that left scope emit `removed`, rows that entered emit `added`. The DB scan runs only when the resolved scope string actually changes; the new scope is also persisted so subsequent live events honor it (a revoked subscriber stops receiving live updates for rows it can no longer see).
+  - **Detection limit**: the re-check reflects changes that the scope resolver itself recomputes (e.g. resolvers that query current membership/roles on each call). A resolver that only reads static fields off the user object captured at connect cannot observe an out-of-band change and still requires a reconnect.
+  - **Session expiry** is handled separately: a subscription whose `authExpiresAt` has passed is torn down with an `invalidate`.
 
 ### Scalability
 - **Per-resource isolation**: Subscriptions are stored sharded by resource (`covara:subs:byres:<resource>`, with a `covara:subs:resources` index for enumeration). A mutation loads and evaluates only the mutated resource's subscriptions — its cost scales with that resource's subscriber count, never the total subscription count across resources.

@@ -103,10 +103,13 @@ export const dataExplorerScript = String.raw`
     p.set('totalCount', 'true');
     var f = buildFilter(); if (f) p.set('filter', f);
     if (cursor) p.set('cursor', cursor);
-    var r = await C.fetchJSON(api + '/data/' + encodeURIComponent(state.resource) + '?' + p.toString());
+    var imp = C.activeImpersonation && C.activeImpersonation();
+    var opts = imp && imp.userId ? { headers: { 'x-covara-impersonate': String(imp.userId) } } : undefined;
+    var r = await C.fetchJSON(api + '/data/' + encodeURIComponent(state.resource) + '?' + p.toString(), opts);
     state.rows = r.items || [];
     state.nextCursor = r.nextCursor || r.cursor || null;
     state.total = (typeof r.totalCount === 'number') ? r.totalCount : (typeof r.total === 'number' ? r.total : null);
+    state.impersonating = r.impersonating || null;
   }
 
   // ---- helpers -------------------------------------------------------------
@@ -283,7 +286,7 @@ export const dataExplorerScript = String.raw`
     var thead = C.el('tr', {}, [headChk].concat(cols.map(function (c) {
       return C.el('th', { class: c.name === state.orderBy ? 'sorted' : '', onclick: function () { sortBy(c.name); } }, [c.name, C.el('span', { class: 'sort', text: c.name === state.orderBy ? (state.dir === 'asc' ? '▲' : '▼') : '↕' })]);
     })));
-    if (!state.readOnly) thead.appendChild(C.el('th', { style: 'width:70px' }, ['']));
+    if (!state.readOnly || (state.schema && state.schema.isFileResource)) thead.appendChild(C.el('th', { style: 'width:70px' }, ['']));
 
     var tbody = C.el('tbody');
     if (!state.rows.length) {
@@ -301,12 +304,16 @@ export const dataExplorerScript = String.raw`
         if (editable) td.addEventListener('dblclick', function (e) { e.stopPropagation(); editCell(td, row, c); });
         tr.appendChild(td);
       });
+      var rowActions = [];
+      if (state.schema && state.schema.isFileResource) {
+        rowActions.push(C.el('button', { class: 'btn btn-ghost btn-icon btn-sm', title: 'Download', onclick: function (e) { e.stopPropagation(); downloadFile(row); } }, ['⬇']));
+      }
       if (!state.readOnly) {
-        var actions = C.el('div', { class: 'dx-rowactions' }, [
-          C.el('button', { class: 'btn btn-ghost btn-icon btn-sm', title: 'Edit', onclick: function (e) { e.stopPropagation(); openForm(row); } }, ['✎']),
-          C.el('button', { class: 'btn btn-ghost btn-icon btn-sm', title: 'Delete', onclick: function (e) { e.stopPropagation(); del(row); } }, ['🗑'])
-        ]);
-        tr.appendChild(C.el('td', { onclick: function (e) { e.stopPropagation(); } }, [actions]));
+        rowActions.push(C.el('button', { class: 'btn btn-ghost btn-icon btn-sm', title: 'Edit', onclick: function (e) { e.stopPropagation(); openForm(row); } }, ['✎']));
+        rowActions.push(C.el('button', { class: 'btn btn-ghost btn-icon btn-sm', title: 'Delete', onclick: function (e) { e.stopPropagation(); del(row); } }, ['🗑']));
+      }
+      if (rowActions.length) {
+        tr.appendChild(C.el('td', { onclick: function (e) { e.stopPropagation(); } }, [C.el('div', { class: 'dx-rowactions' }, rowActions)]));
       }
       tbody.appendChild(tr);
     });
@@ -420,6 +427,11 @@ export const dataExplorerScript = String.raw`
     var dlg = drawer((editing ? 'Edit ' : 'New ') + state.resource, body, [C.el('button', { class: 'btn btn-ghost', onclick: function () { dlg.close(); } }, ['Cancel']), save]);
   }
 
+  function downloadFile(row) {
+    var url = C.base + '/api/explorer/data/' + encodeURIComponent(state.resource) + '/' + encodeURIComponent(row[state.pk]) + '/file';
+    if (typeof window !== 'undefined' && window.open) window.open(url, '_blank');
+  }
+
   async function del(row) {
     if (!confirm('Delete this ' + state.resource + ' record?\\n\\n' + row[state.pk])) return;
     try { await C.fetchJSON(api + '/data/' + encodeURIComponent(state.resource) + '/' + encodeURIComponent(row[state.pk]), { method: 'DELETE' }); C.toast('Record deleted', 'success'); reload(); }
@@ -427,6 +439,7 @@ export const dataExplorerScript = String.raw`
   }
 
   // ---- boot ----------------------------------------------------------------
+  document.addEventListener('covara:impersonation', function () { if (state.resource) reload(); });
   render();
   loadSchemas().then(function (names) {
     state.allResources = names;

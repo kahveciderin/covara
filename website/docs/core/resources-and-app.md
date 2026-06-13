@@ -1,7 +1,7 @@
 ---
 id: resources-and-app
 title: Resources & the app factory
-sidebar_label: Resources & the app
+sidebar_label: Resources & the app factory
 description: useResource and createCovara — the central abstraction that turns a Drizzle table into a full REST + real-time API, and every configuration option.
 ---
 

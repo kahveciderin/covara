@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import type { PgColumn } from "drizzle-orm/pg-core";
-import { eq, inArray, Table, TableConfig, InferSelectModel, getTableName } from "drizzle-orm";
+import { eq, inArray, Table, TableConfig, InferSelectModel, getTableName, getTableColumns } from "drizzle-orm";
 import {
   StorageAdapter,
   getGlobalStorage,
@@ -13,15 +13,20 @@ import {
 import {
   NotFoundError,
   ValidationError,
-  UnauthorizedError,
   ForbiddenError,
 } from "@/resource/error";
 import { createResourceFilter } from "@/resource/filter";
 import { validateUpload, type UploadValidationOptions } from "./validation";
-import type { ScopeFunction, UserContext } from "@/resource/types";
+import type { ResourceConfig, LifecycleHooks, ProcedureContext } from "@/resource/types";
+import { useResource } from "@/resource/hook";
+import { createScopeResolver } from "@/auth/scope";
+import { executeBeforeCreate, executeAfterCreate } from "@/resource/procedures";
+import { recordCreate } from "@/resource/changelog";
+import { pushInsertsToSubscriptions } from "@/resource/subscription";
+import { isAdminBypassRequest } from "@/server/admin-bypass";
 import { getUser } from "@/server/context";
 import { readJsonBody } from "@/server/request";
-import { registerResourceSchema } from "@/ui";
+import { setResourceFileFlag } from "@/ui/schema-registry";
 
 type DrizzleColumn = SQLiteColumn | PgColumn;
 
@@ -49,22 +54,21 @@ export interface FileTableSchema {
   createdAt: DrizzleColumn;
 }
 
-export interface FileResourceConfig {
-  db: unknown;
-  schema: FileTableSchema;
-  id: DrizzleColumn;
+// A file resource is a regular resource (full CRUD, hooks, procedures,
+// relations, subscriptions, scopes, field policies) plus an upload/download
+// layer. FileResourceConfig is therefore a superset of ResourceConfig with the
+// storage-specific options added.
+export interface FileResourceConfig<TConfig extends TableConfig = TableConfig>
+  extends ResourceConfig<TConfig, Table<TConfig>> {
   storage?: StorageAdapter;
   allowedMimeTypes?: string[];
   maxFileSize?: number;
   validation?: UploadValidationOptions;
   generateKey?: (filename: string, userId?: string) => string;
-  auth?: {
-    read?: ScopeFunction;
-    create?: ScopeFunction;
-    delete?: ScopeFunction;
-  };
   usePresignedUrls?: boolean;
   presignedUrlExpiry?: number;
+  /** @deprecated columns are read from the table; kept for back-compat. */
+  schema?: FileTableSchema;
 }
 
 const defaultGenerateKey = (filename: string, userId?: string): string => {
@@ -81,10 +85,7 @@ const parseMultipartFormData = async (
   c: Context
 ): Promise<{ file: Buffer; filename: string; mimeType: string } | null> => {
   const contentType = c.req.header("content-type") || "";
-
-  if (!contentType.includes("multipart/form-data")) {
-    return null;
-  }
+  if (!contentType.includes("multipart/form-data")) return null;
 
   let body: Record<string, string | File | (string | File)[]>;
   try {
@@ -103,40 +104,15 @@ const parseMultipartFormData = async (
       }
     }
   }
-
   return null;
-};
-
-const checkScopeAccess = async <T>(
-  scopeFn: ScopeFunction | undefined,
-  user: UserContext | null,
-  record?: FileRecord,
-  filterExecute?: (expr: string, obj: T) => boolean
-): Promise<boolean> => {
-  if (!scopeFn) return true;
-  if (!user) return false;
-
-  const scope = await scopeFn(user);
-  const scopeStr = scope.toString();
-
-  if (scopeStr === "*") return true;
-  if (scope.isEmpty()) return false;
-
-  if (record && filterExecute) {
-    return filterExecute(scopeStr, record as unknown as T);
-  }
-
-  return true;
 };
 
 export const useFileResource = <TConfig extends TableConfig>(
   table: Table<TConfig> & FileTableSchema,
-  config: FileResourceConfig
+  config: FileResourceConfig<TConfig>
 ): Hono => {
-  const router = new Hono();
-  type SchemaType = InferSelectModel<typeof table>;
-
-  const storage = config.storage ?? (hasGlobalStorage() ? getGlobalStorage() : null);
+  const storage =
+    config.storage ?? (hasGlobalStorage() ? getGlobalStorage() : null);
   if (!storage) {
     throw new Error(
       "Storage not configured. Either pass storage in config or call initializeStorage() first."
@@ -150,71 +126,98 @@ export const useFileResource = <TConfig extends TableConfig>(
     maxFileSize,
     validation,
     generateKey = defaultGenerateKey,
-    auth,
     usePresignedUrls = false,
     presignedUrlExpiry = 3600,
   } = config;
 
-  const resourceFilter = createResourceFilter(table);
-
-  const getUserId = (user: UserContext | null): string | undefined => {
-    return user?.id;
-  };
-
-  const dbQuery = db as {
-    select(): {
-      from(table: unknown): {
-        where(condition: unknown): {
-          limit(n: number): Promise<unknown[]>;
-        };
-        limit(n: number): {
-          offset(n: number): Promise<unknown[]>;
-        };
-      };
-    };
-    insert(table: unknown): {
-      values(data: unknown): {
-        returning(): Promise<unknown[]>;
-      };
-    };
-    update(table: unknown): {
-      set(data: unknown): {
-        where(condition: unknown): {
-          returning(): Promise<unknown[]>;
-        };
-      };
-    };
-    delete(table: unknown): {
-      where(condition: unknown): Promise<void>;
-    };
-  };
-
   const resourceName = getTableName(table);
+  const idColumnName = (idColumn as DrizzleColumn & { name: string }).name;
+  const hasUserId = "userId" in getTableColumns(table);
+  const filterer = createResourceFilter(table, config.customOperators ?? {});
+  const scopeResolver = createScopeResolver(config.auth, resourceName);
 
-  registerResourceSchema(
-    resourceName,
-    table,
-    db as Parameters<typeof registerResourceSchema>[2],
-    idColumn,
-    { generatedFields: ["id", "storagePath", "status", "createdAt"] }
+  // Storage-managed columns are server-generated; the client never writes them.
+  const generatedFields = Array.from(
+    new Set([
+      "id",
+      "storagePath",
+      "status",
+      "url",
+      "size",
+      "mimeType",
+      "createdAt",
+      ...(config.generatedFields ?? []),
+    ])
   );
 
-  const executeFilter = (expr: string, obj: SchemaType): boolean => {
-    return resourceFilter.execute(expr, obj);
+  // Compose storage cleanup into onAfterDelete so deleting a record (via the
+  // generic resource DELETE) also removes the stored object.
+  const userHooks: LifecycleHooks<TConfig> = config.hooks ?? {};
+  const hooks: LifecycleHooks<TConfig> = {
+    ...userHooks,
+    onAfterDelete: async (ctx, deleted) => {
+      const storagePath = (deleted as Record<string, unknown>).storagePath as
+        | string
+        | undefined;
+      if (storagePath) {
+        try {
+          await storage.delete(storagePath);
+        } catch {
+          // Best-effort: the row is already gone; don't fail the request.
+        }
+      }
+      if (userHooks.onAfterDelete) await userHooks.onAfterDelete(ctx, deleted);
+    },
   };
 
-  router.post("/", async (c) => {
-    const user = getUser(c);
-    const canCreate = await checkScopeAccess(auth?.create, user);
-    if (!canCreate) {
-      throw new UnauthorizedError("Not authorized to upload files");
+  const dbAny = db as {
+    insert: (t: unknown) => { values: (v: unknown) => { returning: () => Promise<unknown[]> } };
+    select: () => { from: (t: unknown) => { where: (c: unknown) => { limit: (n: number) => Promise<unknown[]> } } };
+    update: (t: unknown) => { set: (v: unknown) => { where: (c: unknown) => { returning: () => Promise<unknown[]> } } };
+    delete: (t: unknown) => { where: (c: unknown) => Promise<void> };
+  };
+
+  const readable = config.fields?.readable;
+  const mask = (record: Record<string, unknown>): Record<string, unknown> => {
+    if (!readable) return record;
+    const out: Record<string, unknown> = {};
+    for (const key of readable) if (key in record) out[key] = record[key];
+    return out;
+  };
+
+  // Mirrors the resource hook's scope gate: impersonation/bypass aware.
+  const requireCreate = async (c: Context): Promise<void> => {
+    if (c.get("impersonatedId")) {
+      await scopeResolver.requirePermission("create", getUser(c));
+      return;
     }
+    if (await isAdminBypassRequest(c)) return;
+    await scopeResolver.requirePermission("create", getUser(c));
+  };
+
+  const requireReadAccess = async (
+    c: Context,
+    record: Record<string, unknown>
+  ): Promise<void> => {
+    if (!c.get("impersonatedId") && (await isAdminBypassRequest(c))) return;
+    const scope = await scopeResolver.resolve("read", getUser(c));
+    const expr = scope.toString();
+    if (expr === "*") return;
+    if (scope.isEmpty() || !filterer.execute(expr, record as InferSelectModel<typeof table>)) {
+      throw new ForbiddenError("Not authorized to access this file");
+    }
+  };
+
+  const router = new Hono();
+
+  // --- Upload (custom create): multipart -> storage -> tracked create ---
+  router.post("/", async (c) => {
+    await requireCreate(c);
 
     const parsed = await parseMultipartFormData(c);
     if (!parsed) {
       throw new ValidationError("No file provided or invalid multipart form data");
     }
-
     const { file, filename, mimeType } = parsed;
 
     if (allowedMimeTypes && !allowedMimeTypes.includes(mimeType)) {
@@ -222,346 +225,208 @@ export const useFileResource = <TConfig extends TableConfig>(
         `File type not allowed. Allowed types: ${allowedMimeTypes.join(", ")}`
       );
     }
-
     if (maxFileSize && file.length > maxFileSize) {
       throw new ValidationError(
         `File too large. Maximum size: ${Math.round(maxFileSize / 1024 / 1024)}MB`
       );
     }
-
     if (validation) {
       validateUpload({ contentType: mimeType, size: file.length }, validation);
     }
 
-    const userId = getUserId(user);
+    const user = getUser(c);
+    const userId = user?.id;
     const key = generateKey(filename, userId);
-
-    const result = await storage.upload(key, file, {
-      filename,
-      mimeType,
-    });
-
+    const result = await storage.upload(key, file, { filename, mimeType });
     const url = storage.getUrl(key);
-    const id = randomUUID();
 
-    const fileRecord = {
-      id,
-      userId: userId ?? null,
+    let record: Record<string, unknown> = {
+      id: randomUUID(),
       filename,
       mimeType,
       size: result.size,
       storagePath: key,
       url,
-      status: "completed" as const,
+      status: "completed",
       createdAt: new Date(),
     };
+    if (hasUserId) record.userId = userId ?? null;
 
-    const [created] = await dbQuery
-      .insert(table)
-      .values(fileRecord)
-      .returning();
+    const ctx: ProcedureContext<TConfig> = {
+      db,
+      schema: table,
+      user,
+      req: c.req.raw,
+      context: c,
+    };
+    record =
+      ((await executeBeforeCreate(hooks, ctx, record as never)) as
+        | Record<string, unknown>
+        | undefined) ?? record;
 
-    return c.json({ data: created }, 201);
+    const [created] = (await dbAny.insert(table).values(record).returning()) as Record<
+      string,
+      unknown
+    >[];
+
+    await executeAfterCreate(hooks, ctx, created as never);
+    recordCreate(resourceName, String(created[idColumnName]), created, userId);
+    await pushInsertsToSubscriptions(
+      resourceName,
+      filterer as never,
+      [created],
+      idColumnName,
+      undefined,
+      undefined
+    );
+
+    return c.json(mask(created), 201);
   });
 
+  // --- Presigned upload URL ---
   router.get("/upload-url", async (c) => {
-    const user = getUser(c);
-    const canCreate = await checkScopeAccess(auth?.create, user);
-    if (!canCreate) {
-      throw new UnauthorizedError("Not authorized to upload files");
-    }
+    await requireCreate(c);
 
     if (!storage.supportsPresignedUrls()) {
       throw new ValidationError("This storage adapter does not support presigned URLs");
     }
-
     const filename = c.req.query("filename");
     const contentType = c.req.query("contentType");
-
     if (!filename) {
       throw new ValidationError("filename query parameter is required");
     }
-
     if (allowedMimeTypes && contentType && !allowedMimeTypes.includes(contentType)) {
       throw new ValidationError(
         `File type not allowed. Allowed types: ${allowedMimeTypes.join(", ")}`
       );
     }
+    if (validation) validateUpload({ contentType }, validation);
 
-    if (validation) {
-      validateUpload({ contentType }, validation);
-    }
-
-    const userId = getUserId(user);
+    const user = getUser(c);
+    const userId = user?.id;
     const key = generateKey(filename, userId);
 
-    const presignedOptions: PresignedUrlOptions = {
-      expiresIn: presignedUrlExpiry,
-      contentType,
-    };
-
-    if (maxFileSize) {
-      presignedOptions.contentLength = maxFileSize;
-    }
+    const presignedOptions: PresignedUrlOptions = { expiresIn: presignedUrlExpiry, contentType };
+    if (maxFileSize) presignedOptions.contentLength = maxFileSize;
 
     const uploadUrl = await storage.getUploadUrl(key, presignedOptions);
-    if (!uploadUrl) {
-      throw new ValidationError("Failed to generate upload URL");
-    }
+    if (!uploadUrl) throw new ValidationError("Failed to generate upload URL");
 
     const id = randomUUID();
-    const fileRecord = {
+    const record: Record<string, unknown> = {
       id,
-      userId: userId ?? null,
       filename,
       mimeType: contentType || "application/octet-stream",
       size: 0,
       storagePath: key,
       url: null,
-      status: "pending" as const,
+      status: "pending",
       createdAt: new Date(),
     };
-
-    await dbQuery.insert(table).values(fileRecord).returning();
+    if (hasUserId) record.userId = userId ?? null;
+    await dbAny.insert(table).values(record).returning();
 
     return c.json({
-      data: {
-        fileId: id,
-        uploadUrl: uploadUrl.url,
-        fields: uploadUrl.fields,
-        key,
-        expiresAt: uploadUrl.expiresAt,
-      },
+      fileId: id,
+      uploadUrl: uploadUrl.url,
+      fields: uploadUrl.fields,
+      key,
+      expiresAt: uploadUrl.expiresAt,
     });
   });
 
+  // --- Confirm a presigned upload ---
   router.post("/:id/confirm", async (c) => {
-    const user = getUser(c);
     const fileId = c.req.param("id");
-
-    const [file] = await dbQuery
+    const [file] = (await dbAny
       .select()
       .from(table)
       .where(eq(idColumn, fileId))
-      .limit(1) as FileRecord[];
+      .limit(1)) as Record<string, unknown>[];
+    if (!file) throw new NotFoundError("File", fileId);
+    await requireReadAccess(c, file);
 
-    if (!file) {
-      throw new NotFoundError("File", fileId);
-    }
+    if (file.status === "completed") return c.json(file);
 
-    const canRead = await checkScopeAccess<SchemaType>(
-      auth?.read,
-      user,
-      file,
-      executeFilter
-    );
-    if (!canRead) {
-      throw new ForbiddenError("Not authorized to access this file");
-    }
+    const metadata = await storage.getMetadata(file.storagePath as string);
+    if (!metadata) throw new NotFoundError("File", file.storagePath as string);
 
-    if (file.status === "completed") {
-      return c.json({ data: file });
-    }
-
-    const metadata = await storage.getMetadata(file.storagePath);
-    if (!metadata) {
-      throw new NotFoundError("File", file.storagePath);
-    }
-
-    const url = storage.getUrl(file.storagePath);
-
-    const [updated] = await dbQuery
+    const url = storage.getUrl(file.storagePath as string);
+    const [updated] = (await dbAny
       .update(table)
-      .set({
-        size: metadata.size,
-        mimeType: metadata.mimeType,
-        url,
-        status: "completed",
-      })
+      .set({ size: metadata.size, mimeType: metadata.mimeType, url, status: "completed" })
       .where(eq(idColumn, fileId))
-      .returning() as FileRecord[];
+      .returning()) as Record<string, unknown>[];
 
-    return c.json({ data: updated });
+    return c.json(updated);
   });
 
-  router.get("/:id", async (c) => {
-    const user = getUser(c);
-    const fileId = c.req.param("id");
-
-    const [file] = await dbQuery
-      .select()
-      .from(table)
-      .where(eq(idColumn, fileId))
-      .limit(1) as FileRecord[];
-
-    if (!file) {
-      throw new NotFoundError("File", fileId);
-    }
-
-    const canRead = await checkScopeAccess<SchemaType>(
-      auth?.read,
-      user,
-      file,
-      executeFilter
-    );
-    if (!canRead) {
-      throw new ForbiddenError("Not authorized to access this file");
-    }
-
-    return c.json({ data: file });
-  });
-
-  router.get("/", async (c) => {
-    const user = getUser(c);
-    const limit = Math.min(parseInt(c.req.query("limit") ?? "") || 50, 100);
-    const offset = parseInt(c.req.query("offset") ?? "") || 0;
-    const filter = c.req.query("filter");
-
-    const canRead = await checkScopeAccess(auth?.read, user);
-    if (!canRead) {
-      throw new ForbiddenError("Not authorized to list files");
-    }
-
-    let scopeFilter = "";
-    if (auth?.read && user) {
-      const scope = await auth.read(user);
-      const scopeStr = scope.toString();
-      if (scopeStr !== "*" && !scope.isEmpty()) {
-        scopeFilter = scopeStr;
-      }
-    }
-
-    let combinedFilter = filter || "";
-    if (scopeFilter && combinedFilter) {
-      combinedFilter = `(${scopeFilter});(${combinedFilter})`;
-    } else if (scopeFilter) {
-      combinedFilter = scopeFilter;
-    }
-
-    if (combinedFilter) {
-      const whereCondition = resourceFilter.convert(combinedFilter);
-      const files = await dbQuery
-        .select()
-        .from(table)
-        .where(whereCondition)
-        .limit(limit) as unknown[];
-      return c.json({ data: files });
-    }
-
-    const files = await dbQuery
-      .select()
-      .from(table)
-      .limit(limit)
-      .offset(offset);
-    return c.json({ data: files });
-  });
-
+  // --- Download (stream or presigned redirect) ---
   router.get("/:id/download", async (c) => {
-    const user = getUser(c);
     const fileId = c.req.param("id");
-
-    const [file] = await dbQuery
+    const [file] = (await dbAny
       .select()
       .from(table)
       .where(eq(idColumn, fileId))
-      .limit(1) as FileRecord[];
-
-    if (!file) {
-      throw new NotFoundError("File", fileId);
-    }
-
-    const canRead = await checkScopeAccess<SchemaType>(
-      auth?.read,
-      user,
-      file,
-      executeFilter
-    );
-    if (!canRead) {
-      throw new ForbiddenError("Not authorized to access this file");
-    }
+      .limit(1)) as Record<string, unknown>[];
+    if (!file) throw new NotFoundError("File", fileId);
+    await requireReadAccess(c, file);
 
     if (file.status !== "completed") {
       throw new ValidationError("File upload not completed");
     }
 
     if (usePresignedUrls && storage.supportsPresignedUrls()) {
-      const downloadUrl = await storage.getDownloadUrl(file.storagePath, {
+      const downloadUrl = await storage.getDownloadUrl(file.storagePath as string, {
         expiresIn: presignedUrlExpiry,
       });
-      if (downloadUrl) {
-        return c.redirect(downloadUrl, 302);
-      }
+      if (downloadUrl) return c.redirect(downloadUrl, 302);
     }
 
-    const stream = await storage.downloadStream(file.storagePath);
-    c.header("Content-Type", file.mimeType);
-    c.header("Content-Disposition", `attachment; filename="${file.filename}"`);
-    c.header("Content-Length", file.size.toString());
+    const stream = await storage.downloadStream(file.storagePath as string);
+    c.header("Content-Type", file.mimeType as string);
+    c.header("Content-Disposition", `attachment; filename="${file.filename as string}"`);
+    c.header("Content-Length", String(file.size));
     return c.body(Readable.toWeb(stream) as unknown as ReadableStream);
   });
 
+  // --- Batch delete by ids (preserves the {ids} contract) ---
   router.delete("/batch", async (c) => {
-    const user = getUser(c);
     const { ids } = (await readJsonBody(c)) as { ids: string[] };
-
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
       throw new ValidationError("ids array is required");
     }
-
-    const files = await dbQuery
+    const files = (await dbAny
       .select()
       .from(table)
       .where(inArray(idColumn, ids))
-      .limit(ids.length) as FileRecord[];
+      .limit(ids.length)) as Record<string, unknown>[];
 
     for (const file of files) {
-      const canDelete = await checkScopeAccess<SchemaType>(
-        auth?.delete,
-        user,
-        file,
-        executeFilter
-      );
-      if (!canDelete) {
-        throw new ForbiddenError(`Not authorized to delete file ${file.id}`);
+      if (!c.get("impersonatedId") && (await isAdminBypassRequest(c))) break;
+      const scope = await scopeResolver.resolve("delete", getUser(c));
+      const expr = scope.toString();
+      if (expr === "*") continue;
+      if (scope.isEmpty() || !filterer.execute(expr, file as InferSelectModel<typeof table>)) {
+        throw new ForbiddenError(`Not authorized to delete file ${String(file.id)}`);
       }
     }
 
-    const storagePaths = files.map((f) => f.storagePath);
+    const storagePaths = files.map((f) => f.storagePath as string);
     await storage.deleteMany(storagePaths);
-    await dbQuery.delete(table).where(inArray(idColumn, ids));
-
-    return c.json({ data: { deleted: files.length } });
+    for (const file of files) {
+      await dbAny.delete(table).where(eq(idColumn, file.id));
+    }
+    return c.json({ deleted: files.length });
   });
 
-  router.delete("/:id", async (c) => {
-    const user = getUser(c);
-    const fileId = c.req.param("id");
+  // --- Everything else (list, get, patch, delete, subscribe, count,
+  // aggregate, rpc, relations, hooks, field policies, full auth scopes) is a
+  // regular resource. ---
+  router.route("/", useResource(table, { ...config, hooks, generatedFields } as ResourceConfig<TConfig, Table<TConfig>>));
 
-    const [file] = await dbQuery
-      .select()
-      .from(table)
-      .where(eq(idColumn, fileId))
-      .limit(1) as FileRecord[];
-
-    if (!file) {
-      throw new NotFoundError("File", fileId);
-    }
-
-    const canDelete = await checkScopeAccess<SchemaType>(
-      auth?.delete,
-      user,
-      file,
-      executeFilter
-    );
-    if (!canDelete) {
-      throw new ForbiddenError("Not authorized to delete this file");
-    }
-
-    await storage.delete(file.storagePath);
-    await dbQuery.delete(table).where(eq(idColumn, fileId));
-
-    return c.body(null, 204);
-  });
+  // Mark for the admin data explorer (download action).
+  setResourceFileFlag(resourceName, true);
 
   return router;
 };

@@ -31,11 +31,13 @@
 - **Complete isolation**: Each instance has its own isolated storage
 
 ### File Resource
+- **Superset of a regular resource**: A file resource is a `useResource` resource (full CRUD, list pagination, subscriptions, procedures, relations, field policies, full auth scopes) plus the upload/`upload-url`/`confirm`/`download` routes; responses use the standard resource shapes (no `{ data }` envelope)
 - **Multipart parsing**: Accepts multipart/form-data uploads with a single `file` field
 - **MIME type validation**: Rejects files with disallowed MIME types (400 error)
 - **Size validation**: Rejects files exceeding `maxFileSize` (400 error)
 - **Validation option**: The `validation` option (`maxSize`/`allowedTypes`/`blockedTypes`) is enforced on both direct uploads and presigned-URL requests, before any bytes are persisted
-- **Orphan cleanup on delete**: `DELETE /:id` and `DELETE /batch` remove the blob from storage before deleting the database row
+- **Upload is a tracked create**: A successful upload runs `onBeforeCreate`/`onAfterCreate` hooks and pushes an `added` subscription event, like any resource create
+- **Orphan cleanup on delete**: deleting a record removes the stored blob via an internal `onAfterDelete` hook (composed with the user's), so no orphaned objects remain; `DELETE /batch` removes blobs then rows
 - **Auth scope enforcement**: All operations respect configured auth scopes
 - **Database + storage consistency**: Files are only created in database after successful storage upload
 
@@ -54,7 +56,7 @@
 - ❌ **Encryption at rest**: Depends on underlying storage configuration
 
 ### Data Consistency (What We Don't Promise)
-- ❌ **Atomic delete**: Deleting a file removes storage first, then database; crash between steps leaves orphan
+- ❌ **Atomic delete**: Deleting a record removes the database row, then the stored blob (via `onAfterDelete`); a crash between steps can leave an orphaned blob
 - ❌ **Transaction support**: Storage operations are not part of database transactions
 - ❌ **Reference counting**: Deleting a file does not check for references from other resources
 

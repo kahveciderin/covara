@@ -187,6 +187,13 @@ export class SubscriptionManager<T extends { id: string }> implements Subscripti
 
     this.reconnectTimeout = setTimeout(() => {
       this.reconnectAttempts++;
+      // Close the errored source before opening a new one; an abandoned
+      // EventSource keeps its own browser-managed auto-reconnect alive,
+      // causing duplicate connections and duplicate event delivery.
+      if (this.eventSource) {
+        this.eventSource.close();
+        this.eventSource = null;
+      }
       this.connect();
     }, delay);
   }

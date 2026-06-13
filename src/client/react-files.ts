@@ -219,7 +219,7 @@ export function useFiles(options: UseFilesOptions): UseFilesResult {
 
     try {
       const result = await fileClient.list(listOptions);
-      setFiles(result.data);
+      setFiles(result.items);
     } catch (err) {
       setError(err instanceof Error ? err : new Error(String(err)));
     } finally {

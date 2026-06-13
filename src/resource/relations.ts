@@ -7,10 +7,90 @@ import {
   SQLWrapper,
   AnyColumn,
   getTableColumns,
+  getTableName,
   inArray,
+  is,
 } from "drizzle-orm";
-import { DrizzleDatabase, CustomOperator } from "./types";
+import { SQLiteTable, getTableConfig as sqliteTableConfig } from "drizzle-orm/sqlite-core";
+import { PgTable, getTableConfig as pgTableConfig } from "drizzle-orm/pg-core";
+import { DrizzleDatabase, CustomOperator, UserContext } from "./types";
 import { createResourceFilter } from "./filter";
+import { getResourceScopeResolver } from "@/ui/schema-registry";
+
+interface DrizzleForeignKey {
+  reference: () => {
+    columns: (AnyColumn & { name: string })[];
+    foreignColumns: (AnyColumn & { name: string })[];
+    foreignTable: Table<TableConfig>;
+  };
+}
+
+// Dialect-agnostic foreign-key reader: drizzle exposes FK metadata only via the
+// per-dialect getTableConfig, so dispatch on the table's dialect brand.
+const readForeignKeys = (table: Table<TableConfig>): DrizzleForeignKey[] => {
+  if (is(table, SQLiteTable)) return sqliteTableConfig(table).foreignKeys as DrizzleForeignKey[];
+  if (is(table, PgTable)) return pgTableConfig(table).foreignKeys as DrizzleForeignKey[];
+  return [];
+};
+
+const relationNameFromForeignKey = (columnName: string): string => {
+  const stripped = columnName.replace(/_?[iI]d$/, "");
+  return stripped.length > 0 ? stripped : columnName;
+};
+
+// Derive a RelationsConfig from foreign keys: `belongsTo` from this table's own
+// FKs, and `hasMany` from other registered tables whose FKs reference this one.
+// Only single-column FKs to registered resources are discovered (no guessing);
+// the result reuses the same scope-enforced loader as explicit relations.
+export const discoverRelations = (
+  sourceSchema: Table<TableConfig>,
+  registry: Map<string, { schema: Table<TableConfig> }>
+): RelationsConfig => {
+  const discovered: RelationsConfig = {};
+  const sourceName = getTableName(sourceSchema);
+
+  for (const fk of readForeignKeys(sourceSchema)) {
+    const ref = fk.reference();
+    if (ref.columns.length !== 1 || ref.foreignColumns.length !== 1) continue;
+    const name = relationNameFromForeignKey(ref.columns[0].name);
+    if (discovered[name]) continue;
+    discovered[name] = {
+      resource: getTableName(ref.foreignTable),
+      schema: ref.foreignTable,
+      type: "belongsTo",
+      foreignKey: ref.columns[0],
+      references: ref.foreignColumns[0],
+    };
+  }
+
+  for (const [, entry] of registry) {
+    const other = entry.schema;
+    if (getTableName(other) === sourceName) continue;
+    for (const fk of readForeignKeys(other)) {
+      const ref = fk.reference();
+      if (ref.columns.length !== 1 || ref.foreignColumns.length !== 1) continue;
+      if (getTableName(ref.foreignTable) !== sourceName) continue;
+      const name = getTableName(other);
+      if (discovered[name]) continue;
+      discovered[name] = {
+        resource: getTableName(other),
+        schema: other,
+        type: "hasMany",
+        foreignKey: ref.columns[0],
+        references: ref.foreignColumns[0],
+      };
+    }
+  }
+
+  return discovered;
+};
+
+export interface RelationLoadContext {
+  user: UserContext | null;
+  enforceScope: boolean;
+}
+
+const NO_SCOPE: RelationLoadContext = { user: null, enforceScope: false };
 
 export type RelationType = "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
 
@@ -193,14 +273,30 @@ export class RelationLoader<TConfig extends TableConfig> {
       string,
       { schema: Table<TableConfig>; config: { relations?: RelationsConfig } }
     >,
-    private config: IncludeConfig = {}
+    private config: IncludeConfig = {},
+    private auto: boolean = false
   ) {}
 
   private filterCache = new Map<string, ReturnType<typeof createResourceFilter>>();
+  private memoRelations?: RelationsConfig;
+
+  // Explicit relations merged over discovered ones (explicit wins). Discovery
+  // runs lazily on first use so the resource registry is fully populated, and
+  // the result is memoized. With `auto` off this is just the explicit config.
+  private resolvedRelations(): RelationsConfig {
+    if (!this.auto) return this.relations as RelationsConfig;
+    if (!this.memoRelations) {
+      this.memoRelations = {
+        ...discoverRelations(this.sourceSchema as Table<TableConfig>, this.resourceRegistry),
+        ...(this.relations as RelationsConfig),
+      };
+    }
+    return this.memoRelations;
+  }
 
   getEagerIncludes(): IncludeSpec[] {
     const specs: IncludeSpec[] = [];
-    for (const [name, relation] of Object.entries(this.relations)) {
+    for (const [name, relation] of Object.entries(this.resolvedRelations())) {
       if (relation.strategy === "eager") {
         specs.push({ relation: name });
       }
@@ -211,9 +307,14 @@ export class RelationLoader<TConfig extends TableConfig> {
   private buildRelationWhere(
     targetSchema: Table<TableConfig>,
     filterExpr: string | undefined,
-    baseCondition: SQLWrapper
+    baseCondition: SQLWrapper,
+    scopeCondition?: SQLWrapper | null
   ): SQLWrapper {
-    if (!filterExpr) return baseCondition;
+    const condition: SQLWrapper = scopeCondition
+      ? (and(baseCondition, scopeCondition) as SQLWrapper)
+      : baseCondition;
+
+    if (!filterExpr) return condition;
 
     let filter = this.filterCache.get(filterExpr);
     if (!filter) {
@@ -224,23 +325,56 @@ export class RelationLoader<TConfig extends TableConfig> {
       this.filterCache.set(filterExpr, filter);
     }
 
-    return and(baseCondition, filter.convert(filterExpr)) as SQLWrapper;
+    return and(condition, filter.convert(filterExpr)) as SQLWrapper;
+  }
+
+  // Resolves the target resource's read scope into a SQL predicate for the
+  // effective user, so an included relation can never reveal rows the user
+  // could not read by querying that resource directly. Returns:
+  //   - null   → no scope to apply (disabled, public, unscoped, or target not
+  //              a registered resource)
+  //   - "DENY" → the user is denied read on the target; yield no rows
+  //   - SQL    → AND this predicate into the relation query
+  private async scopeCondition(
+    relation: RelationConfig<TConfig, TableConfig>,
+    ctx: RelationLoadContext
+  ): Promise<SQLWrapper | null | "DENY"> {
+    if (!ctx.enforceScope) return null;
+    const resolver = getResourceScopeResolver(relation.resource);
+    if (!resolver) return null;
+    if (resolver.isPublic("read")) return null;
+    let scope;
+    try {
+      scope = await resolver.resolve("read", ctx.user);
+    } catch {
+      return "DENY";
+    }
+    if (scope.isEmpty()) return "DENY";
+    const expr = scope.toString();
+    if (!expr || expr === "*") return null;
+    const filter = createResourceFilter(
+      relation.schema,
+      this.config.customOperators ?? {}
+    );
+    return filter.convert(expr) as SQLWrapper;
   }
 
   async loadRelationsForItem<T extends Record<string, unknown>>(
     item: T,
     includes: IncludeSpec[],
     idColumn: string,
-    depth: number = 0
+    depth: number = 0,
+    ctx: RelationLoadContext = NO_SCOPE
   ): Promise<T & Record<string, unknown>> {
     if (depth > (this.config.maxDepth ?? 3)) {
       return item;
     }
 
     const result = { ...item };
+    const relations = this.resolvedRelations();
 
     for (const include of includes) {
-      const relation = this.relations[include.relation];
+      const relation = relations[include.relation];
       if (!relation) continue;
 
       const related = await this.loadRelation(
@@ -248,7 +382,8 @@ export class RelationLoader<TConfig extends TableConfig> {
         relation,
         include,
         idColumn,
-        depth
+        depth,
+        ctx
       );
 
       (result as Record<string, unknown>)[include.relation] = related;
@@ -261,7 +396,8 @@ export class RelationLoader<TConfig extends TableConfig> {
     items: T[],
     includes: IncludeSpec[],
     idColumn: string,
-    depth: number = 0
+    depth: number = 0,
+    ctx: RelationLoadContext = NO_SCOPE
   ): Promise<(T & Record<string, unknown>)[]> {
     if (items.length === 0 || includes.length === 0) {
       return items as (T & Record<string, unknown>)[];
@@ -272,9 +408,10 @@ export class RelationLoader<TConfig extends TableConfig> {
     }
 
     const results = items.map((item) => ({ ...item }));
+    const relations = this.resolvedRelations();
 
     for (const include of includes) {
-      const relation = this.relations[include.relation];
+      const relation = relations[include.relation];
       if (!relation) continue;
 
       const relatedMap = await this.batchLoadRelation(
@@ -282,7 +419,8 @@ export class RelationLoader<TConfig extends TableConfig> {
         relation,
         include,
         idColumn,
-        depth
+        depth,
+        ctx
       );
 
       for (const result of results) {
@@ -303,10 +441,17 @@ export class RelationLoader<TConfig extends TableConfig> {
     relation: RelationConfig<TConfig, TableConfig>,
     include: IncludeSpec,
     idColumn: string,
-    depth: number
+    depth: number,
+    ctx: RelationLoadContext
   ): Promise<unknown> {
     const targetSchema = relation.schema;
     const targetColumns = getTableColumns(targetSchema);
+
+    const isCollection =
+      relation.type === "hasMany" || relation.type === "manyToMany";
+
+    const sc = await this.scopeCondition(relation, ctx);
+    if (sc === "DENY") return isCollection ? [] : null;
 
     const selectColumns = include.select
       ? Object.fromEntries(
@@ -328,7 +473,8 @@ export class RelationLoader<TConfig extends TableConfig> {
           this.buildRelationWhere(
             targetSchema,
             include.filter,
-            eq(relation.references, fkValue as never)
+            eq(relation.references, fkValue as never),
+            sc
           )
         ) as never;
         break;
@@ -340,7 +486,8 @@ export class RelationLoader<TConfig extends TableConfig> {
           this.buildRelationWhere(
             targetSchema,
             include.filter,
-            eq(relation.foreignKey, sourceId as never)
+            eq(relation.foreignKey, sourceId as never),
+            sc
           )
         ) as never;
         break;
@@ -361,7 +508,8 @@ export class RelationLoader<TConfig extends TableConfig> {
             this.buildRelationWhere(
               targetSchema,
               include.filter,
-              eq(relation.through.sourceKey, sourceId as never)
+              eq(relation.through.sourceKey, sourceId as never),
+              sc
             )
           ) as never;
         break;
@@ -405,7 +553,8 @@ export class RelationLoader<TConfig extends TableConfig> {
             results as Record<string, unknown>[],
             include.nested,
             targetIdColumn,
-            depth + 1
+            depth + 1,
+            ctx
           );
         } else {
           return results[0]
@@ -413,7 +562,8 @@ export class RelationLoader<TConfig extends TableConfig> {
                 results[0] as Record<string, unknown>,
                 include.nested,
                 targetIdColumn,
-                depth + 1
+                depth + 1,
+                ctx
               )
             : null;
         }
@@ -431,11 +581,15 @@ export class RelationLoader<TConfig extends TableConfig> {
     relation: RelationConfig<TConfig, TableConfig>,
     include: IncludeSpec,
     idColumn: string,
-    depth: number
+    depth: number,
+    ctx: RelationLoadContext
   ): Promise<Map<string, unknown>> {
     const result = new Map<string, unknown>();
     const targetSchema = relation.schema;
     const targetColumns = getTableColumns(targetSchema);
+
+    const sc = await this.scopeCondition(relation, ctx);
+    if (sc === "DENY") return result;
 
     const sourceIds = items.map((item) => item[idColumn]).filter((id) => id != null);
     if (sourceIds.length === 0) return result;
@@ -465,7 +619,8 @@ export class RelationLoader<TConfig extends TableConfig> {
             this.buildRelationWhere(
               targetSchema,
               include.filter,
-              inArray(relation.references, fkValues as never[])
+              inArray(relation.references, fkValues as never[]),
+              sc
             )
           );
 
@@ -507,7 +662,8 @@ export class RelationLoader<TConfig extends TableConfig> {
                 this.buildRelationWhere(
                   targetSchema,
                   include.filter,
-                  eq(relation.foreignKey, sourceId as never)
+                  eq(relation.foreignKey, sourceId as never),
+                  sc
                 )
               );
 
@@ -537,7 +693,8 @@ export class RelationLoader<TConfig extends TableConfig> {
             this.buildRelationWhere(
               targetSchema,
               include.filter,
-              inArray(relation.foreignKey, sourceIds as never[])
+              inArray(relation.foreignKey, sourceIds as never[]),
+              sc
             )
           );
 
@@ -584,7 +741,8 @@ export class RelationLoader<TConfig extends TableConfig> {
                 this.buildRelationWhere(
                   targetSchema,
                   include.filter,
-                  eq(relation.through.sourceKey, sourceId as never)
+                  eq(relation.through.sourceKey, sourceId as never),
+                  sc
                 )
               );
 
@@ -615,7 +773,8 @@ export class RelationLoader<TConfig extends TableConfig> {
             this.buildRelationWhere(
               targetSchema,
               include.filter,
-              inArray(relation.through.sourceKey, sourceIds as never[])
+              inArray(relation.through.sourceKey, sourceIds as never[]),
+              sc
             )
           );
 
@@ -654,7 +813,8 @@ export class RelationLoader<TConfig extends TableConfig> {
               related as Record<string, unknown>[],
               include.nested,
               targetIdColumn,
-              depth + 1
+              depth + 1,
+              ctx
             );
             result.set(sourceId, withNested);
           } else if (related) {
@@ -662,7 +822,8 @@ export class RelationLoader<TConfig extends TableConfig> {
               related as Record<string, unknown>,
               include.nested,
               targetIdColumn,
-              depth + 1
+              depth + 1,
+              ctx
             );
             result.set(sourceId, withNested);
           }

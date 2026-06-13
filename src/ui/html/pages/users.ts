@@ -160,13 +160,20 @@ export const userDetail = (data: UserDetailData): string => html`
   <div style="padding: 16px;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
       <h4 style="font-weight: 600;">User Details</h4>
-      ${button('\u2715', {
-        size: 'sm',
-        variant: 'ghost',
-        hxGet: '/__covara/ui/empty',
-        hxTarget: '#user-detail',
-        hxSwap: 'innerHTML',
-      })}
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <button type="button" class="btn btn-sm"
+          style="background:#7c2d12;color:#fed7aa;border:1px solid #c2410c;cursor:pointer;"
+          onclick='window.Covara && Covara.setImpersonation(${escapeHtml(JSON.stringify({ userId: data.user.id, email: data.user.email }))})'>
+          Impersonate
+        </button>
+        ${button('\u2715', {
+          size: 'sm',
+          variant: 'ghost',
+          hxGet: '/__covara/ui/empty',
+          hxTarget: '#user-detail',
+          hxSwap: 'innerHTML',
+        })}
+      </div>
     </div>
 
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">

@@ -184,14 +184,82 @@ export const runtimeScript = String.raw`
     if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); openPalette(); }
   });
 
+  // ---- impersonation -------------------------------------------------------
+  var IMP_KEY = 'covara.impersonation';
+  function getImpersonation() {
+    try { return JSON.parse(localStorage.getItem(IMP_KEY) || 'null'); } catch (e) { return null; }
+  }
+  function setImpersonation(info) {
+    if (!info || !info.userId) return;
+    localStorage.setItem(IMP_KEY, JSON.stringify({ userId: String(info.userId), email: info.email || null }));
+    renderImpersonationBadge();
+    toast('Impersonating ' + (info.email || info.userId), 'warning');
+    document.dispatchEvent(new CustomEvent('covara:impersonation'));
+  }
+  function clearImpersonation() {
+    localStorage.removeItem(IMP_KEY);
+    renderImpersonationBadge();
+    document.dispatchEvent(new CustomEvent('covara:impersonation'));
+  }
+  function renderImpersonationBadge() {
+    var host = document.getElementById('impersonation-badge');
+    if (!host) return;
+    var imp = getImpersonation();
+    host.innerHTML = '';
+    // Toggle display explicitly: the badge carries an inline style, so the
+    // hidden attribute alone cannot hide it (inline display wins over [hidden]).
+    if (!imp) { host.hidden = true; host.style.display = 'none'; return; }
+    host.hidden = false;
+    host.style.display = 'flex';
+    host.appendChild(el('span', { text: '⚠ Impersonating ' + (imp.email || imp.userId) }));
+    host.appendChild(el('button', {
+      title: 'Stop impersonating', html: '✕',
+      style: 'cursor:pointer;background:transparent;border:none;color:inherit;font-size:13px;line-height:1;padding:0 0 0 2px;',
+      onclick: clearImpersonation
+    }));
+  }
+  // Render what scope filter the impersonated user's request would carry, into
+  // the element with the given id, for resource+operation.
+  function updateScopeBadge(elId, resource, operation) {
+    var host = document.getElementById(elId);
+    if (!host) return;
+    var imp = getImpersonation();
+    if (!imp || !resource) { host.hidden = true; host.textContent = ''; return; }
+    fetchJSON(base + '/api/impersonation/scope?resource=' + encodeURIComponent(resource) +
+              '&operation=' + encodeURIComponent(operation || 'read') +
+              '&userId=' + encodeURIComponent(imp.userId))
+      .then(function (r) {
+        host.hidden = false;
+        if (r.public || r.scope === '*') host.textContent = 'impersonating ' + (imp.email || imp.userId) + ' — no filter (full access)';
+        else if (r.denied) host.textContent = 'impersonating ' + (imp.email || imp.userId) + ' — denied for this user';
+        else host.textContent = 'appending filter ' + r.scope;
+      })
+      .catch(function () { host.hidden = true; });
+  }
+  // Thread the impersonation target into explorer requests so they execute as
+  // the impersonated user (api explorer execute + filter tester).
+  document.body.addEventListener('htmx:configRequest', function (evt) {
+    var imp = getImpersonation();
+    if (!imp || !imp.userId) return;
+    var p = (evt.detail && evt.detail.path) || '';
+    if (p.indexOf('/api-explorer/execute') >= 0 || p.indexOf('/filter/test') >= 0) {
+      evt.detail.parameters['impersonate_user_id'] = imp.userId;
+    }
+  });
+  document.body.addEventListener('htmx:afterSwap', renderImpersonationBadge);
+
   // ---- public namespace ----------------------------------------------------
   window.Covara = {
     base: base, toast: toast, fetchJSON: fetchJSON, copy: copy, el: el,
     escapeHtml: escapeHtml, highlightJSON: highlightJSON, relTime: relTime,
-    openPalette: openPalette, closePalette: closePalette
+    openPalette: openPalette, closePalette: closePalette,
+    setImpersonation: setImpersonation, clearImpersonation: clearImpersonation,
+    activeImpersonation: getImpersonation, updateScopeBadge: updateScopeBadge,
+    renderImpersonationBadge: renderImpersonationBadge
   };
 
-  document.addEventListener('DOMContentLoaded', refreshTimes);
+  document.addEventListener('DOMContentLoaded', function () { refreshTimes(); renderImpersonationBadge(); });
   refreshTimes();
+  renderImpersonationBadge();
 })();
 `;

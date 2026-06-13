@@ -24,6 +24,35 @@ const localHandlers = new Map<string, SSEWriter>();
 export type BackpressurePolicy = "invalidate" | "disconnect" | "drop";
 const localHandlerPolicies = new Map<string, BackpressurePolicy>();
 
+// Optional per-handler renderer. When set, the handler receives events as
+// fully-formatted SSE frame strings produced by the renderer instead of the
+// default `data: <json>\n\n`. This lets a handler emit HTML (e.g. htmx OOB
+// fragments) over the same subscription engine without changing fan-out logic.
+// The default (no renderer) preserves the JSON wire format byte-for-byte.
+export type EventRenderer = (
+  event: SubscriptionEvent | { type: "invalidate"; reason?: string }
+) => string;
+const localHandlerRenderers = new Map<string, EventRenderer>();
+
+// One-shot renderer handoff. The htmx layer stashes a renderer and passes the
+// token to the resource's own /subscribe endpoint (via ?__cvRenderer=), which
+// takes it and registers the SSE handler with it — so the HTML/htmx stream
+// reuses all of the subscribe handler's scope/rate-limit/resume/heartbeat logic
+// and only swaps the output format.
+const pendingRenderers = new Map<string, EventRenderer>();
+
+export const stashRenderer = (renderer: EventRenderer): string => {
+  const token = uuidv4();
+  pendingRenderers.set(token, renderer);
+  return token;
+};
+
+export const takeRenderer = (token: string): EventRenderer | undefined => {
+  const renderer = pendingRenderers.get(token);
+  pendingRenderers.delete(token);
+  return renderer;
+};
+
 // Per-resource field-read masking. The resource hook registers a masker that
 // strips non-readable table columns; we apply it to every outgoing event object
 // AFTER filter matching (so masked columns can still be used in subscription
@@ -426,17 +455,22 @@ export const getSubscription = async (subscriptionId: string): Promise<Subscript
 export const registerHandler = (
   handlerId: string,
   writer: SSEWriter,
-  backpressurePolicy: BackpressurePolicy = "invalidate"
+  backpressurePolicy: BackpressurePolicy = "invalidate",
+  renderer?: EventRenderer
 ): void => {
   localHandlers.set(handlerId, writer);
   localHandlerIds.add(handlerId);
   localHandlerPolicies.set(handlerId, backpressurePolicy);
+  if (renderer) {
+    localHandlerRenderers.set(handlerId, renderer);
+  }
 };
 
 export const unregisterHandler = async (handlerId: string): Promise<void> => {
   localHandlers.delete(handlerId);
   localHandlerIds.delete(handlerId);
   localHandlerPolicies.delete(handlerId);
+  localHandlerRenderers.delete(handlerId);
 
   // Handlers are process-local, so their subscriptions were created here and
   // are tracked locally — disconnect cleanup is O(own subscriptions), no scan.
@@ -549,6 +583,8 @@ const sendEvent = <T extends SubscriptionEvent>(
     return false;
   }
 
+  const renderer = localHandlerRenderers.get(handlerId);
+
   // Slow-consumer handling: if the client's outbound buffer is already full,
   // do not keep enqueuing (which would grow memory unboundedly). Apply the
   // configured backpressure policy. With "invalidate"/"disconnect" the client
@@ -561,8 +597,9 @@ const sendEvent = <T extends SubscriptionEvent>(
     }
     if (policy === "invalidate") {
       try {
+        const invalidate = { type: "invalidate" as const, reason: "slow-consumer" };
         handler.write(
-          `data: ${JSON.stringify({ type: "invalidate", reason: "slow-consumer" })}\n\n`
+          renderer ? renderer(invalidate) : `data: ${JSON.stringify(invalidate)}\n\n`
         );
       } catch {
         // best effort — buffer may already be full
@@ -573,7 +610,7 @@ const sendEvent = <T extends SubscriptionEvent>(
   }
 
   try {
-    handler.write(`data: ${JSON.stringify(event)}\n\n`);
+    handler.write(renderer ? renderer(event) : `data: ${JSON.stringify(event)}\n\n`);
     return true;
   } catch {
     return false;
@@ -997,6 +1034,99 @@ export const updateSubscriptionSeq = async (
   await kv.hset(hashKey, subscriptionId, serializeSubscription(subscription));
 };
 
+// Persist a subscription's auth scope and drop its cached compiled filter so
+// subsequent live events evaluate against the new scope.
+export const updateSubscriptionScope = async (
+  subscriptionId: string,
+  scopeFilter: string | undefined
+): Promise<void> => {
+  compiledFiltersCache.delete(subscriptionId);
+
+  const kv = getKV();
+  if (kv) {
+    const resource = resourceFromSubscriptionId(subscriptionId);
+    if (!resource) return;
+    const hashKey = subscriptionHashKey(resource);
+    const data = await kv.hget(hashKey, subscriptionId);
+    if (!data) return;
+    const subscription = deserializeSubscription(data);
+    subscription.scopeFilter = scopeFilter;
+    await kv.hset(hashKey, subscriptionId, serializeSubscription(subscription));
+    return;
+  }
+
+  const sub = localSubscriptions.get(subscriptionId);
+  if (sub) sub.scopeFilter = scopeFilter;
+};
+
+// Reconcile a subscription against a freshly-resolved auth scope. `matchingItems`
+// is the current set of rows visible under the new scope (filter ∧ scope). Rows
+// the subscriber held that are no longer visible emit `removed`; rows now visible
+// that it didn't hold emit `added`. The new scope is persisted so future live
+// events honor it. Used by the periodic scope re-check to surface out-of-band
+// permission changes (e.g. revoked org membership) without a reconnect.
+export const applyScopeChange = async <T extends Record<string, unknown>>(
+  subscriptionId: string,
+  newScopeFilter: string | undefined,
+  matchingItems: T[],
+  idColumn: string,
+  relationLoader?: RelationLoader<T>
+): Promise<{ added: number; removed: number }> => {
+  const subscription = await getSubscription(subscriptionId);
+  if (!subscription) return { added: 0, removed: 0 };
+
+  await updateSubscriptionScope(subscriptionId, newScopeFilter);
+
+  const relevant = await loadRelevantObjects(subscriptionId);
+  const matchingById = new Map<string, T>();
+  for (const item of matchingItems) matchingById.set(String(item[idColumn]), item);
+
+  let added = 0;
+  let removed = 0;
+
+  // Rows that left scope -> removed.
+  for (const id of relevant) {
+    if (matchingById.has(id)) continue;
+    await removeRelevantObject(subscriptionId, id);
+    const event: RemovedEvent = {
+      id: uuidv4(),
+      subscriptionId,
+      seq: await getNextSeq(subscriptionId),
+      timestamp: Date.now(),
+      type: "removed",
+      objectId: id,
+    };
+    if (!sendEvent(subscription.handlerId, event)) {
+      await broadcastEvent({ type: "removed", subscriptionId, event });
+    }
+    removed++;
+  }
+
+  // Rows that entered scope -> added.
+  for (const [id, item] of matchingById) {
+    if (relevant.has(id)) continue;
+    await addRelevantObject(subscriptionId, id);
+    let itemToSend = item;
+    if (subscription.include && relationLoader) {
+      [itemToSend] = await relationLoader([item], subscription.include);
+    }
+    const event: AddedEvent<T> = {
+      id: uuidv4(),
+      subscriptionId,
+      seq: await getNextSeq(subscriptionId),
+      timestamp: Date.now(),
+      type: "added",
+      object: maskForResource(subscription.resource, itemToSend),
+    };
+    if (!sendEvent(subscription.handlerId, event)) {
+      await broadcastEvent({ type: "added", subscriptionId, event });
+    }
+    added++;
+  }
+
+  return { added, removed };
+};
+
 export const getCatchupEvents = async (
   subscriptionId: string,
   sinceSeq: number
@@ -1009,6 +1139,104 @@ export const getCatchupEvents = async (
   }
 
   return await changelog.getEntriesSince(subscription.resource, sinceSeq);
+};
+
+export type CatchupResult = "replayed" | "invalidate" | "no-subscription";
+
+// Replay the changelog entries a resuming client missed, to a SINGLE
+// subscription (other connected subscriptions already received those events
+// live, so the resource-wide push functions must not be reused here). Event
+// classification is derived from each entry's row data against the
+// subscription's compiled filter: a create/update matching the filter becomes
+// added/changed, an update that no longer matches has left scope (removed), and
+// a delete is a removed. When an entry can't be replayed precisely — the resume
+// point was pruned, or a raw-SQL/external entry carries no row data — the client
+// is told to invalidate and refetch, preserving at-least-once delivery instead
+// of silently dropping the missed window. Only entries with seq in
+// (sinceSeq, uptoSeq] are replayed; anything after uptoSeq is delivered live.
+export const sendCatchupEvents = async <T extends Record<string, unknown>>(
+  subscriptionId: string,
+  sinceSeq: number,
+  uptoSeq: number,
+  filterFactory: Filter,
+  idColumn: string,
+  relationLoader?: RelationLoader<T>
+): Promise<CatchupResult> => {
+  const subscription = await getSubscription(subscriptionId);
+  if (!subscription) return "no-subscription";
+
+  if (await changelog.needsInvalidation(sinceSeq)) {
+    await sendInvalidateEvent(subscriptionId, "Sequence gap - please refetch");
+    return "invalidate";
+  }
+
+  const entries = (
+    await changelog.getEntriesSince(subscription.resource, sinceSeq)
+  ).filter((e) => e.seq <= uptoSeq);
+  if (entries.length === 0) return "replayed";
+
+  const compiled = getCompiledFilter(subscription, filterFactory);
+
+  const emit = async (
+    type: "added" | "changed" | "removed",
+    event: SubscriptionEvent
+  ): Promise<void> => {
+    if (!sendEvent(subscription.handlerId, event)) {
+      await broadcastEvent({ type, subscriptionId, event });
+    }
+  };
+
+  for (const entry of entries) {
+    if (entry.type === "delete") {
+      await emit("removed", {
+        id: uuidv4(),
+        subscriptionId,
+        seq: await getNextSeq(subscriptionId),
+        timestamp: Date.now(),
+        type: "removed",
+        objectId: entry.objectId,
+      });
+      continue;
+    }
+
+    // create / update need the row data to be replayed precisely.
+    if (!entry.object || entry.objectId === "*") {
+      await sendInvalidateEvent(subscriptionId, "Catchup unavailable - please refetch");
+      return "invalidate";
+    }
+
+    const object = entry.object as T;
+    const id = String(object[idColumn] ?? entry.objectId);
+    const isRelevant = compiled.execute(object);
+
+    if (isRelevant) {
+      let itemToSend = object;
+      if (subscription.include && relationLoader) {
+        [itemToSend] = await relationLoader([object], subscription.include);
+      }
+      await emit(entry.type === "create" ? "added" : "changed", {
+        id: uuidv4(),
+        subscriptionId,
+        seq: await getNextSeq(subscriptionId),
+        timestamp: Date.now(),
+        type: entry.type === "create" ? "added" : "changed",
+        object: maskForResource(subscription.resource, itemToSend),
+      } as AddedEvent<T> | ChangedEvent<T>);
+    } else if (entry.type === "update") {
+      // Left filter scope -> removed (a no-op for clients that never held it).
+      await emit("removed", {
+        id: uuidv4(),
+        subscriptionId,
+        seq: await getNextSeq(subscriptionId),
+        timestamp: Date.now(),
+        type: "removed",
+        objectId: id,
+      });
+    }
+    // A create that doesn't match the filter was never visible -> nothing to do.
+  }
+
+  return "replayed";
 };
 
 export const isHandlerConnected = (handlerId: string): boolean => {

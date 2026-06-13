@@ -445,6 +445,46 @@ describe("SubscriptionManager", () => {
 
       vi.useRealTimers();
     });
+
+    it("should close the abandoned EventSource when reconnecting after an error", () => {
+      vi.useFakeTimers();
+
+      const created: Array<{
+        close: ReturnType<typeof vi.fn>;
+        onerror: ((e: Event) => void) | null;
+      }> = [];
+      const transport: Transport = {
+        request: vi.fn(),
+        setHeader: vi.fn(),
+        removeHeader: vi.fn(),
+        createEventSource: vi.fn(() => {
+          const es = { addEventListener: vi.fn(), close: vi.fn(), onerror: null };
+          created.push(es);
+          return es as unknown as EventSource;
+        }),
+      };
+
+      new SubscriptionManager<TestItem>({
+        transport,
+        resourcePath: "/items",
+        idField: "id",
+        rng: () => 1,
+      });
+
+      expect(created).toHaveLength(1);
+
+      // The connection errors; the manager schedules its own reconnect.
+      created[0]!.onerror?.(new Event("error"));
+      vi.advanceTimersByTime(1000);
+
+      // A fresh EventSource is created for the reconnect...
+      expect(created).toHaveLength(2);
+      // ...and the abandoned one MUST be closed, otherwise the browser keeps its
+      // own auto-reconnect alive on it, leading to duplicate connections/events.
+      expect(created[0]!.close).toHaveBeenCalled();
+
+      vi.useRealTimers();
+    });
   });
 
   describe("reconnect method", () => {

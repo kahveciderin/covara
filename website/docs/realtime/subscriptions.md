@@ -118,6 +118,8 @@ With a `limit`, you must decide how new items from **other** clients interact wi
 
 **Default:** `strict` when `limit` is set, `live` otherwise.
 
+`subscriptionMode` controls how a paginated list **renders** server-pushed changes; the subscription itself is scoped by your `filter` + auth scope (not by the loaded page window), so each client receives in-scope events and the chosen mode decides what to show.
+
 ```tsx
 useLiveList<Task>("/api/tasks", { limit: 20, subscriptionMode: "sorted", orderBy: "priority:desc" });
 useLiveList<Message>("/api/messages", { limit: 50, subscriptionMode: "append", orderBy: "createdAt:asc" });
@@ -170,6 +172,7 @@ useResource(todos, {
     maxQueueBytes: 65536,         // high-water mark (default 64 KB)
     onBackpressure: "invalidate", // "invalidate" (default) | "disconnect" | "drop"
     heartbeatMs: 30000,
+    scopeRecheckMs: 30000,        // re-resolve each sub's auth scope this often (default 30s; 0 disables)
     maxSubscriptionsPerUser: 50,
     maxSubscriptionsPerIP: 100,
     maxTotalSubscriptions: 10000,
@@ -184,6 +187,8 @@ useResource(todos, {
 ## Auth
 
 Subscriptions respect [auth scopes](../auth/scopes.md) (`auth.subscribe`). If a user's auth expires, the server sends `invalidate` with reason `"Authentication expired"`.
+
+A subscription's scope is otherwise resolved once at connect. To catch **out-of-band** permission changes (e.g. losing org membership without any row mutation), each subscription periodically re-resolves its scope every `sse.scopeRecheckMs` (default 30s, `0` disables) and emits `removed`/`added` for rows that left/entered scope. This reflects changes the scope resolver recomputes on each call (e.g. resolvers that query current membership/roles); a resolver reading only static fields off the connect-time user still requires a reconnect. See the [subscriptions contract](../contracts/subscriptions.md#scope-changes).
 
 ## Cross-instance fan-out
 

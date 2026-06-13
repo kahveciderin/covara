@@ -28,14 +28,15 @@ import {
   pushUpdatesToSubscriptions,
   pushDeletesToSubscriptions,
   sendExistingItems,
-  sendInvalidateEvent,
+  sendCatchupEvents,
+  applyScopeChange,
   registerKnownIds,
   registerResourceMask,
   registerAggregateWatcher,
+  takeRenderer,
 } from "./subscription";
 import {
   createPagination,
-  decodeCursorLegacy,
   parseOrderBy,
 } from "./pagination";
 import {
@@ -145,15 +146,17 @@ export const useResource = <TConfig extends TableConfig>(
     fields: config.fields,
   });
 
-  const relationLoader = config.relations
-    ? new RelationLoader(
-        db,
-        schema as Table<TableConfig>,
-        config.relations as RelationsConfig<TableConfig>,
-        resourceRegistry,
-        config.include
-      )
-    : null;
+  const relationLoader =
+    config.relations || config.autoRelations
+      ? new RelationLoader(
+          db,
+          schema as Table<TableConfig>,
+          (config.relations ?? {}) as RelationsConfig<TableConfig>,
+          resourceRegistry,
+          config.include,
+          config.autoRelations === true
+        )
+      : null;
 
   // Create a subscription relation loader for pushing updates with relations
   const subscriptionRelationLoader = relationLoader
@@ -381,11 +384,18 @@ export const useResource = <TConfig extends TableConfig>(
   };
 
   const resolveScope = async (c: Context, operation: Operation) => {
+    if (c.get("impersonatedId")) {
+      return scopeResolver.resolve(operation, getUser(c));
+    }
     if (await isAdminBypassRequest(c)) return allScope();
     return scopeResolver.resolve(operation, getUser(c));
   };
 
   const requireScope = async (c: Context, operation: Operation) => {
+    if (c.get("impersonatedId")) {
+      await scopeResolver.requirePermission(operation, getUser(c));
+      return;
+    }
     if (await isAdminBypassRequest(c)) return;
     await scopeResolver.requirePermission(operation, getUser(c));
   };
@@ -680,6 +690,7 @@ export const useResource = <TConfig extends TableConfig>(
     heartbeatMs: config.sse?.heartbeatMs ?? 20000,
     maxQueueBytes: config.sse?.maxQueueBytes ?? 65536,
     onBackpressure: config.sse?.onBackpressure ?? "invalidate",
+    scopeRecheckMs: config.sse?.scopeRecheckMs ?? 30000,
   };
 
   const userSubscriptionCounts = new Map<string, number>();
@@ -741,7 +752,12 @@ export const useResource = <TConfig extends TableConfig>(
     userSubscriptionCounts.set(userId, userCount + 1);
     ipSubscriptionCounts.set(clientIP, ipCount + 1);
 
-    registerHandler(handlerId, writer, sseConfig.onBackpressure);
+    // covara/htmx: a one-shot token lets the htmx layer inject an HTML renderer
+    // so this stream emits server-rendered fragments instead of JSON, reusing
+    // all of this handler's scope/resume/heartbeat logic unchanged.
+    const cvRendererToken = c.req.query("__cvRenderer");
+    const cvRenderer = cvRendererToken ? takeRenderer(cvRendererToken) : undefined;
+    registerHandler(handlerId, writer, sseConfig.onBackpressure, cvRenderer);
     activeClients++;
     startEventPolling();
 
@@ -766,8 +782,55 @@ export const useResource = <TConfig extends TableConfig>(
       include: includeQuery,
     });
 
+    // Periodically re-resolve the auth scope so out-of-band permission changes
+    // (e.g. losing org membership) emit added/removed without waiting for a
+    // reconnect. The scope is otherwise frozen at connect time. Only enabled when
+    // the resource has an auth scope configured; the DB scan runs only when the
+    // resolved scope string actually changes.
+    let currentScopeStr = scope.toString() !== "*" ? scope.toString() : undefined;
+    const recheckScope = async () => {
+      if (writer.closed) return;
+      try {
+        const freshScope = await resolveScope(c, "subscribe");
+        const freshStr =
+          freshScope.toString() !== "*" ? freshScope.toString() : undefined;
+        if (freshStr === currentScopeStr) return;
+        currentScopeStr = freshStr;
+
+        const combinedFilter = combineScopes(freshScope, filterQuery);
+        const baseFilter = combinedFilter && combinedFilter !== "*"
+          ? (filterer.convert(combinedFilter) as SQL<unknown>)
+          : undefined;
+        const matchFilter = excludeSoftDeleted(baseFilter);
+        const items = await db.select().from(schema).where(matchFilter);
+
+        await applyScopeChange(
+          subscriptionId,
+          freshStr,
+          items as Record<string, unknown>[],
+          idColumnName,
+          subscriptionRelationLoader
+        );
+      } catch {
+        // Best effort: a transient scope-resolve/query error must not tear down
+        // the live connection. The next tick retries.
+      }
+    };
+
+    const scopeRecheck =
+      config.auth && sseConfig.scopeRecheckMs > 0
+        ? setInterval(() => {
+            if (writer.closed) {
+              clearInterval(scopeRecheck!);
+              return;
+            }
+            void recheckScope();
+          }, sseConfig.scopeRecheckMs)
+        : null;
+
     const cleanup = async () => {
       clearInterval(heartbeat);
+      if (scopeRecheck) clearInterval(scopeRecheck);
       activeClients--;
 
       userSubscriptionCounts.set(
@@ -793,8 +856,28 @@ export const useResource = <TConfig extends TableConfig>(
 
     try {
       if (resumeFrom !== undefined) {
-        if (await changelog.needsInvalidation(resumeFrom)) {
-          await sendInvalidateEvent(subscriptionId, "Sequence gap - please refetch");
+        // Replay the entries missed while disconnected to this one subscription.
+        // On a clean replay, also seed relevantObjectIds with the current
+        // matching set so subsequent live events classify correctly (changed/
+        // removed, not added) for rows the client already holds — without it a
+        // post-reconnect delete would be dropped and leave a ghost item.
+        const result = await sendCatchupEvents(
+          subscriptionId,
+          resumeFrom,
+          currentSeq,
+          filterer as any,
+          idColumnName,
+          subscriptionRelationLoader
+        );
+        if (result === "replayed") {
+          const combinedFilter = combineScopes(scope, filterQuery);
+          const baseFilter = combinedFilter && combinedFilter !== "*"
+            ? (filterer.convert(combinedFilter) as SQL<unknown>)
+            : undefined;
+          const filter = excludeSoftDeleted(baseFilter);
+          const items = await db.select().from(schema).where(filter);
+          const ids = (items as Record<string, unknown>[]).map(item => String(item[idColumnName]));
+          await registerKnownIds(subscriptionId, ids);
         }
       } else if (skipExisting) {
         // Client already has data from paginated GET, just register known IDs
@@ -1241,17 +1324,21 @@ export const useResource = <TConfig extends TableConfig>(
     }
 
     if (paginationParams.cursor) {
-      const cursorData = decodeCursorLegacy(paginationParams.cursor);
-      if (cursorData) {
-        const cursorCondition = pagination.buildCursorCondition(
-          cursorData,
-          orderByFields
-        );
-        if (cursorCondition) {
-          query = query.where(
-            filter ? and(filter, cursorCondition) : cursorCondition
-          ) as any;
-        }
+      // Validate against the request's orderBy so a cursor replayed under a
+      // different ordering (or a corrupted/expired cursor) is rejected with a
+      // clear 4xx instead of silently restarting from the first page.
+      const cursorData = pagination.validateAndDecodeCursor(
+        paginationParams.cursor,
+        paginationParams.orderBy
+      );
+      const cursorCondition = pagination.buildCursorCondition(
+        cursorData,
+        orderByFields
+      );
+      if (cursorCondition) {
+        query = query.where(
+          filter ? and(filter, cursorCondition) : cursorCondition
+        ) as any;
       }
     }
 
@@ -1278,14 +1365,17 @@ export const useResource = <TConfig extends TableConfig>(
       paginationParams.limit,
       idColumnName,
       orderByFields,
-      totalCount
+      totalCount,
+      paginationParams.orderBy
     );
 
     if (relationLoader && includeSpecs.length > 0) {
       result.items = await relationLoader.loadRelationsForItems(
         result.items,
         includeSpecs,
-        idColumnName
+        idColumnName,
+        0,
+        { user: getUser(c), enforceScope: true }
       );
     }
 
@@ -1327,7 +1417,9 @@ export const useResource = <TConfig extends TableConfig>(
       result = await relationLoader.loadRelationsForItem(
         result as Record<string, unknown>,
         includeSpecs,
-        idColumnName
+        idColumnName,
+        0,
+        { user: getUser(c), enforceScope: true }
       );
     }
 
