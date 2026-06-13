@@ -18,6 +18,7 @@ import {
 import { createResourceFilter } from "@/resource/filter";
 import { validateUpload, type UploadValidationOptions } from "./validation";
 import type { ResourceConfig, LifecycleHooks, ProcedureContext } from "@/resource/types";
+import { normalizeResourceConfig, type ResourceConfigInput } from "@/resource/column-ref";
 import { useResource } from "@/resource/hook";
 import { createScopeResolver } from "@/auth/scope";
 import { executeBeforeCreate, executeAfterCreate } from "@/resource/procedures";
@@ -58,8 +59,7 @@ export interface FileTableSchema {
 // relations, subscriptions, scopes, field policies) plus an upload/download
 // layer. FileResourceConfig is therefore a superset of ResourceConfig with the
 // storage-specific options added.
-export interface FileResourceConfig<TConfig extends TableConfig = TableConfig>
-  extends ResourceConfig<TConfig, Table<TConfig>> {
+interface FileResourceExtras {
   storage?: StorageAdapter;
   allowedMimeTypes?: string[];
   maxFileSize?: number;
@@ -70,6 +70,16 @@ export interface FileResourceConfig<TConfig extends TableConfig = TableConfig>
   /** @deprecated columns are read from the table; kept for back-compat. */
   schema?: FileTableSchema;
 }
+
+// Public config: a superset of the resource config (so column-name fields accept
+// Drizzle columns, preferred, or names, deprecated) plus the storage options.
+export interface FileResourceConfig<TConfig extends TableConfig = TableConfig>
+  extends ResourceConfigInput<TConfig, Table<TConfig>>,
+    FileResourceExtras {}
+
+// Internal config after column references are normalized to names.
+type NormalizedFileResourceConfig<TConfig extends TableConfig> =
+  ResourceConfig<TConfig, Table<TConfig>> & FileResourceExtras;
 
 const defaultGenerateKey = (filename: string, userId?: string): string => {
   const timestamp = Date.now();
@@ -109,8 +119,11 @@ const parseMultipartFormData = async (
 
 export const useFileResource = <TConfig extends TableConfig>(
   table: Table<TConfig> & FileTableSchema,
-  config: FileResourceConfig<TConfig>
+  rawConfig: FileResourceConfig<TConfig>
 ): Hono => {
+  // Normalize column-reference fields (Drizzle columns -> names) before reading
+  // generatedFields/fields here and before passing through to useResource.
+  const config = normalizeResourceConfig(rawConfig) as NormalizedFileResourceConfig<TConfig>;
   const storage =
     config.storage ?? (hasGlobalStorage() ? getGlobalStorage() : null);
   if (!storage) {

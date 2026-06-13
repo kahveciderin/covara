@@ -44,7 +44,7 @@ const stats = await builder.executeAggregate({ groupBy: ["category"], count: tru
 The user's scope is always applied, so a query can only narrow within it:
 
 ```typescript
-// auth.read scope: rsql`userId=="${user.id}"`
+// auth.read scope: rsql`userId==${user.id}`
 await builder.executeSelect('status=="draft"');
 // → SELECT * FROM posts WHERE status = 'draft' AND userId = 'user123'
 ```

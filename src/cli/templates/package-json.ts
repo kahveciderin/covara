@@ -1,7 +1,41 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ScaffoldOptions } from "../options.js";
 
+// Pin the generated `covara` dependency to the version of the CLI doing the
+// scaffolding — that version is, by definition, published (it's the same package
+// the user invoked), so `npm install` always resolves. Avoids hand-syncing a
+// hardcoded range with package.json on every release. Falls back to the literal
+// below only if the CLI's own package.json can't be located.
+const FALLBACK_COVARA_VERSION = "^0.9.0";
+
+const resolveCovaraVersion = (): string => {
+  try {
+    let dir = path.dirname(fileURLToPath(import.meta.url));
+    for (let i = 0; i < 10; i++) {
+      const candidate = path.join(dir, "package.json");
+      if (fs.existsSync(candidate)) {
+        const pkg = JSON.parse(fs.readFileSync(candidate, "utf8")) as {
+          name?: string;
+          version?: string;
+        };
+        if (pkg.name === "covara" && pkg.version) {
+          return `^${pkg.version}`;
+        }
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    // fall through to the fallback
+  }
+  return FALLBACK_COVARA_VERSION;
+};
+
 const VERSIONS = {
-  covara: "^0.8.0",
+  covara: resolveCovaraVersion(),
   hono: "^4.12.25",
   drizzleOrm: "^0.45.1",
   zod: "^4.3.5",

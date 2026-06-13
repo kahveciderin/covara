@@ -15,7 +15,7 @@ import {
   AnyColumn,
   getTableColumns,
 } from "drizzle-orm";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { PaginationParams, PaginatedResult } from "./types";
 import { ValidationError, CursorInvalidError, CursorExpiredError } from "./error";
 
@@ -39,12 +39,39 @@ export interface PaginationConfig {
   maxLimit: number;
   cursorMaxAgeMs?: number;
   nullsPosition?: "first" | "last";
+  // When set, cursors are signed: the encoded payload is suffixed with
+  // `.<hmac-sha256(payload, secret)>` and the signature is verified on decode,
+  // so a client cannot forge or alter a cursor's payload. Optional — without a
+  // secret, cursors are unsigned (still safe: see the pagination contract).
+  cursorSigningSecret?: string;
 }
 
 const DEFAULT_CONFIG: PaginationConfig = {
   defaultLimit: 20,
   maxLimit: 100,
   nullsPosition: "last",
+};
+
+// Global default cursor signing secret. A per-resource secret overrides this;
+// an explicit `null` on a resource opts that resource out even when set here.
+let globalCursorSigningSecret: string | undefined;
+
+export const setGlobalCursorSigningSecret = (secret: string | null | undefined): void => {
+  globalCursorSigningSecret = secret ?? undefined;
+};
+
+export const getGlobalCursorSigningSecret = (): string | undefined =>
+  globalCursorSigningSecret;
+
+const signPayload = (payload: string, secret: string): string =>
+  createHmac("sha256", secret).update(payload).digest("base64url");
+
+const verifyPayload = (payload: string, signature: string, secret: string): boolean => {
+  const expected = signPayload(payload, secret);
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 };
 
 export const hashOrderBy = (orderBy: string | undefined): string => {
@@ -54,7 +81,8 @@ export const hashOrderBy = (orderBy: string | undefined): string => {
 
 export const encodeCursor = (
   data: Omit<CursorData, "_ver" | "_orderByHash" | "_ts">,
-  orderBy?: string
+  orderBy?: string,
+  secret?: string
 ): string => {
   const fullData: CursorData = {
     ...data,
@@ -62,20 +90,36 @@ export const encodeCursor = (
     _orderByHash: hashOrderBy(orderBy),
     _ts: Date.now(),
   };
-  return Buffer.from(JSON.stringify(fullData)).toString("base64url");
+  const payload = Buffer.from(JSON.stringify(fullData)).toString("base64url");
+  // Sign the payload so a tampered/forged cursor is detectable. base64url never
+  // contains ".", so it's a safe delimiter between payload and signature.
+  return secret ? `${payload}.${signPayload(payload, secret)}` : payload;
 };
 
 export type CursorDecodeResult =
   | { success: true; data: CursorData }
-  | { success: false; error: "malformed" | "version_mismatch" | "orderby_mismatch" | "expired" };
+  | { success: false; error: "malformed" | "version_mismatch" | "orderby_mismatch" | "expired" | "tampered" };
 
 export const decodeCursor = (
   cursor: string,
   expectedOrderBy?: string,
-  config?: PaginationConfig
+  config?: PaginationConfig,
+  secret?: string
 ): CursorDecodeResult => {
   try {
-    const decoded = Buffer.from(cursor, "base64url").toString("utf-8");
+    const dot = cursor.indexOf(".");
+    const payload = dot === -1 ? cursor : cursor.slice(0, dot);
+    const signature = dot === -1 ? undefined : cursor.slice(dot + 1);
+
+    // When a signing secret is configured, the cursor MUST carry a valid
+    // signature — a missing or mismatched signature means it was forged/altered.
+    if (secret) {
+      if (!signature || !verifyPayload(payload, signature, secret)) {
+        return { success: false, error: "tampered" };
+      }
+    }
+
+    const decoded = Buffer.from(payload, "base64url").toString("utf-8");
     const data = JSON.parse(decoded);
 
     if (typeof data !== "object" || data === null) {
@@ -339,7 +383,8 @@ export const processPaginatedResults = <T extends Record<string, unknown>>(
   idColumn: string,
   orderByFields: OrderByField[],
   totalCount?: number,
-  orderBy?: string
+  orderBy?: string,
+  secret?: string
 ): PaginatedResult<T> => {
   const hasMore = items.length > limit;
   const resultItems = hasMore ? items.slice(0, limit) : items;
@@ -349,7 +394,8 @@ export const processPaginatedResults = <T extends Record<string, unknown>>(
     const lastItem = resultItems[resultItems.length - 1]!;
     nextCursor = encodeCursor(
       extractCursorValues(lastItem, idColumn, orderByFields),
-      orderBy
+      orderBy,
+      secret
     );
   }
 
@@ -407,9 +453,10 @@ export const parsePaginationFromQuery = (
 export const validateAndDecodeCursor = (
   cursor: string,
   expectedOrderBy?: string,
-  config?: PaginationConfig
+  config?: PaginationConfig,
+  secret?: string
 ): CursorData => {
-  const result = decodeCursor(cursor, expectedOrderBy, config);
+  const result = decodeCursor(cursor, expectedOrderBy, config, secret);
 
   if (!result.success) {
     switch (result.error) {
@@ -417,6 +464,8 @@ export const validateAndDecodeCursor = (
         throw new CursorInvalidError("malformed");
       case "version_mismatch":
         throw new CursorInvalidError("version_mismatch");
+      case "tampered":
+        throw new CursorInvalidError("tampered");
       case "orderby_mismatch":
         throw new CursorInvalidError("orderby_mismatch", {
           suggestion: "The orderBy parameter must match the original query",
@@ -475,19 +524,20 @@ export const createPagination = <TConfig extends TableConfig>(
         idColumnName,
         orderByFields,
         totalCount,
-        orderBy
+        orderBy,
+        mergedConfig.cursorSigningSecret
       ),
 
     encodeCursor: (
       data: Omit<CursorData, "_ver" | "_orderByHash" | "_ts">,
       orderBy?: string
-    ) => encodeCursor(data, orderBy),
+    ) => encodeCursor(data, orderBy, mergedConfig.cursorSigningSecret),
 
     decodeCursor: (cursor: string, orderBy?: string) =>
-      decodeCursor(cursor, orderBy, mergedConfig),
+      decodeCursor(cursor, orderBy, mergedConfig, mergedConfig.cursorSigningSecret),
 
     validateAndDecodeCursor: (cursor: string, orderBy?: string) =>
-      validateAndDecodeCursor(cursor, orderBy, mergedConfig),
+      validateAndDecodeCursor(cursor, orderBy, mergedConfig, mergedConfig.cursorSigningSecret),
 
     parseOrderBy,
 

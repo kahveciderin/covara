@@ -92,14 +92,14 @@ Authorization scopes per operation. Each scope is a function of the current user
     public: { read: true, subscribe: true }, // allow anonymous read/subscribe
     read: async (user) => rsql`*`,
     create: async (user) => (user ? rsql`*` : rsql``),
-    update: async (user) => rsql`userId=="${user.id}"`,
-    delete: async (user) => rsql`userId=="${user.id}"`,
-    subscribe: async (user) => rsql`userId=="${user.id}"`,
+    update: async (user) => rsql`userId==${user.id}`,
+    delete: async (user) => rsql`userId==${user.id}`,
+    subscribe: async (user) => rsql`userId==${user.id}`,
   },
 }
 ```
 
-A scope function's return value decides **which rows** the operation may touch: `` rsql`*` `` allows everything, `` rsql`userId=="${user.id}"` `` restricts to matching rows (AND-combined with the request `?filter=`), and `` rsql`` `` (empty) denies entirely. Omit a scope to deny that operation for everyone except where `public` grants it.
+A scope function's return value decides **which rows** the operation may touch: `` rsql`*` `` allows everything, `` rsql`userId==${user.id}` `` restricts to matching rows (AND-combined with the request `?filter=`), and `` rsql`` `` (empty) denies entirely. Omit a scope to deny that operation for everyone except where `public` grants it.
 
 #### `public` vs a scope returning `` rsql`*` ``
 
@@ -136,15 +136,15 @@ Enable/disable whole operations. All default to `true`. Reading, filtering, and 
 
 ### `fields`
 
-Field-level policies. See [Fields: masking, writable, computed](./fields.md) for full behavior and security guarantees.
+Field-level policies. See [Fields: masking, writable, computed](./fields.md) for full behavior and security guarantees. Every column-name option below takes the **Drizzle column** (like `id`); string column names also work but are deprecated.
 
 ```typescript
 {
   fields: {
-    readable: ["id", "name", "email", "createdAt"], // allowlist; everything else stripped from responses
-    writable: ["name", "email"],                     // enforced allowlist for create/update (mass-assignment protection)
-    filterable: ["name", "email", "createdAt"],      // columns allowed in ?filter=
-    sortable: ["name", "createdAt"],                  // columns allowed in ?orderBy=
+    readable: [users.id, users.name, users.email, users.createdAt], // allowlist; everything else stripped from responses
+    writable: [users.name, users.email],                            // enforced allowlist for create/update (mass-assignment protection)
+    filterable: [users.name, users.email, users.createdAt],         // columns allowed in ?filter=
+    sortable: [users.name, users.createdAt],                        // columns allowed in ?orderBy=
   },
 }
 ```
@@ -154,7 +154,7 @@ Field-level policies. See [Fields: masking, writable, computed](./fields.md) for
 Columns the server fills in (id, timestamps, ownership). They are exempt from `fields.writable` stripping (a hook can set them) and may be omitted from inbound bodies even with `strictInput`.
 
 ```typescript
-{ generatedFields: ["id", "userId", "createdAt", "updatedAt"] }
+{ generatedFields: [users.id, users.userId, users.createdAt, users.updatedAt] }
 ```
 
 ### `strictInput`
@@ -199,7 +199,7 @@ See [Batch operations](./batch.md).
 Optimistic concurrency control. See [Optimistic locking](./optimistic-locking.md).
 
 ```typescript
-{ etag: { versionField: "version" } } // or { updatedAtField: "updatedAt" }
+{ etag: { versionField: posts.version } } // or { updatedAtField: posts.updatedAt }
 ```
 
 ### `softDelete`
@@ -207,7 +207,7 @@ Optimistic concurrency control. See [Optimistic locking](./optimistic-locking.md
 Mark rows deleted instead of removing them. See [Soft delete](./soft-delete.md).
 
 ```typescript
-{ softDelete: { field: "deletedAt" } }
+{ softDelete: { field: posts.deletedAt } }
 ```
 
 ### `relations`

@@ -40,10 +40,12 @@ const client = createClient({
 });
 const db = drizzle(client);
 
-const app = createCovara({ cors: true }).resource(todos, {
+const app = createCovara({ cors: true, adminUI: true }).resource(todos, {
   db,
   id: todos.id,
-  auth: { public: true },
+  // Public CRUD so the starter works end-to-end. Lock this down with auth
+  // scopes before deploying: https://github.com/kahveciderin/covara#auth
+  auth: { public: { read: true, create: true, update: true, delete: true } },
 });
 
 const server = await startServer(app, {
@@ -51,7 +53,8 @@ const server = await startServer(app, {
 });
 
 console.log(\`Covara running at http://localhost:\${server.port}\`);
-console.log(\`Try: curl http://localhost:\${server.port}/api/todos\`);
+console.log(\`Create: curl -X POST http://localhost:\${server.port}/api/todos -H 'content-type: application/json' -d '{"title":"hello"}'\`);
+console.log(\`List:   curl http://localhost:\${server.port}/api/todos\`);
 `;
 
 export const NODE_POSTGRES_INDEX = `import postgres from "postgres";
@@ -67,10 +70,12 @@ if (!process.env.DATABASE_URL) {
 const client = postgres(process.env.DATABASE_URL);
 const db = drizzle(client);
 
-const app = createCovara({ cors: true }).resource(todos, {
+const app = createCovara({ cors: true, adminUI: true }).resource(todos, {
   db,
   id: todos.id,
-  auth: { public: true },
+  // Public CRUD so the starter works end-to-end. Lock this down with auth
+  // scopes before deploying: https://github.com/kahveciderin/covara#auth
+  auth: { public: { read: true, create: true, update: true, delete: true } },
 });
 
 const server = await startServer(app, {
@@ -78,7 +83,8 @@ const server = await startServer(app, {
 });
 
 console.log(\`Covara running at http://localhost:\${server.port}\`);
-console.log(\`Try: curl http://localhost:\${server.port}/api/todos\`);
+console.log(\`Create: curl -X POST http://localhost:\${server.port}/api/todos -H 'content-type: application/json' -d '{"title":"hello"}'\`);
+console.log(\`List:   curl http://localhost:\${server.port}/api/todos\`);
 `;
 
 export const renderNodeIndex = (options: ScaffoldOptions): string =>
@@ -109,10 +115,12 @@ const buildApp = (env: Env): CovaraApp => {
   void initializeEventSubscription();
 
   const db = drizzle(env.DB);
-  return createCovara({ cors: true }).resource(todos, {
+  return createCovara({ cors: true, adminUI: true }).resource(todos, {
     db,
     id: todos.id,
-    auth: { public: true },
+    // Public CRUD so the starter works end-to-end. Lock this down with auth
+    // scopes before deploying: https://github.com/kahveciderin/covara#auth
+    auth: { public: { read: true, create: true, update: true, delete: true } },
   });
 };
 
@@ -151,10 +159,12 @@ const buildApp = (env: Env): CovaraApp => {
 
   const client = postgres(env.DATABASE_URL, { max: 5, fetch_types: false });
   const db = drizzle(client);
-  return createCovara({ cors: true }).resource(todos, {
+  return createCovara({ cors: true, adminUI: true }).resource(todos, {
     db,
     id: todos.id,
-    auth: { public: true },
+    // Public CRUD so the starter works end-to-end. Lock this down with auth
+    // scopes before deploying: https://github.com/kahveciderin/covara#auth
+    auth: { public: { read: true, create: true, update: true, delete: true } },
   });
 };
 

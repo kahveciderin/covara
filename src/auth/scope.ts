@@ -13,19 +13,14 @@ export class ScopeResolver {
   isPublic(operation: Operation): boolean {
     if (!this.config.public) return false;
 
+    // Boolean form stays read/subscribe-only (writes require auth) for safety and
+    // back-compat. The object form opts each operation in explicitly, including
+    // create/update/delete for fully-public resources.
     if (typeof this.config.public === "boolean") {
       return this.config.public && (operation === "read" || operation === "subscribe");
     }
 
-    if (operation === "read") {
-      return this.config.public.read === true;
-    }
-
-    if (operation === "subscribe") {
-      return this.config.public.subscribe === true;
-    }
-
-    return false;
+    return this.config.public[operation] === true;
   }
 
   private getScopeFunction(operation: Operation): ScopeFunction | undefined {

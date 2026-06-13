@@ -13,6 +13,8 @@ export {
   decodeCursor,
   parseOrderBy,
   createPagination,
+  setGlobalCursorSigningSecret,
+  getGlobalCursorSigningSecret,
   type CursorData,
   type PaginationConfig,
   type OrderByField,
@@ -42,6 +44,19 @@ export type {
   ProcedureContext,
   WriteEffect,
 } from "./resource/types";
+export {
+  columnName,
+  columnNames,
+  type ColumnRef,
+  type ResourceConfigInput,
+  type ETagResourceConfigInput,
+  type FieldPoliciesInput,
+  type FilterConfigInput,
+  type ResourceSearchConfigInput,
+  type SoftDeleteConfigInput,
+  type RelationConfigInput,
+  type RelationsConfigInput,
+} from "./resource/column-ref";
 
 // Subscriptions
 export {

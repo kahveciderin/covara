@@ -33,7 +33,7 @@ const app = createCovara({ cors: true })
   .resource("/todos", todosTable, {
     id: todosTable.id,
     db,
-    auth: { update: async (user) => rsql`userId=="${user.id}"` },
+    auth: { update: async (user) => rsql`userId==${user.id}` },
   });
 
 // client: the API becomes live UI
@@ -294,8 +294,8 @@ app.resource("/posts", postsTable, {
   // Authorization scopes (row-level security via RSQL)
   auth: {
     public: { read: true },
-    update: async (user) => rsql`authorId=="${user.id}"`,
-    delete: async (user) => rsql`authorId=="${user.id}"`,
+    update: async (user) => rsql`authorId==${user.id}`,
+    delete: async (user) => rsql`authorId==${user.id}`,
   },
 
   // Relations

@@ -72,7 +72,26 @@ A cursor is base64-encoded JSON capturing the last row's sort values and ID plus
 { "values": { "name": "Alice", "id": 42 }, "orderBy": ["name:asc", "id:asc"] }
 ```
 
-Cursors are tamper-evident — a modified cursor fails validation with a `400`. See the [pagination contract](../contracts/pagination.md) for the cursor-integrity guarantees. **Do not** change `orderBy` between pages while reusing a cursor; the cursor encodes the order it was issued for.
+By default a cursor is **validated** (version, structure, and an `orderBy` fingerprint), so a malformed cursor or one replayed under a different `orderBy` fails with a `400`. The payload itself is base64-readable and not cryptographically protected — but it doesn't need to be: a cursor only encodes a keyset *position*, and every query still runs through the resource's auth scope + filter, so a forged position can't widen access. **Do not** change `orderBy` between pages while reusing a cursor; the cursor encodes the order it was issued for.
+
+### Signed cursors (optional)
+
+Set a `cursorSigningSecret` to HMAC-sign cursors — the encoded payload is suffixed with `.<hmac-sha256(payload, secret)>` and the signature is verified on decode, so a tampered or forged cursor is rejected with a `400` (`reason: "tampered"`). Configure it per resource or globally:
+
+```typescript
+import { setGlobalCursorSigningSecret } from "covara";
+
+// Global default for every resource:
+setGlobalCursorSigningSecret(process.env.CURSOR_SECRET);
+
+useResource(usersTable, {
+  id: usersTable.id,
+  db,
+  cursorSigningSecret: process.env.CURSOR_SECRET, // per-resource (overrides global)
+});
+```
+
+Resolution: a resource's `cursorSigningSecret` overrides the global one; set it to `null` to disable signing for that resource even when a global secret is configured; leave it unset (`undefined`) to inherit the global. With no secret anywhere, cursors are unsigned (still validated as above). See the [pagination contract](../contracts/pagination.md) for the integrity guarantees.
 
 ## Client usage
 

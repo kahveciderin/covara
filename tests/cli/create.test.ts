@@ -100,7 +100,8 @@ describe("scaffoldProject", () => {
       expect(index).toContain('from "drizzle-orm/libsql"');
       expect(index).toContain("createCovara");
       expect(index).toContain('startServer } from "covara/node"');
-      expect(index).toContain("auth: { public: true }");
+      // Starter ships fully-public CRUD so it works end-to-end out of the box.
+      expect(index).toContain("public: { read: true, create: true, update: true, delete: true }");
       expect(index).toContain("process.env.PORT");
       expect(index).toContain("process.env.DB_FILE_NAME");
       const drizzleConfig = read(targetDir, "drizzle.config.ts");
@@ -222,6 +223,10 @@ describe("scaffoldProject", () => {
         const pkg = readJson(targetDir, "package.json");
         expect(pkg.name).toBe(variant.name);
         expect(pkg.dependencies["covara"]).toBeDefined();
+        // The covara dep is pinned to the CLI's own (published) version so a
+        // freshly created project always installs — not a hand-synced literal.
+        const cliVersion = readJson(process.cwd(), "package.json").version as string;
+        expect(pkg.dependencies["covara"]).toBe(`^${cliVersion}`);
         expect(pkg.dependencies.hono).toBeDefined();
         expect(pkg.dependencies["drizzle-orm"]).toBeDefined();
         expect(pkg.dependencies.zod).toBeDefined();

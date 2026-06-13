@@ -17,21 +17,23 @@ useResource(postsTable, {
   db,
   auth: {
     public: { read: true },                                  // anonymous read
-    update: async (user) => rsql`authorId=="${user.id}"`,    // own posts only
+    update: async (user) => rsql`authorId==${user.id}`,    // own posts only
     delete: async (user) =>
-      user.metadata?.role === "admin" ? rsql`*` : rsql`authorId=="${user.id}"`,
-    subscribe: async (user) => rsql`authorId=="${user.id}"`, // live stream scope
+      user.metadata?.role === "admin" ? rsql`*` : rsql`authorId==${user.id}`,
+    subscribe: async (user) => rsql`authorId==${user.id}`, // live stream scope
   },
 });
 ```
 
 | Return | Meaning |
 |--------|---------|
-| `rsql\`*\`` | Allow all rows for this operation. |
-| `rsql\`<expr>\`` | Allow only rows matching the expression. |
-| `rsql\`\`` (empty) | Deny — no rows. |
+| `` rsql`*` `` | Allow all rows for this operation. |
+| `` rsql`<expr>` `` | Allow only rows matching the expression. |
+| ``` rsql`` ``` (empty) | Deny — no rows. |
 
-Operations: `read`, `create`, `update`, `delete`, `subscribe`. Omit one to deny it (unless `public` grants it). `public` accepts `{ read, subscribe }` flags (or `true`) for anonymous access.
+Operations: `read`, `create`, `update`, `delete`, `subscribe`. Omit one to deny it (unless `public` grants it).
+
+**Anonymous access — `public`.** `public: true` makes **read and subscribe** public (writes still require auth — a safe default). The object form opts each operation in explicitly and can open **writes** too: `public: { read: true, create: true, update: true, delete: true }` for a fully-public resource (e.g. a prototype or a genuinely open collection). An operation not granted by `public` and reached without a user returns `401`.
 
 ```mermaid
 flowchart LR
@@ -68,7 +70,7 @@ const d = like("email", "%@example.com");  // emits %=
 const e = notLike("email", "%@spam.com");  // emits !%=
 
 // equivalent template form:
-const scope = rsql`userId=="${user.id}";status=="active"`;
+const scope = rsql`userId==${user.id};status=="active"`;
 ```
 
 :::note No NOT combinator
@@ -81,8 +83,8 @@ The filter grammar has no `NOT` combinator, so there is no `not()` helper. Use t
 import { rsql } from "covara";
 
 auth: {
-  update: async (user) => rsql`userId=="${user.id}"`,
-  delete: async (user) => rsql`userId=="${user.id}"`,
+  update: async (user) => rsql`userId==${user.id}`,
+  delete: async (user) => rsql`userId==${user.id}`,
 }
 ```
 

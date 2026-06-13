@@ -275,7 +275,7 @@ const app = createCovara({
       update: async (user) => rsql`userId==${user?.id}`,
       delete: async (user) => rsql`userId==${user?.id}`,
     },
-    generatedFields: ["id", "userId", "createdAt"],
+    generatedFields: [categoriesTable.id, categoriesTable.userId, categoriesTable.createdAt],
     hooks: {
       onBeforeCreate: async (ctx, data) => {
         if (!ctx.user) throw new UnauthorizedError("Must be logged in");
@@ -297,7 +297,7 @@ const app = createCovara({
       update: async (user) => rsql`userId==${user?.id}`,
       delete: async (user) => rsql`userId==${user?.id}`,
     },
-    generatedFields: ["id", "userId", "createdAt"],
+    generatedFields: [tagsTable.id, tagsTable.userId, tagsTable.createdAt],
     hooks: {
       onBeforeCreate: async (ctx, data) => {
         if (!ctx.user) throw new UnauthorizedError("Must be logged in");
@@ -328,7 +328,7 @@ const app = createCovara({
       delete: async (user) => rsql`userId==${user?.id}`,
       subscribe: async (user) => rsql`userId==${user?.id}`,
     },
-    generatedFields: ["id", "userId", "position", "createdAt", "updatedAt"],
+    generatedFields: [todosTable.id, todosTable.userId, todosTable.position, todosTable.createdAt, todosTable.updatedAt],
     relations: {
       category: {
         resource: "categories",

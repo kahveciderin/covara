@@ -108,7 +108,7 @@ useResource(todos, {
 });
 ```
 
-`fields` also accepts a plain array — `fields: ["title", "description"]` — to restrict searchable columns without weights.
+`fields` also accepts a plain array — `fields: [posts.title, posts.description]` — to restrict searchable columns without weights. Array entries take the Drizzle column (preferred) or a column-name string (deprecated). The record/weights form is keyed by column name.
 
 ## Transactional outbox (at-least-once indexing)
 

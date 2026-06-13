@@ -6,7 +6,8 @@ import { observabilityMiddleware, type ObservabilityConfig } from "@/middleware/
 import { useResource } from "@/resource/hook";
 import { useFileResource, type FileResourceConfig, type FileTableSchema } from "@/storage";
 import { hasGlobalStorage, getGlobalStorage } from "@/storage/types";
-import type { ResourceConfig, UserContext } from "@/resource/types";
+import type { UserContext } from "@/resource/types";
+import type { ResourceConfigInput } from "@/resource/column-ref";
 import { createHealthEndpoints, type HealthConfig } from "@/health";
 import { createAdminUI, createAdminRequestLogger, createAdminBypassPredicate, setResourceMountPath, type AdminUIConfig } from "@/ui";
 import { setAdminBypassPredicate } from "@/server/admin-bypass";
@@ -213,21 +214,21 @@ export class CovaraApp extends Hono {
 
   resource<TConfig extends TableConfig>(
     schema: Table<TConfig>,
-    config: ResourceConfig<TConfig, Table<TConfig>>
+    config: ResourceConfigInput<TConfig, Table<TConfig>>
   ): this;
   resource<TConfig extends TableConfig>(
     path: string,
     schema: Table<TConfig>,
-    config: ResourceConfig<TConfig, Table<TConfig>>
+    config: ResourceConfigInput<TConfig, Table<TConfig>>
   ): this;
   resource<TConfig extends TableConfig>(
     pathOrSchema: string | Table<TConfig>,
-    schemaOrConfig: Table<TConfig> | ResourceConfig<TConfig, Table<TConfig>>,
-    maybeConfig?: ResourceConfig<TConfig, Table<TConfig>>
+    schemaOrConfig: Table<TConfig> | ResourceConfigInput<TConfig, Table<TConfig>>,
+    maybeConfig?: ResourceConfigInput<TConfig, Table<TConfig>>
   ): this {
     let path: string;
     let schema: Table<TConfig>;
-    let config: ResourceConfig<TConfig, Table<TConfig>>;
+    let config: ResourceConfigInput<TConfig, Table<TConfig>>;
 
     if (typeof pathOrSchema === "string") {
       path = pathOrSchema.startsWith("/") ? pathOrSchema : `/${pathOrSchema}`;
@@ -236,7 +237,7 @@ export class CovaraApp extends Hono {
     } else {
       schema = pathOrSchema;
       path = `/${getTableName(schema)}`;
-      config = schemaOrConfig as ResourceConfig<TConfig, Table<TConfig>>;
+      config = schemaOrConfig as ResourceConfigInput<TConfig, Table<TConfig>>;
     }
 
     const mountPath = `${this.resourceBasePath}${path}`;

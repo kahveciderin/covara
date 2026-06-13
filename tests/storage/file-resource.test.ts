@@ -79,6 +79,31 @@ describe("Unified file resource", () => {
     expect(await storage.exists(body.storagePath)).toBe(true);
   });
 
+  it("accepts Drizzle column objects for fields.readable and masks correctly", async () => {
+    const app = createTestApp({ user: { id: "u1" } });
+    app.route(
+      "/files",
+      useFileResource(filesTable, {
+        db,
+        id: filesTable.id,
+        storage,
+        fields: { readable: [filesTable.id, filesTable.filename, filesTable.status] },
+      })
+    );
+
+    const up = await app.request("/files", { method: "POST", body: makeForm("a.txt", "hello") });
+    expect(up.status).toBe(201);
+    const created = await up.json();
+
+    const res = await app.request(`/files/${created.id}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.filename).toBe("a.txt");
+    expect(body.id).toBe(created.id);
+    // storagePath is not in the readable allowlist -> masked out.
+    expect("storagePath" in body).toBe(false);
+  });
+
   it("lists with the standard resource shape ({ items })", async () => {
     const app = createTestApp({ user: { id: "u1" } });
     app.route("/files", useFileResource(filesTable, { db, id: filesTable.id, storage }));

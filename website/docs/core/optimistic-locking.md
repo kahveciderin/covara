@@ -14,13 +14,15 @@ useResource(postsTable, {
   id: postsTable.id,
   db,
   etag: {
-    versionField: "version",      // integer column, auto-incremented on every update
-    // updatedAtField: "updatedAt",  // alternative: timestamp-based tags
-    // idField: "id",                // paired with updatedAtField (default "id")
-    // algorithm: "weak",            // "weak" (default) or "strong"
+    versionField: postsTable.version,      // integer column, auto-incremented on every update
+    // updatedAtField: postsTable.updatedAt,  // alternative: timestamp-based tags
+    // idField: postsTable.id,                // paired with updatedAtField (default "id")
+    // algorithm: "weak",                      // "weak" (default) or "strong"
   },
 });
 ```
+
+Pass the **Drizzle column** to `versionField`/`updatedAtField`/`idField` (like `id`); a string column name also works but is deprecated.
 
 Without the `etag` config, no ETag headers are emitted and conditional headers are ignored.
 

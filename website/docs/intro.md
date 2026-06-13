@@ -10,7 +10,7 @@ description: Covara turns your Drizzle schema into a complete, production-ready 
 
 **Your Drizzle schema is already a backend.**
 
-Covara turns a Drizzle ORM schema into a complete, production-ready API — REST endpoints, real-time subscriptions, auth, file uploads, billing, email, and background jobs — with a type-safe, offline-first TypeScript client on the other end. It is built on [Hono](https://hono.dev) and runs standalone on Node or at the edge on Cloudflare Workers.
+Covara turns a [Drizzle ORM](https://orm.drizzle.team) schema into a complete, production-ready API — REST endpoints, real-time subscriptions, auth, file uploads, billing, email, and background jobs — with a type-safe, offline-first TypeScript client on the other end. It is built on [Hono](https://hono.dev) and runs standalone on Node or at the edge on Cloudflare Workers.
 
 ## The problem Covara solves
 
@@ -35,7 +35,7 @@ import { startServer } from "covara/node";
 const app = createCovara({ cors: true }).resource("/todos", todosTable, {
   id: todosTable.id,
   db,
-  auth: { update: async (user) => rsql`userId=="${user.id}"` },
+  auth: { update: async (user) => rsql`userId==${user.id}` },
 });
 
 await startServer(app, { port: 3000 });

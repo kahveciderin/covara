@@ -38,6 +38,7 @@ import {
 import {
   createPagination,
   parseOrderBy,
+  getGlobalCursorSigningSecret,
 } from "./pagination";
 import {
   parseSelect,
@@ -59,6 +60,7 @@ import {
 } from "./procedures";
 import { trackMutations, isTrackedDb } from "./track-mutations";
 import { makeTxRunner } from "./transaction";
+import { normalizeResourceConfig, type ResourceConfigInput } from "./column-ref";
 import {
   ResourceConfig,
   CustomOperator,
@@ -115,8 +117,11 @@ export const getResourceRegistry = () => resourceRegistry;
 
 export const useResource = <TConfig extends TableConfig>(
   schema: Table<TConfig>,
-  config: ResourceConfig<TConfig, Table<TConfig>>
+  rawConfig: ResourceConfigInput<TConfig, Table<TConfig>>
 ): Hono => {
+  // Column-reference config fields accept Drizzle columns (preferred) or names
+  // (deprecated); normalize them to names so the rest of the layer is unchanged.
+  const config = normalizeResourceConfig(rawConfig);
   const db = config.db;
   const resourceName = getTableName(schema);
   const idColumnName = config.id.name;
@@ -201,11 +206,18 @@ export const useResource = <TConfig extends TableConfig>(
 
   const filterer = createResourceFilter(schema, config.customOperators ?? {});
 
-  const pagination = createPagination(
-    schema,
-    config.id,
-    config.pagination ?? DEFAULT_PAGINATION
-  );
+  // Resource cursor signing secret overrides the global one; an explicit `null`
+  // opts this resource out even when a global secret is set. `undefined` (unset)
+  // falls back to the global secret.
+  const cursorSigningSecret =
+    (config.cursorSigningSecret !== undefined
+      ? config.cursorSigningSecret
+      : getGlobalCursorSigningSecret()) || undefined;
+
+  const pagination = createPagination(schema, config.id, {
+    ...(config.pagination ?? DEFAULT_PAGINATION),
+    cursorSigningSecret,
+  });
 
   const scopeResolver = createScopeResolver(config.auth, resourceName);
 

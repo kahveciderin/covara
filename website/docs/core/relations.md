@@ -31,7 +31,7 @@ useResource(postsTable, {
       type: "belongsTo",
       foreignKey: postsTable.authorId,
       references: usersTable.id,
-      defaultSelect: ["id", "name", "avatar"], // limit fields returned
+      defaultSelect: [usersTable.id, usersTable.name, usersTable.avatar], // limit fields returned (columns of the related table)
     },
     comments: {
       resource: "comments",

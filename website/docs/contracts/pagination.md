@@ -3,7 +3,9 @@
 ## Guarantees
 
 ### Cursor Integrity
-- **Tamper detection**: Modified cursors are rejected with clear error
+- **Structural validation (always)**: malformed cursors, a version mismatch, or a cursor replayed under a different `orderBy` are rejected with a clear `400` (`CURSOR_INVALID`). Optional `cursorMaxAgeMs` rejects stale cursors.
+- **Signature verification (when a secret is configured)**: with a `cursorSigningSecret` (per-resource or global via `setGlobalCursorSigningSecret`), each cursor is suffixed with `.<hmac-sha256(payload, secret)>` and the signature is verified on decode (constant-time). A forged or altered payload — or one signed with a different secret, or unsigned — is rejected as `reason: "tampered"`. A resource secret overrides the global; an explicit `null` opts a resource out; unset inherits the global.
+- **Not a security boundary either way**: a cursor encodes only a keyset position and its values are bound as parameterized SQL; every query still applies the resource's auth scope + filter, so even an unsigned/forged cursor cannot widen access or inject SQL. Signing adds integrity/anti-forgery on top.
 - **Encoding stability**: Cursor format is stable within major version
 - **Opaque to client**: Cursors are treated as opaque strings; clients should not parse them
 

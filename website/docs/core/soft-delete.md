@@ -16,13 +16,13 @@ useResource(postsTable, {
   id: postsTable.id,
   db,
   softDelete: {
-    field: "deletedAt",            // column used as the deletion marker
+    field: postsTable.deletedAt,   // column used as the deletion marker
     // deletedValue: () => Date.now(), // optional; defaults to current ISO timestamp
   },
 });
 ```
 
-A row is considered deleted when the `field` column is **non-null**.
+A row is considered deleted when the `field` column is **non-null**. Pass the **Drizzle column** (like `id`); a string column name also works but is deprecated.
 
 ## Behavior
 
@@ -43,8 +43,8 @@ GET    /api/posts?withDeleted=true   # p1 is included
 Use `deletedValue` for non-timestamp columns. The column counts as "deleted" whenever it is non-null.
 
 ```typescript
-softDelete: { field: "isDeleted", deletedValue: () => 1 }   // integer flag
-softDelete: { field: "deletedAt", deletedValue: () => Date.now() } // numeric epoch
+softDelete: { field: postsTable.isDeleted, deletedValue: () => 1 }   // integer flag
+softDelete: { field: postsTable.deletedAt, deletedValue: () => Date.now() } // numeric epoch
 ```
 
 ## Restoring

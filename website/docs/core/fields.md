@@ -9,15 +9,17 @@ description: Field-level read masking, enforced writable allowlists (mass-assign
 
 The `fields` config controls, per column, what clients can **read**, **write**, **filter**, and **sort** by. Combined with `computed`, `generatedFields`, and `strictInput`, it gives you defense against mass-assignment and over-exposure with no extra code.
 
+Pass the **Drizzle column** (like `id`); a string column name also works but is deprecated.
+
 ```typescript
 useResource(usersTable, {
   id: usersTable.id,
   db,
   fields: {
-    readable: ["id", "name", "email", "createdAt"],
-    writable: ["name", "email"],
-    filterable: ["name", "email", "createdAt"],
-    sortable: ["name", "createdAt"],
+    readable: [usersTable.id, usersTable.name, usersTable.email, usersTable.createdAt],
+    writable: [usersTable.name, usersTable.email],
+    filterable: [usersTable.name, usersTable.email, usersTable.createdAt],
+    sortable: [usersTable.name, usersTable.createdAt],
   },
 });
 ```
@@ -31,7 +33,7 @@ The mask is applied server-side, so a client **cannot** recover a hidden column 
 ```typescript
 fields: {
   // passwordHash, internalNotes, etc. are never returned, regardless of ?select=
-  readable: ["id", "name", "email", "createdAt"],
+  readable: [usersTable.id, usersTable.name, usersTable.email, usersTable.createdAt],
 }
 ```
 
@@ -84,7 +86,7 @@ By default, unknown fields in a body are silently ignored. Set `strictInput: tru
 - optional in inbound bodies even under `strictInput`.
 
 ```typescript
-{ generatedFields: ["id", "userId", "createdAt", "updatedAt"] }
+{ generatedFields: [posts.id, posts.userId, posts.createdAt, posts.updatedAt] }
 ```
 
 ## Computed fields

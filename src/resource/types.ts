@@ -205,11 +205,17 @@ export interface ScopeConfig {
   update?: ScopeFunction;
   delete?: ScopeFunction;
   subscribe?: ScopeFunction;
+  // `true` makes read + subscribe public (writes still require auth). The object
+  // form opts each operation in explicitly, including create/update/delete for
+  // fully-public resources.
   public?:
     | boolean
     | {
         read?: boolean;
         subscribe?: boolean;
+        create?: boolean;
+        update?: boolean;
+        delete?: boolean;
       };
 }
 
@@ -369,6 +375,11 @@ export interface ResourceConfig<
     cursorMaxAgeMs?: number;
     nullsPosition?: "first" | "last";
   };
+  // Secret for signing this resource's pagination cursors (HMAC-SHA256). Falls
+  // back to the global secret (setGlobalCursorSigningSecret) when omitted; set
+  // to `null` to disable signing for this resource even if a global secret is
+  // configured.
+  cursorSigningSecret?: string | null;
   rateLimit?: RateLimitConfig;
   auth?: ScopeConfig;
   procedures?: Record<string, ProcedureDefinition>;

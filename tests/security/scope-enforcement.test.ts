@@ -208,6 +208,28 @@ describe("Scope Enforcement", () => {
       });
     });
 
+    describe("Public write operations", () => {
+      it("allows anonymous create/update/delete when opted in via public flags", async () => {
+        const resolver = createScopeResolver(
+          { public: { read: true, create: true, update: true, delete: true } },
+          "public_crud"
+        );
+        for (const op of ["read", "create", "update", "delete"] as const) {
+          expect(resolver.isPublic(op)).toBe(true);
+          const scope = await resolver.resolve(op, null);
+          expect(scope.toString()).toBe("*");
+        }
+      });
+
+      it("keeps `public: true` (boolean) read/subscribe-only — writes still require auth", async () => {
+        const resolver = createScopeResolver({ public: true }, "read_only_public");
+        expect(resolver.isPublic("read")).toBe(true);
+        expect(resolver.isPublic("subscribe")).toBe(true);
+        expect(resolver.isPublic("create")).toBe(false);
+        await expect(resolver.resolve("create", null)).rejects.toThrow(UnauthorizedError);
+      });
+    });
+
     describe("Operation-specific scopes", () => {
       it("should use read scope for read operations", async () => {
         const scopeResolver = createScopeResolver(
