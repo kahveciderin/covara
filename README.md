@@ -4,6 +4,14 @@
 
 <h1 align="center">Covara</h1>
 
+<p align="center">
+  <strong>📚 <a href="https://kahveciderin.github.io/covara">Documentation</a></strong>
+  &nbsp;·&nbsp;
+  <a href="https://kahveciderin.github.io/covara/quick-start">Quick Start</a>
+  &nbsp;·&nbsp;
+  <a href="https://kahveciderin.github.io/covara/tutorial">Tutorial</a>
+</p>
+
 **Your Drizzle schema is already a backend.** Covara turns it into a complete, production-ready API — REST endpoints, real-time subscriptions, auth, file uploads, billing, email, and background jobs — with a type-safe, offline-first TypeScript client on the other end. Built on [Hono](https://hono.dev), it runs standalone on Node or at the edge on Cloudflare Workers.
 
 ## The Goal
