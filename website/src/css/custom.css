@@ -1,0 +1,55 @@
+/**
+ * Covara brand theme.
+ * Palette derived from the logo: indigo (#4135D8), magenta (#C71BD8),
+ * and cyan (#00BFFF / #03FFFF).
+ */
+
+:root {
+  --ifm-color-primary: #4135d8;
+  --ifm-color-primary-dark: #3a30c2;
+  --ifm-color-primary-darker: #372db8;
+  --ifm-color-primary-darkest: #2d2598;
+  --ifm-color-primary-light: #5447e0;
+  --ifm-color-primary-lighter: #6155e3;
+  --ifm-color-primary-lightest: #8077e9;
+  --ifm-code-font-size: 95%;
+  --ifm-font-family-base: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="dark"] {
+  --ifm-color-primary: #7c8bff;
+  --ifm-color-primary-dark: #5e71ff;
+  --ifm-color-primary-darker: #4f64ff;
+  --ifm-color-primary-darkest: #233fff;
+  --ifm-color-primary-light: #9aa5ff;
+  --ifm-color-primary-lighter: #a9b2ff;
+  --ifm-color-primary-lightest: #d6dbff;
+  --ifm-background-color: #0e0c1a;
+  --ifm-background-surface-color: #16132a;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.1);
+}
+
+.navbar__title {
+  background: linear-gradient(90deg, #00bfff, #c71bd8);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  font-weight: 700;
+}
+
+.hero__title {
+  background: linear-gradient(90deg, #00bfff, #4135d8, #c71bd8);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.menu__link--active {
+  font-weight: 600;
+}
+
+.theme-doc-markdown table {
+  display: table;
+  width: 100%;
+}

@@ -214,7 +214,7 @@ database_name = "my-app"
 
 Workers bill CPU time, not wall-clock time — long-lived idle SSE subscriptions cost almost nothing, since heartbeats and event pushes use negligible CPU.
 
-For production Workers deployments, bind the bundled `CovaraKVDurableObject` as Covara's KV store so subscriptions, rate limits, and sessions are shared across isolates — see [wiki/deployment.md](./wiki/deployment.md). Projects scaffolded with `covara create --template cloudflare` have it wired up already.
+For production Workers deployments, bind the bundled `CovaraKVDurableObject` as Covara's KV store so subscriptions, rate limits, and sessions are shared across isolates — see the [Durable Object KV guide](https://kahveciderin.github.io/covara/deployment/durable-object-kv). Projects scaffolded with `covara create --template cloudflare` have it wired up already.
 
 ### Using a plain Hono app
 
@@ -318,7 +318,7 @@ app.resource("/posts", postsTable, {
 });
 ```
 
-See [wiki/resources.md](./wiki/resources.md) for the full option reference (soft delete, computed fields, field allowlists, search, custom filter operators, and more).
+See the [Resources reference](https://kahveciderin.github.io/covara/core/resources-and-app) for the full option reference (soft delete, computed fields, field allowlists, search, custom filter operators, and more).
 
 ## Client Library
 
@@ -475,7 +475,7 @@ function Uploader() {
 }
 ```
 
-See [wiki/storage.md](./wiki/storage.md).
+See [Storage](https://kahveciderin.github.io/covara/platform/storage).
 
 ## Server-side Authentication
 
@@ -494,7 +494,7 @@ app.route("/api/auth", router); // /me, /login, /signup, /logout
 app.use("*", middleware);       // populates c.get("user")
 ```
 
-Opt-in extras: TOTP MFA with backup codes, magic links, email verification, password reset, login throttling, CSRF protection, and API key management. See [wiki/authentication.md](./wiki/authentication.md).
+Opt-in extras: TOTP MFA with backup codes, magic links, email verification, password reset, login throttling, CSRF protection, and API key management. See [Authentication](https://kahveciderin.github.io/covara/auth/overview).
 
 ### OIDC Provider
 
@@ -572,7 +572,7 @@ await getTaskScheduler().scheduleRecurring(dailyReportTask, {}, {
 });
 ```
 
-On Workers, swap the poller for the Cloudflare Queues adapter. See [wiki/tasks.md](./wiki/tasks.md).
+On Workers, swap the poller for the Cloudflare Queues adapter. See [Background tasks](https://kahveciderin.github.io/covara/platform/tasks).
 
 ## Email
 
@@ -592,7 +592,7 @@ const { html, text } = createEmail({ brandColor: "#4f46e5" })
 await sendEmail({ from: "noreply@acme.com", to: email, subject: "Verify your email", html, text });
 ```
 
-The builder renders responsive, escaped HTML plus a plaintext fallback. A Cloudflare Email Service adapter is included for Workers. See [wiki/email.md](./wiki/email.md).
+The builder renders responsive, escaped HTML plus a plaintext fallback. A Cloudflare Email Service adapter is included for Workers. See [Email](https://kahveciderin.github.io/covara/platform/email).
 
 ## Billing
 
@@ -634,7 +634,7 @@ function Account() {
 }
 ```
 
-Webhooks are signature-verified, deduplicated, and grant credits automatically on `payment.succeeded`. See [wiki/billing.md](./wiki/billing.md).
+Webhooks are signature-verified, deduplicated, and grant credits automatically on `payment.succeeded`. See [Billing](https://kahveciderin.github.io/covara/platform/billing).
 
 ## Mutation Tracking
 
@@ -697,7 +697,7 @@ const env = createEnv({
 app.route("/api/env", usePublicEnv(env)); // serves public vars (with ETag)
 ```
 
-Clients read public vars with `fetchPublicEnv`/`createEnvClient` or the `usePublicEnv` React hook. See [wiki/environment-variables.md](./wiki/environment-variables.md).
+Clients read public vars with `fetchPublicEnv`/`createEnvClient` or the `usePublicEnv` React hook. See [Environment variables](https://kahveciderin.github.io/covara/deployment/environment-variables).
 
 ## Query Parameters
 
@@ -739,7 +739,7 @@ age=between=[18,65]       # Range (inclusive)
 deletedAt=isnull=true     # Is null
 bio=isempty=false         # Has non-empty value
 
-# See wiki/filtering.md for all 30+ operators
+# See https://kahveciderin.github.io/covara/core/filtering for all 30+ operators
 ```
 
 The same expression filters database queries, subscription scopes, and auth scopes — parsed once, executed as SQL or in-memory as needed.
@@ -794,47 +794,27 @@ expect(res.status).toBe(201);
 
 ## Documentation
 
-Comprehensive documentation is available in the [wiki](./wiki):
+📚 **Full documentation: [kahveciderin.github.io/covara](https://kahveciderin.github.io/covara)**
 
-### Getting Started
-- [Getting Started Guide](./wiki/getting-started.md) - Installation and quick start
-- [Deployment](./wiki/deployment.md) - Node, Cloudflare Workers, database matrix
-- [Migrating from Express](./wiki/migrating-from-express.md) - Upgrading from Covara ≤ 0.5
+The docs site is built with Docusaurus from the [`website/`](./website) folder and published to GitHub Pages automatically (`.github/workflows/docs.yml`). Highlights:
 
-### Core Concepts
-- [Resources](./wiki/resources.md) - Resource configuration and endpoints
-- [Filtering](./wiki/filtering.md) - RSQL filter syntax (30+ operators)
-- [Pagination](./wiki/pagination.md) - Cursor-based pagination
-- [Aggregations](./wiki/aggregations.md) - Group by and statistical queries
-- [Relations](./wiki/relations.md) - Relationships and efficient batch loading
-- [Search](./wiki/search.md) - Full-text search adapters and transactional outbox
-- [Database](./wiki/database.md) - Internal tables, framework migrations, seeding, pooling
+- **Get started** — [Introduction](https://kahveciderin.github.io/covara/), [Quick Start](https://kahveciderin.github.io/covara/quick-start), [Tutorial](https://kahveciderin.github.io/covara/tutorial)
+- **Core** — [Resources](https://kahveciderin.github.io/covara/core/resources-and-app), [Filtering](https://kahveciderin.github.io/covara/core/filtering), [Pagination](https://kahveciderin.github.io/covara/core/pagination), [Aggregations](https://kahveciderin.github.io/covara/core/aggregations), [Relations](https://kahveciderin.github.io/covara/core/relations), [Search](https://kahveciderin.github.io/covara/core/search)
+- **Real-time** — [Subscriptions](https://kahveciderin.github.io/covara/realtime/subscriptions), [Aggregate subscriptions](https://kahveciderin.github.io/covara/realtime/aggregate-subscriptions), [Mutation tracking](https://kahveciderin.github.io/covara/realtime/mutation-tracking)
+- **Auth & security** — [Overview](https://kahveciderin.github.io/covara/auth/overview), [OIDC provider](https://kahveciderin.github.io/covara/auth/oidc-provider), [JWT](https://kahveciderin.github.io/covara/auth/jwt), [Scopes](https://kahveciderin.github.io/covara/auth/scopes)
+- **Platform** — [Storage](https://kahveciderin.github.io/covara/platform/storage), [Email](https://kahveciderin.github.io/covara/platform/email), [Billing](https://kahveciderin.github.io/covara/platform/billing), [Tasks](https://kahveciderin.github.io/covara/platform/tasks), [KV](https://kahveciderin.github.io/covara/platform/kv)
+- **Client** — [Overview](https://kahveciderin.github.io/covara/client/overview), [React hooks](https://kahveciderin.github.io/covara/client/react-hooks), [Offline](https://kahveciderin.github.io/covara/client/offline), [Type generation](https://kahveciderin.github.io/covara/client/typegen)
+- **Deploy** — [Node](https://kahveciderin.github.io/covara/deployment/node), [Cloudflare Workers](https://kahveciderin.github.io/covara/deployment/workers), [Databases](https://kahveciderin.github.io/covara/deployment/databases)
+- **Reference** — [Contracts (invariants)](https://kahveciderin.github.io/covara/contracts/overview), [Error handling](https://kahveciderin.github.io/covara/tooling/error-handling), [Migrating from Express](https://kahveciderin.github.io/covara/migration/from-express)
 
-### Real-time
-- [Subscriptions](./wiki/subscriptions.md) - SSE subscriptions and changelog
+Run the docs locally:
 
-### Authentication & Security
-- [Authentication](./wiki/authentication.md) - OIDC Provider, federated login, JWT, session auth
-- [Secure Queries](./wiki/secure-queries.md) - Scope-enforced query builder
-
-### Platform Services
-- [Storage](./wiki/storage.md) - File uploads, S3/R2/local adapters, presigned URLs
-- [Email](./wiki/email.md) - Email adapters and template builder
-- [Billing](./wiki/billing.md) - Payment providers, plans, credits, webhooks
-- [Tasks](./wiki/tasks.md) - Background job queue, scheduling, retries
-- [Environment Variables](./wiki/environment-variables.md) - Typed env config
-
-### Client
-- [Client Library](./wiki/client-library.md) - TypeScript client with React hooks
-- [Offline Support](./wiki/offline-support.md) - Offline-first capabilities
-
-### Advanced
-- [Procedures & Hooks](./wiki/procedures.md) - RPC and lifecycle hooks
-- [Mutation Tracking](./wiki/track-mutations.md) - Automatic changelog and cache invalidation
-- [Middleware](./wiki/middleware.md) - Observability, versioning, idempotency
-- [OpenAPI](./wiki/openapi.md) - OpenAPI spec generation
-- [Admin UI](./wiki/admin-ui.md) - Built-in dashboard
-- [Error Handling](./wiki/error-handling.md) - Error types and handling
+```bash
+cd website
+pnpm install
+pnpm start      # dev server with hot reload
+pnpm build      # production build (validates all internal links)
+```
 
 ## Requirements
 

@@ -1,0 +1,159 @@
+---
+id: relations
+title: Relations & joins
+sidebar_label: Relations
+description: Define belongsTo, hasOne, hasMany, and manyToMany relations and load them efficiently with batch loading, include options, eager strategies, nested includes, and subscription support.
+---
+
+# Relations & joins
+
+Covara loads related data with **batch loading** to avoid N+1 queries: one query for the parents, then one query per relation using `IN (...)`. Relations are declared per resource and loaded via the `?include=` query parameter.
+
+## Relation types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `belongsTo` | Foreign key on **this** table | A post belongs to a user |
+| `hasOne` | Foreign key on the **related** table (1:1) | A user has one profile |
+| `hasMany` | Foreign key on the **related** table (1:N) | A user has many posts |
+| `manyToMany` | Junction table | A post has many tags |
+
+## Defining relations
+
+```typescript
+useResource(postsTable, {
+  db,
+  id: postsTable.id,
+  relations: {
+    author: {
+      resource: "users",
+      schema: usersTable,
+      type: "belongsTo",
+      foreignKey: postsTable.authorId,
+      references: usersTable.id,
+      defaultSelect: ["id", "name", "avatar"], // limit fields returned
+    },
+    comments: {
+      resource: "comments",
+      schema: commentsTable,
+      type: "hasMany",
+      foreignKey: commentsTable.postId,
+      references: postsTable.id,
+    },
+    tags: {
+      resource: "tags",
+      schema: tagsTable,
+      type: "manyToMany",
+      foreignKey: postsTable.id,
+      references: tagsTable.id,
+      through: {
+        schema: postTagsTable,
+        sourceKey: postTagsTable.postId,
+        targetKey: postTagsTable.tagId,
+      },
+    },
+  },
+});
+```
+
+### Relation config
+
+```typescript
+interface RelationConfig {
+  resource: string;            // resource name (used for nested loading)
+  schema: Table;               // Drizzle table
+  type: "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
+  foreignKey: AnyColumn;
+  references: AnyColumn;
+  through?: { schema: Table; sourceKey: AnyColumn; targetKey: AnyColumn }; // manyToMany only
+  strategy?: "eager" | "lazy"; // eager auto-loads on list/get; default lazy
+  defaultSelect?: string[];
+  filterable?: boolean;        // allow filtering parents by this relation
+  subscribeToChanges?: boolean;// include in subscription events
+}
+```
+
+## Including relations
+
+```bash
+GET /api/posts?include=author                              # single
+GET /api/posts?include=author,category,tags                # multiple
+GET /api/posts?include=author.profile                      # nested
+GET /api/posts?include=comments(limit:5;select:id,text)    # with options
+```
+
+### Include options
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `limit` | Max items **per parent** (`hasMany`/`manyToMany`) | `comments(limit:10)` |
+| `offset` | Skip items per parent | `comments(limit:10;offset:10)` |
+| `select` | Fields to include | `author(select:id,name)` |
+| `filter` | [RSQL filter](./filtering.md) on related rows | `comments(filter:status=="approved")` |
+
+`limit`/`offset` apply **per parent row**, so each parent gets its own page of children. The `filter` is combined with the relation's join condition.
+
+### Eager relations
+
+A relation with `strategy: "eager"` loads automatically on `GET /` and `GET /:id` without `?include=`. If the client also requests it explicitly, the explicit spec (filter/limit/offset/select/nested) wins.
+
+```typescript
+relations: {
+  author: { /* ... */ strategy: "eager" },
+}
+```
+
+### Include limits
+
+```typescript
+useResource(postsTable, {
+  db,
+  id: postsTable.id,
+  relations: { /* ... */ },
+  include: {
+    maxDepth: 3,              // max nesting depth (default 3)
+    defaultLimit: 100,        // default per-parent limit for hasMany
+    allowNestedFilters: true, // allow filters on nested relations
+  },
+});
+```
+
+## Filtering parents by relation
+
+```bash
+GET /api/posts?filter=tags.name=="TypeScript"
+GET /api/posts?filter=author.organizationId=="org-123"
+```
+
+This requires `filterable: true` on the relation and may use subqueries — index accordingly on large tables.
+
+## Relations in subscriptions
+
+Includes work with [subscriptions](../realtime/subscriptions.md): related data is attached to `added`/`changed` events.
+
+```typescript
+posts.subscribe(
+  { filter: 'status=="published"', include: "author,tags" },
+  {
+    onAdded: (post) => console.log("New post by", post.author.name),
+    onChanged: (post) => { /* related data included */ },
+  }
+);
+```
+
+## Nested write-through
+
+With [`nestedWrites: true`](./nested-writes.md), a `POST` body can embed related objects to create them atomically. See **[Nested writes](./nested-writes.md)** for the full transaction order and limitations (`manyToMany` is not supported for nested writes).
+
+## TypeScript
+
+```typescript
+import type { RelationType, RelationConfig, IncludeSpec } from "covara";
+```
+
+The [typed client](../client/typegen.md) infers included relations into the result type — `posts.include("author", "tags")` returns rows with typed `author` and `tags`.
+
+## Related
+
+- [Nested writes](./nested-writes.md) · [Filtering](./filtering.md) · [Subscriptions](../realtime/subscriptions.md)
+- [Client queries](../client/queries.md) — the fluent `.include()` builder
