@@ -11,7 +11,10 @@ import {
   getAdminAuditLog,
   detectEnvironment,
   setAdminAuditSink,
+  getAdminUser,
+  logAdminAction,
 } from "./admin-auth";
+import { markAdminBypass } from "@/server/admin-bypass";
 import { createDataExplorerRoutes, DataExplorerConfig } from "./data-explorer";
 import { createTaskMonitorRoutes, TaskMonitorConfig } from "./task-monitor";
 import { createKVInspectorRoutes, KVInspectorConfig } from "./kv-inspector";
@@ -1554,6 +1557,22 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
     if (cookie) headers["cookie"] = cookie;
     const auth = c.req.header("authorization");
     if (auth) headers["authorization"] = auth;
+
+    // A verified admin running a request through the explorer bypasses the
+    // resource's user scopes (matching the data explorer). The marker header
+    // carries no secret: the resource layer re-verifies that the forwarded
+    // request's authenticated user is an admin before honoring it, so a leaked
+    // or guessed marker is worthless to a non-admin.
+    const adminUser = getAdminUser(c);
+    if (adminUser) {
+      Object.assign(headers, markAdminBypass());
+      logAdminAction({
+        userId: adminUser.id,
+        userEmail: adminUser.email,
+        operation: "api_explorer_execute",
+        reason: `Admin scope bypass: ${method} ${path}`,
+      });
+    }
 
     const init: RequestInit = { method, headers };
     if (method !== "GET" && method !== "HEAD" && requestBody) {

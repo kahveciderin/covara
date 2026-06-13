@@ -62,6 +62,13 @@
 - **No client bypass**: A hidden column cannot be recovered via `?select=` or by subscribing — masking is enforced server-side after projection
 - **Column-only**: Only table columns are stripped; relation keys, computed values, and internal markers (`_etag`, `_optimisticId`) pass through
 
+### Admin Scope Bypass (Admin UI)
+- **Identity re-verification, no secret**: The resource layer skips per-resource auth scopes only when the request carries the `x-covara-admin-bypass` marker **and** its authenticated user (or forwarded admin `apiKey`) passes the registered admin predicate. The marker is not a secret and grants nothing on its own
+- **Leaked marker is inert**: A non-admin presenting the marker is served under normal scope enforcement (fail-closed); the marker value is constant and confers no authority
+- **Disabled by default**: Bypass is inert unless an admin predicate is registered, which happens only when the [admin UI](../tooling/admin-ui.md) is mounted via `createCovara`; standalone `useResource` never bypasses
+- **Gated on admin auth**: The admin predicate is derived from the UI's `security` config — locking down the UI's auth locks down bypass
+- **Audited**: Every bypassed API-explorer request is recorded in the admin audit log (`api_explorer_execute`)
+
 ## Non-Guarantees
 
 ### Token Lifetime (What We Don't Promise)

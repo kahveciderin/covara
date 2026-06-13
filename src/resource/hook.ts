@@ -76,6 +76,8 @@ import {
   formatZodError,
 } from "./error";
 import { createScopeResolver, combineScopes, Operation } from "@/auth/scope";
+import { allScope } from "@/auth/rsql";
+import { isAdminBypassRequest } from "@/server/admin-bypass";
 import { createRateLimiter } from "@/middleware/rateLimit";
 import {
   parseInclude,
@@ -378,13 +380,22 @@ export const useResource = <TConfig extends TableConfig>(
     return base ? and(base, notDeleted) : notDeleted;
   };
 
+  const resolveScope = async (c: Context, operation: Operation) => {
+    if (await isAdminBypassRequest(c)) return allScope();
+    return scopeResolver.resolve(operation, getUser(c));
+  };
+
+  const requireScope = async (c: Context, operation: Operation) => {
+    if (await isAdminBypassRequest(c)) return;
+    await scopeResolver.requirePermission(operation, getUser(c));
+  };
+
   const applyFilters = async (
     c: Context,
     operation: Operation,
     additionalFilter?: string
   ): Promise<SQL<unknown> | undefined> => {
-    const user = getUser(c);
-    const scope = await scopeResolver.resolve(operation, user);
+    const scope = await resolveScope(c, operation);
 
     const filterQuery = additionalFilter ?? c.req.query("filter") ?? "";
     const combinedFilter = combineScopes(scope, filterQuery);
@@ -413,7 +424,7 @@ export const useResource = <TConfig extends TableConfig>(
 
   if (batchConfig.create && batchConfig.create > 0) {
     router.post("/batch", async (c) => {
-      await scopeResolver.requirePermission("create", getUser(c));
+      await requireScope(c, "create");
 
       const data = parseMultiInsert(await readJsonBody(c));
       if (data.items.length > batchConfig.create!) {
@@ -457,8 +468,8 @@ export const useResource = <TConfig extends TableConfig>(
     // Bulk upsert: insert-or-update by primary key. New rows run create hooks +
     // emit added events; existing rows run update hooks + emit changed events.
     router.post("/batch/upsert", async (c) => {
-      await scopeResolver.requirePermission("create", getUser(c));
-      await scopeResolver.requirePermission("update", getUser(c));
+      await requireScope(c, "create");
+      await requireScope(c, "update");
 
       const data = parseMultiInsert(await readJsonBody(c));
       if (data.items.length > batchConfig.create!) {
@@ -676,7 +687,7 @@ export const useResource = <TConfig extends TableConfig>(
 
   router.get("/subscribe", async (c) => {
     const user = getUser(c);
-    const scope = await scopeResolver.resolve("subscribe", user);
+    const scope = await resolveScope(c, "subscribe");
     const filterQuery = c.req.query("filter") ?? "";
     const includeQuery = c.req.query("include");
     const handlerId = uuidv4();
@@ -889,7 +900,7 @@ export const useResource = <TConfig extends TableConfig>(
     // (e.g. another user's row), so a per-user aggregate doesn't recompute on
     // every other user's mutation. Falls back to recompute when the mutation
     // carries no row data or the aggregate is unscoped (matcher null).
-    const readScope = await scopeResolver.resolve("read", user);
+    const readScope = await resolveScope(c, "read");
     const matcherFilter = combineScopes(readScope, c.req.query("filter") ?? "");
     const matcher =
       matcherFilter && matcherFilter !== "*" ? filterer.compile(matcherFilter) : null;
@@ -1119,7 +1130,7 @@ export const useResource = <TConfig extends TableConfig>(
   const nestedWritesEnabled = config.nestedWrites === true && !!relationsConfig;
 
   router.post("/", async (c) => {
-    await scopeResolver.requirePermission("create", getUser(c));
+    await requireScope(c, "create");
 
     const ctx = createProcedureContext(c);
     const rawBody = (await readJsonBody(c)) as Record<string, unknown>;

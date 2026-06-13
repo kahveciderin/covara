@@ -26,6 +26,8 @@ export {
   clearAdminAuditLog,
   setAdminAuditSink,
   extractUserRoles,
+  extractUserPermissions,
+  createAdminBypassPredicate,
   getAdminUser,
   requireAdminUser,
   detectEnvironment,

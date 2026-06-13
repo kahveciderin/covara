@@ -6,7 +6,8 @@ import { observabilityMiddleware, type ObservabilityConfig } from "@/middleware/
 import { useResource } from "@/resource/hook";
 import type { ResourceConfig } from "@/resource/types";
 import { createHealthEndpoints, type HealthConfig } from "@/health";
-import { createAdminUI, createAdminRequestLogger, setResourceMountPath, type AdminUIConfig } from "@/ui";
+import { createAdminUI, createAdminRequestLogger, createAdminBypassPredicate, setResourceMountPath, type AdminUIConfig } from "@/ui";
+import { setAdminBypassPredicate } from "@/server/admin-bypass";
 import { listActiveSubscriptions, disconnectSubscription } from "@/resource/subscription";
 import { changelog } from "@/resource/changelog";
 import { createCovaraRouter, type CovaraRouterConfig } from "@/openapi/schema";
@@ -114,6 +115,7 @@ export class CovaraApp extends Hono {
         },
         ...userAdmin,
       };
+      setAdminBypassPredicate(createAdminBypassPredicate(adminConfig.security ?? {}));
       this.route("/__covara", createAdminUI(adminConfig));
     }
 

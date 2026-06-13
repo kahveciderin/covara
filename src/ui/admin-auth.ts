@@ -3,6 +3,7 @@ import { getClientIP } from "@/server/request";
 import { readEnv } from "@/server/env";
 import { getUser } from "@/server/context";
 import { UnauthorizedError } from "@/resource/error";
+import type { UserContext } from "@/resource/types";
 
 export interface AdminUser {
   id: string;
@@ -88,7 +89,7 @@ export const extractUserRoles = (user: {
   return [...roles];
 };
 
-const extractUserPermissions = (user: {
+export const extractUserPermissions = (user: {
   permissions?: unknown;
   metadata?: Record<string, unknown> | null;
 } | null | undefined): string[] => {
@@ -365,6 +366,86 @@ export const createAdminAuthMiddleware = (
 
     c.set("adminUser", adminUser);
     return next();
+  };
+};
+
+export const createAdminBypassPredicate = (
+  config: AdminSecurityConfig = {}
+): ((user: UserContext | null, c: Context) => Promise<boolean>) => {
+  const mode = config.mode ?? detectEnvironment();
+  const requiredRole = config.requireRole ?? config.authorization?.requiredRole;
+
+  const anyAuthConfigured =
+    config.auth?.apiKey !== undefined ||
+    config.auth?.authenticate !== undefined ||
+    config.auth?.useSessionAuth === true ||
+    config.requireRole !== undefined ||
+    config.authorize !== undefined ||
+    config.can !== undefined ||
+    config.authorization !== undefined;
+
+  const hasIdentityRule =
+    requiredRole !== undefined ||
+    config.authorization?.requiredPermission !== undefined ||
+    config.authorization?.authorize !== undefined ||
+    config.authorize !== undefined;
+
+  return async (user, c) => {
+    if (config.auth?.disabled) {
+      return mode === "development";
+    }
+
+    if (config.auth?.apiKey) {
+      const authHeader = c.req.header("authorization");
+      const bearer = authHeader?.startsWith("Bearer ")
+        ? authHeader.slice(7)
+        : null;
+      if (bearer === config.auth.apiKey) return true;
+      if (c.req.header("x-admin-api-key") === config.auth.apiKey) return true;
+    }
+
+    if (mode === "development" && !anyAuthConfigured) {
+      return true;
+    }
+
+    if (!user) return false;
+
+    const adminUser: AdminUser = {
+      id: user.id,
+      email: user.email ?? "unknown",
+      name: user.name ?? undefined,
+      roles: extractUserRoles(user),
+      permissions: extractUserPermissions(user),
+    };
+
+    if (
+      requiredRole !== undefined &&
+      !hasRequiredRole(adminUser.roles ?? [], requiredRole)
+    ) {
+      return false;
+    }
+
+    if (
+      config.authorization?.requiredPermission &&
+      !(adminUser.permissions ?? []).includes(
+        config.authorization.requiredPermission
+      )
+    ) {
+      return false;
+    }
+
+    if (
+      config.authorization?.authorize &&
+      !(await config.authorization.authorize(adminUser))
+    ) {
+      return false;
+    }
+
+    if (config.authorize && !(await config.authorize(adminUser, c))) {
+      return false;
+    }
+
+    return hasIdentityRule;
   };
 };
 
