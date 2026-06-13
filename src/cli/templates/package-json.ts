@@ -1,7 +1,7 @@
 import type { ScaffoldOptions } from "../options.js";
 
 const VERSIONS = {
-  covara: "^0.5.7",
+  covara: "^0.7.0",
   hono: "^4.12.25",
   drizzleOrm: "^0.45.1",
   zod: "^4.3.5",

@@ -1,4 +1,4 @@
-# Contract: Billing
+# Billing Contracts 
 
 Scope: `src/billing/` — the `BillingAdapter` interface, the Stripe / Lemon
 Squeezy / Paddle / Polar adapters, the `createBilling` facade, the credits

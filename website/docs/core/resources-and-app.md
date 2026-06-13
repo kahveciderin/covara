@@ -99,7 +99,23 @@ Authorization scopes per operation. Each scope is a function of the current user
 }
 ```
 
-`rsql\`*\`` allows everything; `rsql\`\`` (empty) denies. Omit a scope to deny that operation for everyone except where `public` grants it.
+A scope function's return value decides **which rows** the operation may touch: `` rsql`*` `` allows everything, `` rsql`userId=="${user.id}"` `` restricts to matching rows (AND-combined with the request `?filter=`), and `` rsql`` `` (empty) denies entirely. Omit a scope to deny that operation for everyone except where `public` grants it.
+
+#### `public` vs a scope returning `` rsql`*` ``
+
+These look similar but act at different stages — `public` controls **who** (authenticated or not), while a scope function controls **which rows** an already-authenticated user sees:
+
+- **`public`** is checked **first** and bypasses the auth requirement, so an **anonymous** request is allowed and resolves to all rows. Only `read` and `subscribe` can be made public (`public: true` is shorthand for both) — you cannot open `create`/`update`/`delete` this way.
+- **A scope function returning `` rsql`*` ``** is only reached **after** the user check. An anonymous request gets a `401` (the function never runs); an authenticated user gets all rows. It means "any logged-in user can read everything, but you must be logged in."
+
+| Config | Anonymous | Authenticated |
+|--------|-----------|---------------|
+| `public: { read: true }` | ✅ all rows | ✅ all rows |
+| scope `read` returns `*` | ❌ `401` | ✅ all rows |
+| both together | ✅ all rows | ✅ all rows |
+| neither (omitted) | ❌ `401` | ❌ `403` |
+
+For the common "public reads, owner-only writes" pattern you need **both** — set `public.read` *and* owner-scoped `create`/`update`/`delete` functions (this is exactly `scopePatterns.publicReadOwnerWrite`). See [Authorization scopes](../auth/scopes.md).
 
 ### `capabilities`
 

@@ -1,4 +1,4 @@
-# Contract: Email
+# Email Contracts 
 
 Scope: `src/email/` — the `EmailAdapter` interface, the Resend and Cloudflare
 Email Service adapters, and the template builder.
