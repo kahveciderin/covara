@@ -11,6 +11,7 @@ import {
   InvalidateEvent,
   ExistingEvent,
   ChangelogEntry,
+  UserContext,
 } from "./types";
 import { getGlobalKV, hasGlobalKV, KVAdapter } from "../kv";
 
@@ -161,7 +162,48 @@ interface SerializedSubscription {
   scopeFilter?: string;
   authExpiresAt?: string | null;
   include?: string;
+  // Subscriber user (dates as ISO strings) for per-subscriber relation scoping.
+  user?: SerializedUser | null;
 }
+
+interface SerializedUser {
+  id: string;
+  email?: string | null;
+  name?: string | null;
+  image?: string | null;
+  emailVerified?: string | null;
+  sessionId?: string | null;
+  sessionExpiresAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+const serializeUser = (user: UserContext | null | undefined): SerializedUser | null => {
+  if (!user) return null;
+  return {
+    id: user.id,
+    email: user.email ?? null,
+    name: user.name ?? null,
+    image: user.image ?? null,
+    emailVerified: user.emailVerified ? user.emailVerified.toISOString() : null,
+    sessionId: user.sessionId ?? null,
+    sessionExpiresAt: user.sessionExpiresAt ? user.sessionExpiresAt.toISOString() : null,
+    metadata: user.metadata,
+  };
+};
+
+const deserializeUser = (user: SerializedUser | null | undefined): UserContext | null => {
+  if (!user) return null;
+  return {
+    id: user.id,
+    email: user.email ?? null,
+    name: user.name ?? null,
+    image: user.image ?? null,
+    emailVerified: user.emailVerified ? new Date(user.emailVerified) : null,
+    sessionId: user.sessionId ?? undefined,
+    sessionExpiresAt: user.sessionExpiresAt ? new Date(user.sessionExpiresAt) : undefined,
+    metadata: user.metadata,
+  } as UserContext;
+};
 
 interface BroadcastEvent {
   type: "added" | "changed" | "removed" | "invalidate";
@@ -181,6 +223,7 @@ const serializeSubscription = (sub: Subscription): string => {
     scopeFilter: sub.scopeFilter,
     authExpiresAt: sub.authExpiresAt?.toISOString() ?? null,
     include: sub.include,
+    user: serializeUser(sub.user),
   };
   return JSON.stringify(serialized);
 };
@@ -199,6 +242,7 @@ const deserializeSubscription = (data: string): Subscription => {
     scopeFilter: parsed.scopeFilter,
     authExpiresAt: parsed.authExpiresAt ? new Date(parsed.authExpiresAt) : null,
     include: parsed.include,
+    user: deserializeUser(parsed.user),
   };
 };
 
@@ -342,6 +386,8 @@ export interface CreateSubscriptionOptions {
   scopeFilter?: string;
   authExpiresAt?: Date | null;
   include?: string;
+  // Subscriber user, captured so included relations can be scoped per-subscriber.
+  user?: UserContext | null;
 }
 
 export const createSubscription = async (
@@ -360,6 +406,7 @@ export const createSubscription = async (
     scopeFilter: options.scopeFilter,
     authExpiresAt: options.authExpiresAt,
     include: options.include,
+    user: options.user ?? null,
   };
 
   const kv = getKV();
@@ -695,7 +742,21 @@ export const sendExistingItems = async <T extends Record<string, unknown>>(
   }
 };
 
-export type RelationLoader<T> = (items: T[], include: string) => Promise<T[]>;
+// Loads a subscription's included relations for the given subscriber. The
+// subscriber's UserContext is passed so the loader can enforce the target
+// resource's read scope per-subscriber (a relation can never reveal rows the
+// subscriber couldn't read directly) — matching the read path.
+export type RelationLoader<T> = (
+  items: T[],
+  include: string,
+  user: UserContext | null
+) => Promise<T[]>;
+
+// Per-subscriber relation cache key: the same include resolves to different
+// rows for different users (their target read scope differs), so we must not
+// share across subscribers.
+const relationCacheKey = (include: string, sub: Subscription): string =>
+  `${include} ${sub.authId ?? ""}`;
 
 export const pushInsertsToSubscriptions = async <T extends Record<string, unknown>>(
   resource: string,
@@ -707,25 +768,27 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
 ): Promise<void> => {
   const allSubs = await getSubscriptionsForResourceMap(resource);
 
-  // Cache for items with relations loaded (keyed by include string)
+  // Cache for items with relations loaded (keyed by include + subscriber).
   const itemsWithRelationsCache = new Map<string, Map<string, T>>();
 
-  const getItemWithRelations = async (item: T, include: string | undefined): Promise<T> => {
+  const getItemWithRelations = async (item: T, subscription: Subscription): Promise<T> => {
+    const include = subscription.include;
     if (!include || !relationLoader) return item;
 
     const id = String(item[idColumn]);
-    let cache = itemsWithRelationsCache.get(include);
+    const key = relationCacheKey(include, subscription);
+    let cache = itemsWithRelationsCache.get(key);
     if (!cache) {
       cache = new Map();
-      itemsWithRelationsCache.set(include, cache);
+      itemsWithRelationsCache.set(key, cache);
     }
 
     if (cache.has(id)) {
       return cache.get(id)!;
     }
 
-    // Load relations for this item
-    const [itemWithRelations] = await relationLoader([item], include);
+    // Load relations for this item, scoped to the subscriber.
+    const [itemWithRelations] = await relationLoader([item], include, subscription.user ?? null);
     cache.set(id, itemWithRelations);
     return itemWithRelations;
   };
@@ -751,7 +814,7 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
       await addRelevantObject(subId, id);
 
       const optimisticId = optimisticIds?.get(id);
-      const itemToSend = await getItemWithRelations(item, subscription.include);
+      const itemToSend = await getItemWithRelations(item, subscription);
       const event: AddedEvent<T> = {
         id: uuidv4(),
         subscriptionId: subId,
@@ -782,25 +845,27 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
 ): Promise<void> => {
   const allSubs = await getSubscriptionsForResourceMap(resource);
 
-  // Cache for items with relations loaded (keyed by include string)
+  // Cache for items with relations loaded (keyed by include + subscriber).
   const itemsWithRelationsCache = new Map<string, Map<string, T>>();
 
-  const getItemWithRelations = async (item: T, include: string | undefined): Promise<T> => {
+  const getItemWithRelations = async (item: T, subscription: Subscription): Promise<T> => {
+    const include = subscription.include;
     if (!include || !relationLoader) return item;
 
     const id = String(item[idColumn]);
-    let cache = itemsWithRelationsCache.get(include);
+    const key = relationCacheKey(include, subscription);
+    let cache = itemsWithRelationsCache.get(key);
     if (!cache) {
       cache = new Map();
-      itemsWithRelationsCache.set(include, cache);
+      itemsWithRelationsCache.set(key, cache);
     }
 
     if (cache.has(id)) {
       return cache.get(id)!;
     }
 
-    // Load relations for this item
-    const [itemWithRelations] = await relationLoader([item], include);
+    // Load relations for this item, scoped to the subscriber.
+    const [itemWithRelations] = await relationLoader([item], include, subscription.user ?? null);
     cache.set(id, itemWithRelations);
     return itemWithRelations;
   };
@@ -826,7 +891,7 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
       if (isRelevant && !wasRelevant) {
         await addRelevantObject(subId, id);
 
-        const itemToSend = await getItemWithRelations(item, subscription.include);
+        const itemToSend = await getItemWithRelations(item, subscription);
         const event: AddedEvent<T> = {
           id: uuidv4(),
           subscriptionId: subId,
@@ -844,7 +909,7 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
           ? String(previousItems.get(id)![idColumn])
           : undefined;
 
-        const itemToSend = await getItemWithRelations(item, subscription.include);
+        const itemToSend = await getItemWithRelations(item, subscription);
         const event: ChangedEvent<T> = {
           id: uuidv4(),
           subscriptionId: subId,
@@ -1108,7 +1173,7 @@ export const applyScopeChange = async <T extends Record<string, unknown>>(
     await addRelevantObject(subscriptionId, id);
     let itemToSend = item;
     if (subscription.include && relationLoader) {
-      [itemToSend] = await relationLoader([item], subscription.include);
+      [itemToSend] = await relationLoader([item], subscription.include, subscription.user ?? null);
     }
     const event: AddedEvent<T> = {
       id: uuidv4(),
@@ -1212,7 +1277,7 @@ export const sendCatchupEvents = async <T extends Record<string, unknown>>(
     if (isRelevant) {
       let itemToSend = object;
       if (subscription.include && relationLoader) {
-        [itemToSend] = await relationLoader([object], subscription.include);
+        [itemToSend] = await relationLoader([object], subscription.include, subscription.user ?? null);
       }
       await emit(entry.type === "create" ? "added" : "changed", {
         id: uuidv4(),

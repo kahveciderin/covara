@@ -113,7 +113,7 @@ Included relations honor the **target resource's `read` [auth scope](../auth/sco
 
 Relations to tables that are **not** registered as resources have no scope to enforce — only expose such relations to data you intend to be readable through the parent.
 
-> **Subscriptions:** relations embedded in [subscription](../realtime/subscriptions.md) events are loaded once per `include` string and shared across subscribers, so they are **not** per-subscriber scope-filtered. Avoid including sensitive relations in subscriptions, or rely on [field masking](./fields.md).
+> **Subscriptions:** relations embedded in [subscription](../realtime/subscriptions.md) events **are** scope-filtered per subscriber — the target resource's `read` scope is resolved for each subscriber's user (captured at subscribe time) and applied to the embedded relation, exactly as on the read path. A relation in a subscription event can never reveal rows that subscriber couldn't read directly. (Relations are loaded per subscriber rather than shared across them, so the cost scales with subscriber count; loads are deduplicated per subscriber within a single push.)
 
 ### Eager relations
 

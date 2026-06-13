@@ -67,7 +67,7 @@
 - **Deny semantics**: A user denied read on the target resource yields `null` (`belongsTo`/`hasOne`) or an empty array (`hasMany`/`manyToMany`) for that relation; out-of-scope rows are filtered, not just hidden
 - **Applies to discovered relations**: Auto-discovered (`autoRelations`) relations use the same enforced loader as explicit ones
 - **Unregistered targets**: Relations to tables not registered as resources have no scope to enforce (no resolver) — these are an explicit author choice
-- **Non-guarantee (subscriptions)**: Relations embedded in subscription events are loaded once per `include` string and shared across subscribers, so they are NOT per-subscriber scope-filtered — do not include sensitive relations in subscriptions
+- **Applies to subscriptions**: Relations embedded in subscription events (`existing`, `added`, `changed`) are scope-filtered **per subscriber** — the subscriber's user is captured at subscribe time, and on every push the target resource's `read` scope is resolved for that user and AND-ed into the included relation, with the same deny semantics as the read path. A subscriber can never receive related rows it could not read directly. Relations are loaded per subscriber rather than shared across them (cost scales with subscriber count; loads are deduplicated per subscriber within a single push)
 
 ### Admin Scope Bypass (Admin UI)
 - **Identity re-verification, no secret**: The resource layer skips per-resource auth scopes only when the request carries the `x-covara-admin-bypass` marker **and** its authenticated user (or forwarded admin `apiKey`) passes the registered admin predicate. The marker is not a secret and grants nothing on its own

@@ -68,6 +68,7 @@ import {
   LifecycleHooks,
   ProcedureContext,
   DrizzleTransaction,
+  UserContext,
 } from "./types";
 import { createSearchHandler } from "./search";
 import { hasGlobalSearch, getGlobalSearch } from "@/search";
@@ -168,12 +169,23 @@ export const useResource = <TConfig extends TableConfig>(
         )
       : null;
 
-  // Create a subscription relation loader for pushing updates with relations
+  // Create a subscription relation loader for pushing updates with relations.
+  // It enforces each included relation's target read scope for the SUBSCRIBER
+  // (captured at subscribe time), so a relation embedded in a subscription event
+  // can never reveal rows that subscriber couldn't read directly — matching the
+  // read path's scope enforcement.
   const subscriptionRelationLoader = relationLoader
-    ? async <T extends Record<string, unknown>>(items: T[], include: string): Promise<T[]> => {
+    ? async <T extends Record<string, unknown>>(
+        items: T[],
+        include: string,
+        user: UserContext | null
+      ): Promise<T[]> => {
         const includeSpecs = parseInclude(include);
         if (includeSpecs.length === 0) return items;
-        return relationLoader.loadRelationsForItems(items, includeSpecs, idColumnName) as Promise<T[]>;
+        return relationLoader.loadRelationsForItems(items, includeSpecs, idColumnName, 0, {
+          user,
+          enforceScope: true,
+        }) as Promise<T[]>;
       }
     : undefined;
 
@@ -826,6 +838,9 @@ export const useResource = <TConfig extends TableConfig>(
       scopeFilter: scope.toString() !== "*" ? scope.toString() : undefined,
       authExpiresAt: user?.sessionExpiresAt,
       include: includeQuery,
+      // Captured so included relations in pushed events are scope-filtered for
+      // this subscriber (the effective/impersonated user).
+      user: user ?? null,
     });
 
     // Periodically re-resolve the auth scope so out-of-band permission changes

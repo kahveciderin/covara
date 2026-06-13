@@ -90,6 +90,10 @@ export interface Subscription {
   scopeFilter?: string;
   authExpiresAt?: Date | null;
   include?: string;
+  // The subscriber's user context, captured at subscribe time, so the server can
+  // enforce each included relation's target read scope per-subscriber when
+  // embedding relations in pushed events (matching the read path).
+  user?: UserContext | null;
 }
 
 export interface PaginationParams {
