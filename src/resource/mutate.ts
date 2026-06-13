@@ -26,6 +26,7 @@ import {
   pushUpdatesToSubscriptions,
   pushDeletesToSubscriptions,
 } from "./subscription";
+import { makeTxRunner } from "./transaction";
 import { Filter } from "./filter";
 
 export interface ChangelogRecorder {
@@ -148,6 +149,10 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
     changelogRecorder,
   } = pipelineConfig;
 
+  // Interactive transactions everywhere except D1; on D1 each mutation here is a
+  // single write statement, which auto-commits atomically.
+  const txRunner = makeTxRunner(db);
+
   type SelectModel = InferSelectModel<Table<TConfig>>;
   type InsertModel = InferInsertModel<Table<TConfig>>;
 
@@ -176,7 +181,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
         logBypass(options.bypassReason, "create");
       }
 
-      return db.transaction(async (tx: DrizzleTransaction) => {
+      return txRunner.run(async (tx: DrizzleTransaction) => {
         let processedData = data;
 
         if (!options?.skipHooks && hooks) {
@@ -223,7 +228,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
         logBypass(options.bypassReason, "update");
       }
 
-      return db.transaction(async (tx: DrizzleTransaction) => {
+      return txRunner.run(async (tx: DrizzleTransaction) => {
         const existingResult = await tx.select().from(schema).where(filter);
         const existing = existingResult[0] as SelectModel | undefined;
 
@@ -299,7 +304,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
         logBypass(options.bypassReason, "delete");
       }
 
-      return db.transaction(async (tx: DrizzleTransaction) => {
+      return txRunner.run(async (tx: DrizzleTransaction) => {
         const existingResult = await tx.select().from(schema).where(filter);
         const existing = existingResult[0] as SelectModel | undefined;
 
@@ -340,7 +345,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
         logBypass(options.bypassReason, "batchCreate");
       }
 
-      return db.transaction(async (tx: DrizzleTransaction) => {
+      return txRunner.run(async (tx: DrizzleTransaction) => {
         const processedItems: InsertModel[] = [];
 
         for (const item of items) {
@@ -393,7 +398,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
         logBypass(options.bypassReason, "batchUpdate");
       }
 
-      return db.transaction(async (tx: DrizzleTransaction) => {
+      return txRunner.run(async (tx: DrizzleTransaction) => {
         const beforeItems = await tx.select().from(schema).where(filter);
         const previousMap = new Map<string, Record<string, unknown>>();
 
@@ -473,7 +478,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
         logBypass(options.bypassReason, "batchDelete");
       }
 
-      return db.transaction(async (tx: DrizzleTransaction) => {
+      return txRunner.run(async (tx: DrizzleTransaction) => {
         const items = await tx.select().from(schema).where(filter);
         const deletedIds: string[] = [];
 
@@ -517,7 +522,7 @@ export const createMutationPipeline = <TConfig extends TableConfig>(
     async withTransaction<R>(
       fn: (tx: DrizzleTransaction) => Promise<R>
     ): Promise<R> {
-      return db.transaction(fn);
+      return txRunner.run(fn);
     },
   };
 

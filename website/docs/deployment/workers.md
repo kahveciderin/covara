@@ -31,6 +31,10 @@ export default {
 
 If your app needs nothing from `env`, `export default app` works too.
 
+### D1 and transactions
+
+Cloudflare D1 has **no interactive transactions** (drizzle's `db.transaction()` would issue `BEGIN`/`COMMIT`, which D1 rejects). Covara detects D1 automatically and adapts: single-statement mutations (create/update/replace/delete) auto-commit atomically, and batch upsert uses D1's atomic `db.batch()`. Two limitations are inherent to D1: `nestedWrites` creates run sequentially (not atomic), and a throwing `onAfter*` hook can't roll back an already-committed write. If you wire a custom driver the detection can't classify, set `transactions: true | false` in the resource config. See the [mutation-tracking contract](../contracts/track-mutations.md#engines-without-interactive-transactions-cloudflare-d1).
+
 ## wrangler.toml
 
 `nodejs_compat` is required (Covara uses `node:crypto`):

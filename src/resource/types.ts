@@ -357,6 +357,10 @@ export interface ResourceConfig<
 > {
   db: DrizzleDatabase;
   id: AnyColumn<{ tableName: TTable["_"]["name"] }>;
+  // Whether the db supports interactive transactions. Auto-detected when omitted
+  // (Cloudflare D1 -> false, since it has no BEGIN/COMMIT; everything else -> true).
+  // Set explicitly to override detection for a custom/unrecognized driver.
+  transactions?: boolean;
   etag?: ETagResourceConfig;
   batch?: BatchConfig;
   pagination?: {

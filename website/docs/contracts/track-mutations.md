@@ -43,6 +43,14 @@
 - **Commit-gated side effects**: Inside a tracked `db.transaction(...)`, changelog entries, subscription pushes, and cache invalidations are buffered and only emitted *after* the transaction commits
 - **Rollback discards effects**: If a transaction rolls back (the callback throws), the buffered side effects are discarded — no changelog entry, subscription event, or cache invalidation is produced for uncommitted state
 
+### Engines Without Interactive Transactions (Cloudflare D1)
+- **Auto-detected**: D1 has no interactive transactions (drizzle's `db.transaction()` issues `BEGIN`/`COMMIT`, which D1 rejects). The resource layer detects D1 and skips `db.transaction()`; override with `transactions: true | false` in the resource config for a custom/unrecognized driver.
+- **Single-statement mutations stay atomic**: create / update / replace / delete (and batch update/delete by filter) issue a single write statement, which D1 auto-commits atomically. Changelog/subscription side effects (which are KV writes, never part of DB atomicity) fire exactly once, as on any engine.
+- **Batch upsert uses `db.batch()`**: the multi-row upsert path runs all statements through D1's atomic `batch()` primitive instead of a transaction.
+- ❌ **Nested writes are not atomic on D1**: a `nestedWrites` create chains inserts whose ids feed the next (parent → main → children), which can't be a single `batch()`. On D1 they run sequentially; a mid-chain failure can leave partial rows.
+- ❌ **No after-hook rollback on D1**: because the write has already auto-committed, a throwing `onAfterCreate`/`onAfterUpdate`/`onAfterDelete` cannot roll the row back (it can on transactional engines). The commit-gated/rollback guarantees above apply only to engines with interactive transactions.
+- ❌ **`ctx.withTransaction` is non-atomic on D1**: it runs the callback directly against the db; use `db.batch()` for atomic multi-statement work on D1.
+
 ### Cache Invalidation
 - **Table-level invalidation**: Any mutation to a table invalidates ALL cached queries that reference that table
 - **Join-aware invalidation**: Cached queries are tagged with every table they reference, including joined tables; a mutation to ANY referenced table invalidates the cached result (not just the `FROM` table)

@@ -3,7 +3,7 @@
 ## Guarantees
 
 ### Event Delivery
-- **Commit consistency**: Changelog entries and subscription events are emitted only *after* the database transaction commits. A mutation whose transaction rolls back (e.g. a throwing `onAfterUpdate`/`onAfterDelete` hook, or a failed commit) never produces a changelog entry or subscription event — there are no phantom events for uncommitted state.
+- **Commit consistency**: Changelog entries and subscription events are emitted only *after* the database transaction commits. A mutation whose transaction rolls back (e.g. a throwing `onAfterUpdate`/`onAfterDelete` hook, or a failed commit) never produces a changelog entry or subscription event — there are no phantom events for uncommitted state. (On engines without interactive transactions — Cloudflare D1 — single-statement writes auto-commit before after-hooks run, so a throwing after-hook cannot roll the write back; see the [mutation-tracking contract](./track-mutations.md#engines-without-interactive-transactions-cloudflare-d1).)
 - **Actor attribution**: Changelog entries carry the authenticated user's ID (`userId`) when the mutation came through a resource route or mutation pipeline with a user in context; anonymous/raw-SQL/external mutations leave it unset.
 - **At-least-once delivery**: Every mutation that matches a subscription's filter will generate at least one event
 - **Event exclusivity**: A single mutation generates exactly one of: `added`, `changed`, `removed`, or `invalidate` per subscription (never multiple conflicting events)

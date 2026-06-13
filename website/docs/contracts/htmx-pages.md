@@ -1,4 +1,4 @@
-# Contract: Server-rendered htmx pages
+# Server-Rendered htmx Pages Conctracts
 
 > **Beta.** The htmx page layer is newer than the rest of Covara; these invariants may evolve while it stabilizes.
 

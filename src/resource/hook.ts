@@ -58,6 +58,7 @@ import {
   executeAfterDelete,
 } from "./procedures";
 import { trackMutations, isTrackedDb } from "./track-mutations";
+import { makeTxRunner } from "./transaction";
 import {
   ResourceConfig,
   CustomOperator,
@@ -119,6 +120,10 @@ export const useResource = <TConfig extends TableConfig>(
   const db = config.db;
   const resourceName = getTableName(schema);
   const idColumnName = config.id.name;
+  // Interactive transactions everywhere except Cloudflare D1 (no BEGIN/COMMIT).
+  // On D1, single-statement mutations auto-commit atomically and multi-statement
+  // ones fall back to db.batch; see makeTxRunner.
+  const txRunner = makeTxRunner(db, config.transactions);
 
   resourceRegistry.set(resourceName, {
     schema: schema as Table<TableConfig>,
@@ -488,36 +493,65 @@ export const useResource = <TConfig extends TableConfig>(
 
       const ctx = createProcedureContext(c);
 
-      const { upserted, previousMap } = await db.transaction(async (tx: DrizzleTransaction) => {
+      const loadPrev = async (
+        runner: DrizzleTransaction | typeof db
+      ): Promise<Map<string, Record<string, unknown>>> => {
         const ids = data.items
           .map((i) => (i as Record<string, unknown>)[idColumnName])
           .filter((v) => v !== undefined && v !== null);
         const existing = ids.length
-          ? ((await tx.select().from(schema).where(inArray(config.id, ids as any))) as unknown as Record<string, unknown>[])
+          ? ((await runner.select().from(schema).where(inArray(config.id, ids as any))) as unknown as Record<string, unknown>[])
           : [];
-        const prev = new Map(existing.map((e) => [String(e[idColumnName]), e]));
+        return new Map(existing.map((e) => [String(e[idColumnName]), e]));
+      };
 
-        const out: Record<string, unknown>[] = [];
-        for (const rawItem of data.items) {
-          const item = applyWritable(rawItem as Record<string, unknown>);
-          const id = String(item[idColumnName]);
-          const isExisting = prev.has(id);
-          const hookData = isExisting
-            ? await executeBeforeUpdate(hooks, ctx, id, item as any)
-            : await executeBeforeCreate(hooks, ctx, item as any);
-
-          const setObj: Record<string, unknown> = { ...(hookData as Record<string, unknown>) };
-          delete setObj[idColumnName];
-
-          const row = ((await tx
+      // Run the before-hook for one item and return its (lazy) upsert statement.
+      // The statement is wrapped so awaiting this promise doesn't execute the
+      // builder (drizzle builders are thenable); callers run it explicitly.
+      const buildUpsert = async (
+        runner: DrizzleTransaction | typeof db,
+        rawItem: unknown,
+        prev: Map<string, Record<string, unknown>>
+      ): Promise<{ stmt: any }> => {
+        const item = applyWritable(rawItem as Record<string, unknown>);
+        const id = String(item[idColumnName]);
+        const hookData = prev.has(id)
+          ? await executeBeforeUpdate(hooks, ctx, id, item as any)
+          : await executeBeforeCreate(hooks, ctx, item as any);
+        const setObj: Record<string, unknown> = { ...(hookData as Record<string, unknown>) };
+        delete setObj[idColumnName];
+        return {
+          stmt: runner
             .insert(schema)
             .values(hookData as any)
             .onConflictDoUpdate({ target: config.id, set: setObj as any })
-            .returning()) as any[])[0];
-          out.push(row as Record<string, unknown>);
-        }
-        return { upserted: out, previousMap: prev };
-      });
+            .returning(),
+        };
+      };
+
+      let upserted: Record<string, unknown>[];
+      let previousMap: Map<string, Record<string, unknown>>;
+
+      if (txRunner.interactive) {
+        ({ upserted, previousMap } = await txRunner.run(async (tx: DrizzleTransaction) => {
+          const prev = await loadPrev(tx);
+          const out: Record<string, unknown>[] = [];
+          // Interleave hook -> insert per item (a hook may observe prior upserts).
+          for (const rawItem of data.items) {
+            const { stmt } = await buildUpsert(tx, rawItem, prev);
+            out.push(((await stmt) as any[])[0] as Record<string, unknown>);
+          }
+          return { upserted: out, previousMap: prev };
+        }));
+      } else {
+        // No interactive transactions (D1): build every statement, then apply them
+        // atomically with db.batch (D1's atomic primitive).
+        previousMap = await loadPrev(db);
+        const built: any[] = [];
+        for (const rawItem of data.items) built.push((await buildUpsert(db, rawItem, previousMap)).stmt);
+        const results = built.length ? await (db as any).batch(built) : [];
+        upserted = (results as any[]).map((r) => (r as any[])[0] as Record<string, unknown>);
+      }
 
       for (const item of upserted) {
         const id = String(item[idColumnName]);
@@ -550,7 +584,7 @@ export const useResource = <TConfig extends TableConfig>(
       const filter = await applyFilters(c, "update");
       const data = parseUpdate(await readJsonBody(c));
 
-      const result = await db.transaction(async (tx: DrizzleTransaction) => {
+      const result = await txRunner.run(async (tx: DrizzleTransaction) => {
         const beforeItems = (await tx.select().from(schema).where(filter)) as unknown as Record<string, unknown>[];
 
         if (beforeItems.length > batchConfig.update!) {
@@ -612,7 +646,7 @@ export const useResource = <TConfig extends TableConfig>(
     router.delete("/batch", async (c) => {
       const filter = await applyFilters(c, "delete");
 
-      const result = await db.transaction(async (tx: DrizzleTransaction) => {
+      const result = await txRunner.run(async (tx: DrizzleTransaction) => {
         const items = (await tx.select().from(schema).where(filter)) as unknown as Record<string, unknown>[];
 
         if (items.length > batchConfig.delete!) {
@@ -1232,9 +1266,12 @@ export const useResource = <TConfig extends TableConfig>(
 
     let created: any;
     if (nestedEntries.length > 0) {
-      // Atomic: belongsTo parents first (to wire local FKs), then the main row,
-      // then hasMany/hasOne children (wired to the new row's referenced key).
-      created = await db.transaction(async (tx: DrizzleTransaction) => {
+      // belongsTo parents first (to wire local FKs), then the main row, then
+      // hasMany/hasOne children (wired to the new row's referenced key). Atomic
+      // on engines with interactive transactions. On D1 these run sequentially
+      // and are NOT atomic — each insert feeds the next via its returned id, so
+      // they can't be expressed as a single db.batch (see the nested-writes docs).
+      created = await txRunner.run(async (tx: DrizzleTransaction) => {
         for (const { relation, value } of nestedEntries) {
           if (
             relation.type === "belongsTo" &&

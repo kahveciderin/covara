@@ -11,6 +11,10 @@ With `nestedWrites: true`, a `POST /` body may embed related objects under their
 
 `nestedWrites` is off by default and requires `relations` to be configured.
 
+:::caution Cloudflare D1
+D1 has no interactive transactions, and a nested write chains inserts whose generated ids feed the next, so it can't be a single atomic `batch()`. On D1 these inserts run sequentially and are **not** atomic — a mid-chain failure can leave partial rows. See the [Workers guide](../deployment/workers.md#d1-and-transactions).
+:::
+
 ```typescript
 useResource(postsTable, {
   db,
