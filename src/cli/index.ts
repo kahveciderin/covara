@@ -265,8 +265,30 @@ export const runCli = async (argv: string[]): Promise<number> => {
   return 1;
 };
 
-const invokedDirectly =
-  !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// Whether this module is the process entry point. Compares real (symlink-
+// resolved) paths: when installed, the bin runs through a symlink
+// (node_modules/.bin/covara -> ../covara/dist/cli/index.js), so a raw
+// import.meta.url vs argv[1] comparison would never match and the CLI would
+// silently no-op under `npx`/global installs.
+export const isMainModule = (
+  metaUrl: string,
+  argv1: string | undefined
+): boolean => {
+  if (!argv1) return false;
+  try {
+    return fs.realpathSync(fileURLToPath(metaUrl)) === fs.realpathSync(argv1);
+  } catch {
+    // Fall back to a direct URL comparison if realpath fails (e.g. argv1 is not
+    // a real file on disk in some sandboxed runners).
+    try {
+      return metaUrl === pathToFileURL(argv1).href;
+    } catch {
+      return false;
+    }
+  }
+};
+
+const invokedDirectly = isMainModule(import.meta.url, process.argv[1]);
 
 if (invokedDirectly) {
   runCli(process.argv.slice(2))
