@@ -238,6 +238,87 @@ describe("scaffoldProject", () => {
     }
   });
 
+  describe("node + sqlite + react frontend", () => {
+    const options: ScaffoldOptions = {
+      name: "react-app",
+      template: "node",
+      db: "sqlite",
+      frontend: "react",
+    };
+
+    it("emits the frontend files only when --frontend react", () => {
+      const { targetDir, result } = scaffold(options);
+      const frontendFiles = [
+        "frontend/vite.config.ts",
+        "frontend/tsconfig.json",
+        "frontend/index.html",
+        "frontend/src/main.tsx",
+        "frontend/src/App.tsx",
+        "frontend/src/styles.css",
+        "frontend/src/generated/api-types.ts",
+      ];
+      for (const file of frontendFiles) {
+        expect(result.files).toContain(file);
+        expect(fs.existsSync(path.join(targetDir, file))).toBe(true);
+      }
+
+      // Default (no frontend) emits none of them.
+      const plain = scaffold({ name: "plain-app", template: "node", db: "sqlite" });
+      for (const file of frontendFiles) {
+        expect(plain.result.files).not.toContain(file);
+      }
+    });
+
+    it("wires react deps, the single-process dev server, and live typegen", () => {
+      const { targetDir } = scaffold(options);
+      const pkg = readJson(targetDir, "package.json");
+      expect(Object.keys(pkg.dependencies)).toEqual(
+        expect.arrayContaining(["react", "react-dom", "@hono/node-server"])
+      );
+      expect(Object.keys(pkg.devDependencies)).toEqual(
+        expect.arrayContaining(["vite", "@vitejs/plugin-react", "@types/react"])
+      );
+      expect(pkg.scripts.dev).toContain("covara dev");
+      expect(pkg.scripts.dev).toContain("--types-out frontend/src/generated/api-types.ts");
+      expect(pkg.scripts.build).toContain("vite build");
+      expect(pkg.scripts.types).toContain("covara types");
+
+      const index = read(targetDir, "src/index.ts");
+      expect(index).toContain("getRequestListener");
+      expect(index).toContain('process.env.NODE_ENV === "development"');
+      expect(index).toContain('import("vite")');
+      expect(index).toContain("middlewareMode");
+      expect(index).toContain("serveStatic");
+      expect(index).toContain('p.startsWith("/api")');
+      expect(index).toContain('p.startsWith("/__covara")');
+
+      const app = read(targetDir, "frontend/src/App.tsx");
+      expect(app).toContain('from "covara/client/react"');
+      expect(app).toContain("useLiveList");
+
+      expect(read(targetDir, ".gitignore")).toContain("public/");
+      expect(read(targetDir, "Dockerfile")).toContain("/app/public ./public");
+    });
+  });
+
+  describe("cloudflare + react serves the SPA via [assets]", () => {
+    it("adds the assets block and a build step", () => {
+      const { targetDir } = scaffold({
+        name: "edge-react",
+        template: "cloudflare",
+        db: "sqlite",
+        frontend: "react",
+      });
+      const wrangler = read(targetDir, "wrangler.toml");
+      expect(wrangler).toContain("[assets]");
+      expect(wrangler).toContain('directory = "./public"');
+      expect(wrangler).toContain('run_worker_first = ["/api/*", "/__covara/*"]');
+      const pkg = readJson(targetDir, "package.json");
+      expect(pkg.scripts.build).toContain("vite build");
+      expect(fs.existsSync(path.join(targetDir, "frontend/src/App.tsx"))).toBe(true);
+    });
+  });
+
   describe("target directory safety", () => {
     it("refuses to write into a non-empty directory", () => {
       const base = makeTempDir();

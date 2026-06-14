@@ -15,8 +15,24 @@ export {
   internalSchemaSqlite,
   internalSchemaPg,
   INTERNAL_TABLE_NAMES,
+  SESSION_KEYS,
+  ACCOUNT_KEYS,
+  API_KEY_KEYS,
+  VERIFICATION_KEYS,
+  defineInternalSchema,
+  makeIdentityResolver,
 } from "./internal-schema";
-export type { InternalTableName } from "./internal-schema";
+export type {
+  InternalTableName,
+  SessionKey,
+  AccountKey,
+  ApiKeyKey,
+  VerificationKey,
+  TableResolver,
+  InternalTableOverride,
+  InternalSchemaInput,
+  InternalSchemaBundle,
+} from "./internal-schema";
 
 export { migrateInternal, autoMigrate, detectDialect } from "./migrate";
 export type { Dialect, MigrateOptions, MigrationSummary } from "./migrate";

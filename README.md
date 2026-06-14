@@ -91,7 +91,7 @@ function TodoList() {
 ### File Storage
 - **Storage Adapters** - Local disk, S3, Cloudflare R2 (native binding or S3-compat), and in-memory behind one `StorageAdapter` interface
 - **File Resources** - First-class resources with an upload/download layer: `app.fileResource(...)` chains like any resource and inherits the full CRUD/hooks/procedures/relations/subscriptions/scopes surface, plus MIME/size validation, per-user keys, and storage cleanup on delete
-- **Zero-config local serving** - `createCovara` auto-serves a local adapter's `baseUrl` (no manual `serveStatic`); admin data explorer gets a per-row Download action
+- **Zero-config local serving** - `createCovara` auto-serves a local adapter's `baseUrl`; admin data explorer gets a per-row Download action
 - **Presigned URLs** - Optional direct-to-bucket uploads/downloads with configurable expiry
 - **React Hooks** - `useFileUpload` (with progress), `useFile`, `useFiles`; `getDownloadUrl()` for React Native
 
@@ -139,10 +139,12 @@ function TodoList() {
 - **Client Access** - Typed `fetchPublicEnv` / `createEnvClient` and a `usePublicEnv` React hook
 
 ### Developer Experience
-- **Project Scaffolding** - `npx covara create my-app` (Node/Workers templates, SQLite/Postgres), plus `covara generate resource|migration`
+- **Project Scaffolding** - `npx covara create my-app` (Node/Workers templates, SQLite/Postgres), optional live React SPA with `--frontend react`, plus `covara generate resource|migration`
 - **`covara dev` Loop** - Dev watcher: streams schema changes to the DB (additive auto-applied, destructive gated), regenerates the typed client, runs the server — no manual push. Plus `covara db` connection profiles (local/remote/Turso/Postgres), `push`/`migrate`/`studio`, and `data`/`import`/`export`/`run`/`types`
 - **Deploy-Ready Output** - Generated Dockerfile, docker-compose, complete wrangler.toml, GitHub Actions CI, `.env.example`
 - **Framework Migrations** - `covara/db` ships canonical internal-table schemas, an idempotent `autoMigrate`/`migrateInternal`, a generic seeder, and pool-sizing helpers
+- **Shapeable Internal Tables** - bring your own auth tables (custom names + column remapping) with `defineInternalSchema`; every internal/system table and its required columns is documented
+- **Pluggable Observability Storage** - the admin audit log, request/error logs, and metrics persist to KV (or your own adapter) when configured, in-memory otherwise
 - **App Factory** - `createCovara()` wires errors, auth, security headers, health, OpenAPI, admin UI
 - **Graceful Shutdown** - SIGTERM/SIGINT draining with `/readyz` 503 and clean SSE close
 - **Admin UI** - Built-in dashboard at `/__covara/ui`
@@ -157,6 +159,7 @@ function TodoList() {
 
 ```bash
 npx covara create my-app                          # Node + SQLite
+npx covara create my-app --frontend react         # + a live React SPA on the same server
 npx covara create my-app --db postgres            # Node + PostgreSQL
 npx covara create my-app --template cloudflare    # Cloudflare Workers + D1
 ```
@@ -484,7 +487,7 @@ const app = createCovara()
 
 ## File Storage
 
-Configure a storage backend once, then chain a file resource like any other. Local uploads are auto-served at `baseUrl` — no `serveStatic` wiring:
+Configure a storage backend once, then chain a file resource like any other. Local uploads are auto-served at `baseUrl`:
 
 ```typescript
 import { createCovara, initializeStorage } from "covara";
@@ -852,7 +855,7 @@ expect(res.status).toBe(201);
 
 📚 **Full documentation: [kahveciderin.github.io/covara](https://kahveciderin.github.io/covara)**
 
-The docs site is built with Docusaurus from the [`website/`](./website) folder and published to GitHub Pages automatically (`.github/workflows/docs.yml`). Highlights:
+Highlights:
 
 - **Get started** — [Introduction](https://kahveciderin.github.io/covara/), [Quick Start](https://kahveciderin.github.io/covara/quick-start), [Tutorial](https://kahveciderin.github.io/covara/tutorial)
 - **Core** — [Resources](https://kahveciderin.github.io/covara/core/resources-and-app), [Filtering](https://kahveciderin.github.io/covara/core/filtering), [Pagination](https://kahveciderin.github.io/covara/core/pagination), [Aggregations](https://kahveciderin.github.io/covara/core/aggregations), [Relations](https://kahveciderin.github.io/covara/core/relations), [Search](https://kahveciderin.github.io/covara/core/search)
@@ -861,16 +864,8 @@ The docs site is built with Docusaurus from the [`website/`](./website) folder a
 - **Platform** — [Storage](https://kahveciderin.github.io/covara/platform/storage), [Email](https://kahveciderin.github.io/covara/platform/email), [Billing](https://kahveciderin.github.io/covara/platform/billing), [Tasks](https://kahveciderin.github.io/covara/platform/tasks), [KV](https://kahveciderin.github.io/covara/platform/kv)
 - **Client** — [Overview](https://kahveciderin.github.io/covara/client/overview), [React hooks](https://kahveciderin.github.io/covara/client/react-hooks), [Offline](https://kahveciderin.github.io/covara/client/offline), [Type generation](https://kahveciderin.github.io/covara/client/typegen)
 - **Deploy** — [Node](https://kahveciderin.github.io/covara/deployment/node), [Cloudflare Workers](https://kahveciderin.github.io/covara/deployment/workers), [Databases](https://kahveciderin.github.io/covara/deployment/databases)
-- **Reference** — [Contracts (invariants)](https://kahveciderin.github.io/covara/contracts/overview), [Error handling](https://kahveciderin.github.io/covara/tooling/error-handling), [Migrating from Express](https://kahveciderin.github.io/covara/migration/from-express)
+- **Reference** — [Contracts (invariants)](https://kahveciderin.github.io/covara/contracts/overview), [Error handling](https://kahveciderin.github.io/covara/tooling/error-handling)
 
-Run the docs locally:
-
-```bash
-cd website
-pnpm install
-pnpm start      # dev server with hot reload
-pnpm build      # production build (validates all internal links)
-```
 
 ## Requirements
 

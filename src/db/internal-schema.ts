@@ -13,6 +13,7 @@ import {
   primaryKey as pgPrimaryKey,
   index as pgIndex,
 } from "drizzle-orm/pg-core";
+import { getTableColumns } from "drizzle-orm";
 
 export type InternalTableName =
   | "auth_sessions"
@@ -192,3 +193,193 @@ export const authSessions = authSessionsSqlite;
 export const authAccounts = authAccountsSqlite;
 export const authApiKeys = authApiKeysSqlite;
 export const authVerificationTokens = authVerificationTokensSqlite;
+
+export const SESSION_KEYS = [
+  "id",
+  "userId",
+  "createdAt",
+  "expiresAt",
+  "data",
+] as const;
+export type SessionKey = (typeof SESSION_KEYS)[number];
+const SESSION_REQUIRED: readonly SessionKey[] = [
+  "id",
+  "userId",
+  "createdAt",
+  "expiresAt",
+];
+
+export const ACCOUNT_KEYS = [
+  "userId",
+  "type",
+  "provider",
+  "providerAccountId",
+  "refresh_token",
+  "access_token",
+  "expires_at",
+  "token_type",
+  "scope",
+  "id_token",
+  "session_state",
+] as const;
+export type AccountKey = (typeof ACCOUNT_KEYS)[number];
+const ACCOUNT_REQUIRED: readonly AccountKey[] = [
+  "userId",
+  "type",
+  "provider",
+  "providerAccountId",
+];
+
+export const API_KEY_KEYS = [
+  "id",
+  "userId",
+  "name",
+  "keyHash",
+  "keyPrefix",
+  "scopes",
+  "createdAt",
+  "expiresAt",
+  "lastUsedAt",
+  "revokedAt",
+] as const;
+export type ApiKeyKey = (typeof API_KEY_KEYS)[number];
+const API_KEY_REQUIRED: readonly ApiKeyKey[] = [
+  "id",
+  "userId",
+  "name",
+  "keyHash",
+  "keyPrefix",
+  "createdAt",
+];
+
+export const VERIFICATION_KEYS = ["identifier", "token", "expires"] as const;
+export type VerificationKey = (typeof VERIFICATION_KEYS)[number];
+const VERIFICATION_REQUIRED: readonly VerificationKey[] = [
+  "identifier",
+  "token",
+  "expires",
+];
+
+type AnyTable = Record<string, unknown>;
+
+export interface TableResolver<K extends string> {
+  table: AnyTable;
+  col(key: K): unknown;
+  prop(key: K): string;
+  dbName(key: K): string;
+  has(key: K): boolean;
+}
+
+export interface InternalTableOverride<K extends string> {
+  table: AnyTable;
+  fieldMap?: Partial<Record<K, string>>;
+}
+
+const makeResolver = <K extends string>(
+  table: AnyTable,
+  required: readonly K[],
+  label: string,
+  fieldMap?: Partial<Record<K, string>>
+): TableResolver<K> => {
+  let columns: Record<string, { name?: string }> = {};
+  try {
+    columns = getTableColumns(table as never) as unknown as Record<
+      string,
+      { name?: string }
+    >;
+  } catch {
+    columns = {};
+  }
+  const propOf = (key: K): string => (fieldMap?.[key] ?? key) as string;
+  const hasProp = (p: string): boolean =>
+    columns[p] != null || table[p] != null;
+
+  for (const key of required) {
+    const p = propOf(key);
+    if (!hasProp(p)) {
+      throw new Error(
+        `internalSchema.${label}.${key}: required column not found on the supplied table (looked for property "${p}"). Map it via fieldMap.`
+      );
+    }
+  }
+
+  return {
+    table,
+    col: (key) => columns[propOf(key)] ?? table[propOf(key)],
+    prop: (key) => propOf(key),
+    dbName: (key) => columns[propOf(key)]?.name ?? propOf(key),
+    has: (key) => hasProp(propOf(key)),
+  };
+};
+
+export const makeIdentityResolver = <K extends string>(
+  table: AnyTable,
+  required: readonly K[],
+  label = "table"
+): TableResolver<K> => makeResolver(table, required, label);
+
+export interface InternalSchemaInput {
+  dialect?: "sqlite" | "postgresql";
+  sessions?: InternalTableOverride<SessionKey>;
+  accounts?: InternalTableOverride<AccountKey>;
+  apiKeys?: InternalTableOverride<ApiKeyKey>;
+  verificationTokens?: InternalTableOverride<VerificationKey>;
+  managedExternally?: boolean;
+}
+
+export interface InternalSchemaBundle {
+  dialect: "sqlite" | "postgresql";
+  managedExternally: boolean;
+  sessions: TableResolver<SessionKey>;
+  accounts: TableResolver<AccountKey>;
+  apiKeys: TableResolver<ApiKeyKey>;
+  verificationTokens: TableResolver<VerificationKey>;
+}
+
+export const defineInternalSchema = (
+  input: InternalSchemaInput = {}
+): InternalSchemaBundle => {
+  const dialect = input.dialect ?? "sqlite";
+  const builtins = internalSchema(dialect);
+  const resolve = <K extends string>(
+    override: InternalTableOverride<K> | undefined,
+    builtin: AnyTable,
+    required: readonly K[],
+    label: string
+  ): TableResolver<K> =>
+    makeResolver(
+      override?.table ?? builtin,
+      required,
+      label,
+      override?.fieldMap
+    );
+
+  return {
+    dialect,
+    managedExternally: input.managedExternally ?? false,
+    sessions: resolve(
+      input.sessions,
+      builtins.authSessions as unknown as AnyTable,
+      SESSION_REQUIRED,
+      "sessions"
+    ),
+    accounts: resolve(
+      input.accounts,
+      builtins.authAccounts as unknown as AnyTable,
+      ACCOUNT_REQUIRED,
+      "accounts"
+    ),
+    apiKeys: resolve(
+      input.apiKeys,
+      builtins.authApiKeys as unknown as AnyTable,
+      API_KEY_REQUIRED,
+      "apiKeys"
+    ),
+    verificationTokens: resolve(
+      input.verificationTokens,
+      builtins.authVerificationTokens as unknown as AnyTable,
+      VERIFICATION_REQUIRED,
+      "verificationTokens"
+    ),
+  };
+};

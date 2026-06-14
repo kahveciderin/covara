@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { hashPassword, verifyPassword } from "./password";
+import type { KVAdapter } from "@/kv/types";
 
 export interface ApiKeyMetadata {
   id: string;
@@ -53,6 +54,107 @@ export class InMemoryApiKeyStore implements ApiKeyStore {
     }
   }
 }
+
+interface SerializedApiKey {
+  id: string;
+  label?: string;
+  userId?: string;
+  createdAt: string;
+  lastUsedAt?: string | null;
+  expiresAt?: string | null;
+  scopes?: string[];
+  hash: string;
+}
+
+const serializeApiKey = (k: StoredApiKey): string =>
+  JSON.stringify({
+    ...k,
+    createdAt: k.createdAt.toISOString(),
+    lastUsedAt: k.lastUsedAt ? k.lastUsedAt.toISOString() : null,
+    expiresAt: k.expiresAt ? k.expiresAt.toISOString() : null,
+  } satisfies SerializedApiKey);
+
+const deserializeApiKey = (raw: string): StoredApiKey => {
+  const s = JSON.parse(raw) as SerializedApiKey;
+  return {
+    id: s.id,
+    label: s.label,
+    userId: s.userId,
+    scopes: s.scopes,
+    hash: s.hash,
+    createdAt: new Date(s.createdAt),
+    lastUsedAt: s.lastUsedAt ? new Date(s.lastUsedAt) : null,
+    expiresAt: s.expiresAt ? new Date(s.expiresAt) : null,
+  };
+};
+
+// KV-backed API-key store — works with any KV adapter (memory/redis/durable
+// object), so API keys survive restarts and are shared across instances.
+export class KVApiKeyStore implements ApiKeyStore {
+  private kv: KVAdapter;
+  private prefix: string;
+
+  constructor(kv: KVAdapter, prefix = "apikey") {
+    this.kv = kv;
+    this.prefix = prefix;
+  }
+
+  private recordKey(id: string): string {
+    return `${this.prefix}:${id}`;
+  }
+  private allKey(): string {
+    return `${this.prefix}:all`;
+  }
+  private userKey(userId: string): string {
+    return `${this.prefix}:user:${userId}`;
+  }
+
+  async create(record: StoredApiKey): Promise<void> {
+    await this.kv.set(this.recordKey(record.id), serializeApiKey(record));
+    await this.kv.sadd(this.allKey(), record.id);
+    if (record.userId !== undefined) {
+      await this.kv.sadd(this.userKey(record.userId), record.id);
+    }
+  }
+
+  async list(filter?: { userId?: string }): Promise<StoredApiKey[]> {
+    const ids =
+      filter?.userId !== undefined
+        ? await this.kv.smembers(this.userKey(filter.userId))
+        : await this.kv.smembers(this.allKey());
+    const out: StoredApiKey[] = [];
+    for (const id of ids) {
+      const raw = await this.kv.get(this.recordKey(id));
+      if (raw) out.push(deserializeApiKey(raw));
+    }
+    return out;
+  }
+
+  async findById(id: string): Promise<StoredApiKey | null> {
+    const raw = await this.kv.get(this.recordKey(id));
+    return raw ? deserializeApiKey(raw) : null;
+  }
+
+  async delete(id: string): Promise<void> {
+    const existing = await this.findById(id);
+    await this.kv.del(this.recordKey(id));
+    await this.kv.srem(this.allKey(), id);
+    if (existing?.userId !== undefined) {
+      await this.kv.srem(this.userKey(existing.userId), id);
+    }
+  }
+
+  async touch(id: string, lastUsedAt: Date): Promise<void> {
+    const existing = await this.findById(id);
+    if (existing) {
+      existing.lastUsedAt = lastUsedAt;
+      await this.kv.set(this.recordKey(id), serializeApiKey(existing));
+    }
+  }
+}
+
+export const createKVApiKeyStore = (kv: KVAdapter, prefix?: string): KVApiKeyStore =>
+  new KVApiKeyStore(kv, prefix);
 
 export interface CreateApiKeyOptions {
   store: ApiKeyStore;

@@ -1,18 +1,18 @@
 import { SessionData, SessionStore } from "../types";
 import { KVAdapter } from "@/kv/types";
 
-export interface RedisSessionStoreOptions {
+export interface KVSessionStoreOptions {
   kv: KVAdapter;
   prefix?: string;
   onError?: (error: Error) => void;
 }
 
-export class RedisSessionStore implements SessionStore {
+export class KVSessionStore implements SessionStore {
   private kv: KVAdapter;
   private prefix: string;
   private onError?: (error: Error) => void;
 
-  constructor(options: RedisSessionStoreOptions) {
+  constructor(options: KVSessionStoreOptions) {
     this.kv = options.kv;
     this.prefix = options.prefix ?? "session";
     this.onError = options.onError;
@@ -168,8 +168,15 @@ export class RedisSessionStore implements SessionStore {
   }
 }
 
-export const createRedisSessionStore = (
-  options: RedisSessionStoreOptions
-): RedisSessionStore => {
-  return new RedisSessionStore(options);
+export const createKVSessionStore = (
+  options: KVSessionStoreOptions
+): KVSessionStore => {
+  return new KVSessionStore(options);
 };
+
+/** @deprecated Use {@link KVSessionStoreOptions}. Works with any KV adapter, not only Redis. */
+export type RedisSessionStoreOptions = KVSessionStoreOptions;
+/** @deprecated Use {@link KVSessionStore}. Works with any KV adapter, not only Redis. */
+export const RedisSessionStore = KVSessionStore;
+/** @deprecated Use {@link createKVSessionStore}. Works with any KV adapter, not only Redis. */
+export const createRedisSessionStore = createKVSessionStore;

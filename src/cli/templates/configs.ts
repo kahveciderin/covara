@@ -104,11 +104,23 @@ export const renderDrizzleConfig = (options: ScaffoldOptions): string => {
 };
 
 export const renderWranglerToml = (options: ScaffoldOptions): string => {
+  const assets =
+    options.frontend === "react"
+      ? `
+# Static assets (the built React SPA). The worker handles /api and /__covara;
+# everything else is served from ./public with SPA fallback.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/__covara/*"]
+`
+      : "";
   const header = `name = "${options.name}"
 main = "src/worker.ts"
 compatibility_date = "2026-06-01"
 compatibility_flags = ["nodejs_compat"]
-
+${assets}
 [build]
 command = ""
 
@@ -151,6 +163,9 @@ database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
 export const renderGitignore = (options: ScaffoldOptions): string => {
   const lines = ["node_modules/", "dist/", ".env", ".env.*", "!.env.example"];
+  if (options.frontend === "react") {
+    lines.push("public/");
+  }
   if (options.db === "sqlite") {
     lines.push("*.db", "*.db-journal");
   }

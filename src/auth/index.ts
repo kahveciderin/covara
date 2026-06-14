@@ -18,6 +18,8 @@ export {
 } from "./login-throttle";
 export {
   InMemoryVerificationTokenStore,
+  KVVerificationTokenStore,
+  createKVVerificationTokenStore,
   issueToken,
   verifyToken,
   hashToken,
@@ -56,6 +58,8 @@ export {
   revokeApiKey,
   listApiKeys,
   InMemoryApiKeyStore,
+  KVApiKeyStore,
+  createKVApiKeyStore,
   type ApiKeyStore,
   type StoredApiKey,
   type ApiKeyMetadata,
@@ -94,12 +98,15 @@ export type {
 } from "./adapters/oidc";
 
 export {
+  KVSessionStore,
+  createKVSessionStore,
   RedisSessionStore,
   createRedisSessionStore,
   DrizzleSessionStore,
   createDrizzleSessionStore,
 } from "./stores";
 export type {
+  KVSessionStoreOptions,
   RedisSessionStoreOptions,
   DrizzleSessionStoreOptions,
   SessionsTableColumns,

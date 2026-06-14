@@ -23,6 +23,7 @@ import { createSecurityHeaders, type SecurityHeadersOptions } from "@/middleware
 import { onShutdown } from "@/server/lifecycle";
 import { closeAllHandlers } from "@/resource/subscription";
 import { installLiveSupport, type LiveSupport, type PageComponent } from "@/htmx/server";
+import type { InternalSchemaBundle } from "@/db/internal-schema";
 
 let sseDrainHookRegistered = false;
 
@@ -46,11 +47,17 @@ export interface CovaraOptions {
   // (via initializeStorage before createCovara), auto-mount static serving for
   // it so you never wire serveStatic by hand. Default true; set false to opt out.
   serveLocalStorage?: boolean;
+  // A `defineInternalSchema(...)` bundle describing custom internal auth tables
+  // (names / column remapping). Used for migration + introspection; it does NOT
+  // rewire pre-built session/api-key stores — construct those with the matching
+  // resolver yourself before createCovara.
+  internalSchema?: InternalSchemaBundle;
 }
 
 export class CovaraApp extends Hono {
   private readonly resourceBasePath: string;
   private liveSupport?: LiveSupport;
+  public readonly internalSchema?: InternalSchemaBundle;
 
   private get live(): LiveSupport {
     if (!this.liveSupport) {
@@ -62,6 +69,7 @@ export class CovaraApp extends Hono {
   constructor(options: CovaraOptions = {}) {
     super();
     this.resourceBasePath = normalizeBasePath(options.basePath ?? "/api");
+    this.internalSchema = options.internalSchema;
 
     this.onError(errorHandler);
     this.notFound(notFoundHandler);

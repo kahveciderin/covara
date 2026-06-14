@@ -11,7 +11,9 @@ import {
 import {
   TEMPLATES,
   DATABASES,
+  FRONTENDS,
   type DbName,
+  type FrontendName,
   type ScaffoldOptions,
   type TemplateName,
 } from "./options.js";
@@ -27,6 +29,7 @@ import { envCommand } from "./commands/env.js";
 import { runCommand } from "./commands/run.js";
 import { seedCommand } from "./commands/seed.js";
 import { exportCommand, importCommand } from "./commands/import-export.js";
+import { loadDotEnv } from "./dotenv.js";
 
 export type CommandHandler = (args: string[]) => number | Promise<number>;
 const COMMANDS: Record<string, CommandHandler> = {
@@ -113,6 +116,7 @@ interface ParsedCreateArgs {
   name: string;
   template: TemplateName;
   db: DbName;
+  frontend: FrontendName;
   install: boolean;
 }
 
@@ -120,6 +124,7 @@ const parseCreateArgs = (args: string[]): ParsedCreateArgs => {
   let name: string | undefined;
   let template: TemplateName = "node";
   let db: DbName = "sqlite";
+  let frontend: FrontendName = "none";
   let install = true;
 
   const readValue = (flag: string, inline: string | undefined, rest: string[]): string => {
@@ -148,6 +153,12 @@ const parseCreateArgs = (args: string[]): ParsedCreateArgs => {
         throw new Error(`invalid db "${value}" (expected: ${DATABASES.join(" | ")})`);
       }
       db = value as DbName;
+    } else if (arg === "--frontend" || arg.startsWith("--frontend=")) {
+      const value = readValue("--frontend", arg.includes("=") ? arg.split("=").slice(1).join("=") : undefined, rest);
+      if (!FRONTENDS.includes(value as FrontendName)) {
+        throw new Error(`invalid frontend "${value}" (expected: ${FRONTENDS.join(" | ")})`);
+      }
+      frontend = value as FrontendName;
     } else if (arg.startsWith("-")) {
       throw new Error(`unknown option "${arg}"`);
     } else if (name === undefined) {
@@ -161,7 +172,7 @@ const parseCreateArgs = (args: string[]): ParsedCreateArgs => {
     throw new Error("missing <app-name> (usage: covara create <app-name>)");
   }
 
-  return { name, template, db, install };
+  return { name, template, db, frontend, install };
 };
 
 const runCreate = (args: string[]): number => {
@@ -170,6 +181,7 @@ const runCreate = (args: string[]): number => {
     name: parsed.name,
     template: parsed.template,
     db: parsed.db,
+    frontend: parsed.frontend,
   };
   const targetDir = path.resolve(process.cwd(), parsed.name);
 
@@ -236,6 +248,8 @@ const runGenerate = (args: string[]): number => {
 
 export const runCli = async (argv: string[]): Promise<number> => {
   const [command, ...rest] = argv;
+
+  loadDotEnv(process.cwd());
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
     console.log(HELP);

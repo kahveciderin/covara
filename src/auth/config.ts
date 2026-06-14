@@ -1,7 +1,7 @@
 import { AuthAdapter, SessionStore, InMemorySessionStore } from "./types";
 import { PassportAdapter } from "./adapters/passport";
 import { JWTAdapter, JWTConfig } from "./adapters/jwt";
-import { RedisSessionStore, RedisSessionStoreOptions } from "./stores/redis";
+import { KVSessionStore, KVSessionStoreOptions } from "./stores/kv";
 import {
   DrizzleSessionStore,
   DrizzleSessionStoreOptions,
@@ -11,8 +11,10 @@ import { KVAdapter } from "@/kv/types";
 export type AuthMode = "session" | "jwt";
 
 export interface SessionStoreConfig {
-  type: "memory" | "redis" | "drizzle";
-  redis?: Omit<RedisSessionStoreOptions, "kv"> & { kv: KVAdapter };
+  type: "memory" | "kv" | "redis" | "drizzle";
+  kv?: Omit<KVSessionStoreOptions, "kv"> & { kv: KVAdapter };
+  /** @deprecated Use `kv` — the KV session store works with any KV adapter, not only Redis. */
+  redis?: Omit<KVSessionStoreOptions, "kv"> & { kv: KVAdapter };
   drizzle?: DrizzleSessionStoreOptions;
 }
 
@@ -46,11 +48,14 @@ export const createSessionStore = (config?: SessionStoreConfig): SessionStore =>
   }
 
   switch (config.type) {
-    case "redis":
-      if (!config.redis?.kv) {
-        throw new Error("Redis KV adapter required for redis session store");
+    case "kv":
+    case "redis": {
+      const kvConfig = config.kv ?? config.redis;
+      if (!kvConfig?.kv) {
+        throw new Error("KV adapter required for kv session store");
       }
-      return new RedisSessionStore(config.redis);
+      return new KVSessionStore(kvConfig);
+    }
 
     case "drizzle":
       if (!config.drizzle) {

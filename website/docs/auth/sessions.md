@@ -149,13 +149,22 @@ interface SessionStore {
 | Store | Import | Use |
 |-------|--------|-----|
 | In-memory | `InMemorySessionStore` | Development; lost on restart |
-| Redis | `createRedisSessionStore` (from `covara/auth` stores) | Production, multi-instance |
+| KV (Redis / Durable Object / memory) | `createKVSessionStore` (from `covara/auth` stores) | Production, multi-instance |
 | Drizzle | Drizzle session store (`covara/auth` stores) | DB-backed sessions |
 
 ```typescript
 import { InMemorySessionStore } from "covara";
 const adapter = createPassportAdapter({ sessionStore: new InMemorySessionStore() /* ... */ });
 ```
+
+`createKVSessionStore({ kv })` is backed by the [KV abstraction](../platform/kv.md), so it works with **any** KV adapter — Redis, the Cloudflare Durable Object store, or the in-memory store for tests — not only Redis:
+
+```typescript
+import { createKVSessionStore } from "covara/auth";
+const adapter = createPassportAdapter({ sessionStore: createKVSessionStore({ kv }) /* ... */ });
+```
+
+> `createRedisSessionStore` / `RedisSessionStore` remain as deprecated aliases of `createKVSessionStore` / `KVSessionStore`.
 
 For Redis and Drizzle stores see [`src/auth/stores`]; provide a distributed store so sessions and [login throttling](./account-security.md) work across instances.
 

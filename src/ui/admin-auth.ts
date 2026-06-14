@@ -4,6 +4,11 @@ import { readEnv } from "@/server/env";
 import { getUser } from "@/server/context";
 import { UnauthorizedError } from "@/resource/error";
 import type { UserContext } from "@/resource/types";
+import {
+  createKVLogAdapter,
+  type ObservabilityLogAdapter,
+} from "@/observability/log-adapter";
+import { hasGlobalKV, getGlobalKV } from "@/kv";
 
 export interface AdminUser {
   id: string;
@@ -125,8 +130,14 @@ export interface AdminAuditEntry {
   afterValue?: Record<string, unknown>;
 }
 
-const adminAuditLog: AdminAuditEntry[] = [];
 const MAX_AUDIT_ENTRIES = 1000;
+
+let auditAdapter: ObservabilityLogAdapter<AdminAuditEntry> =
+  createKVLogAdapter<AdminAuditEntry>({
+    maxEntries: MAX_AUDIT_ENTRIES,
+    order: "newest-first",
+    keyPrefix: "covara:obs:audit",
+  });
 
 let auditSink: ((entry: AdminAuditEntry) => void | Promise<void>) | null = null;
 
@@ -136,12 +147,17 @@ export const setAdminAuditSink = (
   auditSink = sink;
 };
 
+// Replace the audit-log backend (in-memory default, KV-backed, or bring-your-own
+// durable store). The write-only `auditSink` still fires alongside it.
+export const setAdminAuditAdapter = (
+  adapter: ObservabilityLogAdapter<AdminAuditEntry>
+): void => {
+  auditAdapter = adapter;
+};
+
 export const logAdminAction = (entry: Omit<AdminAuditEntry, "timestamp">): void => {
   const fullEntry: AdminAuditEntry = { ...entry, timestamp: Date.now() };
-  adminAuditLog.unshift(fullEntry);
-  if (adminAuditLog.length > MAX_AUDIT_ENTRIES) {
-    adminAuditLog.pop();
-  }
+  auditAdapter.append(fullEntry);
   if (auditSink) {
     try {
       const result = auditSink(fullEntry);
@@ -154,15 +170,25 @@ export const logAdminAction = (entry: Omit<AdminAuditEntry, "timestamp">): void 
   }
 };
 
+// Synchronous read of the local mirror (page-load ergonomics). In KV mode this
+// reflects only entries written by this process; use getAdminAuditLogAsync for
+// the authoritative cross-instance view.
 export const getAdminAuditLog = (
   limit: number = 100,
   offset: number = 0
 ): AdminAuditEntry[] => {
-  return adminAuditLog.slice(offset, offset + limit);
+  return auditAdapter.querySync({ limit, offset });
+};
+
+export const getAdminAuditLogAsync = (
+  limit: number = 100,
+  offset: number = 0
+): Promise<AdminAuditEntry[]> => {
+  return auditAdapter.query({ limit, offset });
 };
 
 export const clearAdminAuditLog = (): void => {
-  adminAuditLog.length = 0;
+  void auditAdapter.clear();
 };
 
 export const detectEnvironment = (): EnvironmentMode => {
@@ -172,7 +198,36 @@ export const detectEnvironment = (): EnvironmentMode => {
   return "development";
 };
 
+// Admin auth rate limiting. Uses the global KV store when configured (so limits
+// are enforced across instances) and falls back to a per-process Map otherwise.
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+
+const checkAdminRateLimit = async (
+  clientIP: string,
+  maxRequests: number,
+  windowMs: number
+): Promise<boolean> => {
+  if (hasGlobalKV()) {
+    try {
+      const kv = getGlobalKV();
+      const kvKey = `covara:admin:ratelimit:${clientIP}`;
+      const count = await kv.incr(kvKey);
+      if (count === 1) await kv.expire(kvKey, Math.ceil(windowMs / 1000));
+      return count > maxRequests;
+    } catch {
+      // fall through to local store on KV failure
+    }
+  }
+  const now = Date.now();
+  const entry = rateLimitStore.get(clientIP);
+  if (entry && entry.resetAt > now) {
+    if (entry.count >= maxRequests) return true;
+    entry.count++;
+    return false;
+  }
+  rateLimitStore.set(clientIP, { count: 1, resetAt: now + windowMs });
+  return false;
+};
 
 export const createAdminAuthMiddleware = (
   config: AdminSecurityConfig = {}
@@ -197,28 +252,21 @@ export const createAdminAuthMiddleware = (
     }
 
     if (config.rateLimit) {
-      const key = clientIP;
-      const now = Date.now();
-      const entry = rateLimitStore.get(key);
-
-      if (entry && entry.resetAt > now) {
-        if (entry.count >= config.rateLimit.maxRequests) {
-          return c.json(
-            {
-              type: "/__covara/problems/rate-limit-exceeded",
-              title: "Rate limit exceeded",
-              status: 429,
-              detail: "Too many admin API requests",
-            },
-            429
-          );
-        }
-        entry.count++;
-      } else {
-        rateLimitStore.set(key, {
-          count: 1,
-          resetAt: now + config.rateLimit.windowMs,
-        });
+      const exceeded = await checkAdminRateLimit(
+        clientIP,
+        config.rateLimit.maxRequests,
+        config.rateLimit.windowMs
+      );
+      if (exceeded) {
+        return c.json(
+          {
+            type: "/__covara/problems/rate-limit-exceeded",
+            title: "Rate limit exceeded",
+            status: 429,
+            detail: "Too many admin API requests",
+          },
+          429
+        );
       }
     }
 

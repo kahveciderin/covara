@@ -189,3 +189,7 @@ export const getGlobalKV = (): KVAdapter => {
 export const hasGlobalKV = (): boolean => {
   return globalKV !== null;
 };
+
+export const clearGlobalKV = (): void => {
+  globalKV = null;
+};

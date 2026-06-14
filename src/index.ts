@@ -140,6 +140,8 @@ export {
   generateCsrfToken,
   LoginThrottle,
   InMemoryVerificationTokenStore,
+  KVVerificationTokenStore,
+  createKVVerificationTokenStore,
   issueToken,
   verifyToken,
   issuePasswordResetToken,
@@ -218,6 +220,9 @@ export {
   getSchemaInfo,
   getAllSchemaInfos,
   getAllResourcesForDisplay,
+  setAdminAuditAdapter,
+  setRequestLogAdapter,
+  setErrorLogAdapter,
 } from "./ui";
 export type {
   AdminUIConfig,
@@ -226,6 +231,18 @@ export type {
   SchemaInfo,
   ResourceDisplayInfo,
 } from "./ui";
+
+// Observability log adapters (pluggable persistence for audit/request/error/metrics)
+export {
+  createInMemoryLogAdapter,
+  createKVLogAdapter,
+} from "./observability";
+export type {
+  ObservabilityLogAdapter,
+  LogAdapterOptions,
+  LogQuery,
+  LogOrder,
+} from "./observability";
 
 // Health Endpoints
 export { createHealthEndpoints } from "./health";
@@ -472,6 +489,12 @@ export {
   authApiKeys,
   authVerificationTokens,
   INTERNAL_TABLE_NAMES,
+  SESSION_KEYS,
+  ACCOUNT_KEYS,
+  API_KEY_KEYS,
+  VERIFICATION_KEYS,
+  defineInternalSchema,
+  makeIdentityResolver,
 } from "./db";
 export type {
   Dialect,
@@ -482,6 +505,14 @@ export type {
   PoolDriver,
   PoolConfig,
   InternalTableName,
+  SessionKey,
+  AccountKey,
+  ApiKeyKey,
+  VerificationKey,
+  TableResolver,
+  InternalTableOverride,
+  InternalSchemaInput,
+  InternalSchemaBundle,
 } from "./db";
 
 // Email

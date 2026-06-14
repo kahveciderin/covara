@@ -33,7 +33,7 @@ export type {
   ScanResult,
 } from "./types";
 
-export { setGlobalKV, getGlobalKV, hasGlobalKV } from "./types";
+export { setGlobalKV, getGlobalKV, hasGlobalKV, clearGlobalKV } from "./types";
 
 export { MemoryKVStore, createMemoryKV } from "./memory";
 

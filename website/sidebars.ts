@@ -43,6 +43,7 @@ const sidebars: SidebarsConfig = {
       items: [
         "auth/overview",
         "auth/sessions",
+        "auth/internal-tables",
         "auth/jwt",
         "auth/oidc-provider",
         "auth/federated",
@@ -107,6 +108,7 @@ const sidebars: SidebarsConfig = {
         "tooling/cli",
         "tooling/openapi",
         "tooling/admin-ui",
+        "tooling/observability",
         "tooling/middleware",
         "tooling/error-handling",
       ],

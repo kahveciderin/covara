@@ -1,4 +1,11 @@
-export { createAdminUI, createAdminRequestLogger, logRequest, logError } from "./middleware";
+export {
+  createAdminUI,
+  createAdminRequestLogger,
+  logRequest,
+  logError,
+  setRequestLogAdapter,
+  setErrorLogAdapter,
+} from "./middleware";
 export type { AdminUIConfig, AdminRequestLoggerOptions } from "./middleware";
 export {
   registerResourceSchema,
@@ -23,6 +30,8 @@ export {
   createAdminAuthMiddleware,
   logAdminAction,
   getAdminAuditLog,
+  getAdminAuditLogAsync,
+  setAdminAuditAdapter,
   clearAdminAuditLog,
   setAdminAuditSink,
   extractUserRoles,

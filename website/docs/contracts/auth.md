@@ -69,6 +69,20 @@
 - **Unregistered targets**: Relations to tables not registered as resources have no scope to enforce (no resolver) — these are an explicit author choice
 - **Applies to subscriptions**: Relations embedded in subscription events (`existing`, `added`, `changed`) are scope-filtered **per subscriber** — the subscriber's user is captured at subscribe time, and on every push the target resource's `read` scope is resolved for that user and AND-ed into the included relation, with the same deny semantics as the read path. A subscriber can never receive related rows it could not read directly. Relations are loaded per subscriber rather than shared across them (cost scales with subscriber count; loads are deduplicated per subscriber within a single push)
 
+### Internal Schema & Stores
+- **Logical contract is stable**: `SessionData` (`id`/`userId`/`createdAt`/`expiresAt`/`data`) is always exposed in logical keys regardless of the underlying column names; remapping (`defineInternalSchema` `fieldMap`) applies only at the SQL persistence boundary — see [Internal tables](../auth/internal-tables.md)
+- **Fail-fast validation**: `defineInternalSchema` validates that every required logical key resolves to a column on the supplied table at construction time, never at query time
+- **Defaults are unchanged**: with no `internalSchema`, the built-in tables and the byte-for-byte original migration DDL are used; `createCovara({ internalSchema })` is for migration/introspection and never silently rewires a pre-built store
+- **Migration safety**: generated DDL (`migrateInternal` mode c) covers single-primary-key tables only and throws for compound-PK tables (`auth_accounts`, `auth_verification_tokens`) rather than emitting an incorrect schema; `managedExternally: true` makes migration a no-op
+- **KV session store is backend-agnostic**: `createKVSessionStore` works over any KV adapter; its hash field names are a private serialization, never user-facing, and are not remappable
+- **Users/files are app-owned**: the framework never owns a users table (reached via `getUserById`) or a files table (supplied to `fileResource`); the changelog and rate limits are KV/memory-backed, not database tables
+
+### Observability Storage
+- **Defaults preserve behavior**: the audit log, request/error logs, and metrics are append-only logs backed by an in-memory ring buffer when no KV is configured — identical to before; with a global KV they persist automatically
+- **`append` never throws**: a failing storage backend can never break the audited/served action; the in-memory mirror always records the entry even if a KV write fails
+- **`setAdminAuditSink` is write-only**: it runs alongside the adapter and is for forwarding only; durable read/query/export requires an `ObservabilityLogAdapter`
+- **Cross-process reads**: in KV mode synchronous reads reflect only the local process mirror; authoritative cross-instance reads use the async `query()`/`export()` path
+
 ### Admin Scope Bypass (Admin UI)
 - **Identity re-verification, no secret**: The resource layer skips per-resource auth scopes only when the request carries the `x-covara-admin-bypass` marker **and** its authenticated user (or forwarded admin `apiKey`) passes the registered admin predicate. The marker is not a secret and grants nothing on its own
 - **Leaked marker is inert**: A non-admin presenting the marker is served under normal scope enforcement (fail-closed); the marker value is constant and confers no authority

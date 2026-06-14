@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { parseEnv } from "../dotenv.js";
 
 const envFile = (cwd: string): string => path.join(cwd, ".env");
 
@@ -13,18 +14,6 @@ const keyOf = (line: string): string | null => {
   if (!t || t.startsWith("#")) return null;
   const i = t.indexOf("=");
   return i === -1 ? null : t.slice(0, i).trim();
-};
-
-const parseEnv = (text: string): Record<string, string> => {
-  const map: Record<string, string> = {};
-  for (const line of text.split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("#")) continue;
-    const i = t.indexOf("=");
-    if (i === -1) continue;
-    map[t.slice(0, i).trim()] = t.slice(i + 1).trim();
-  }
-  return map;
 };
 
 export const envCommand = (args: string[]): number => {

@@ -12,7 +12,8 @@ The `covara` CLI scaffolds projects, runs a dev loop that streams schema changes
 ## `covara create`
 
 ```bash
-npx covara create my-app                          # Node + SQLite (default)
+npx covara create my-app                          # Node + SQLite (default), backend only
+npx covara create my-app --frontend react         # + a live React SPA, served by the backend
 npx covara create my-app --template cloudflare    # Cloudflare Workers + D1
 npx covara create my-app --db postgres            # PostgreSQL
 ```
@@ -21,6 +22,7 @@ npx covara create my-app --db postgres            # PostgreSQL
 |------|--------|---------|
 | `--template` | `node`, `cloudflare` | `node` |
 | `--db` | `sqlite`, `postgres` | `sqlite` |
+| `--frontend` | `react`, `none` | `none` |
 | `--no-install` | skip dependency install | — |
 
 Generated projects are deploy-ready. Alongside your source and schema, the scaffolder writes:
@@ -35,6 +37,16 @@ cd my-app
 npm run db:push   # create tables
 npm run dev       # start the server
 ```
+
+### `--frontend react`
+
+Scaffolds a [live React SPA](../client/react-hooks.md) (under `frontend/`) wired to the generated `todos` resource with `useLiveList`, served by the backend itself — **one process, one port, no separate build step**:
+
+- **`npm run dev`** runs a single process that serves the SPA with **Vite HMR** *and* the API (`/api`) and admin UI (`/__covara`) on the same origin (no proxy), while [`covara dev`](#covara-dev) live-applies schema changes and regenerates the typed client into `frontend/src/generated/api-types.ts`.
+- **`npm run build`** builds the SPA (to `public/`) and compiles the backend; **`npm start`** serves the built SPA with an SPA fallback that excludes `/api` and `/__covara`.
+- On **Cloudflare**, the SPA is served via Wrangler [`[assets]`](https://developers.cloudflare.com/workers/static-assets/) with `run_worker_first` for `/api` + `/__covara`; run `npm run dev:web` for Vite HMR alongside `wrangler dev`.
+
+The starter uses the generic typed hook with a hand-written `Todo` interface so it compiles before any codegen; run `npm run types` (or just `npm run dev`) to generate the full typed client and switch to `createTypedClient`.
 
 ## `covara generate`
 

@@ -6,13 +6,20 @@ import { createPagination, decodeCursorLegacy, parseOrderBy } from "@/resource/p
 import { readJsonBody } from "@/server/request";
 import { readEnv } from "@/server/env";
 import {
+  createKVLogAdapter,
+  type ObservabilityLogAdapter,
+} from "@/observability/log-adapter";
+import {
   createAdminAuthMiddleware,
   AdminSecurityConfig,
   getAdminAuditLog,
+  getAdminAuditLogAsync,
+  setAdminAuditAdapter,
   detectEnvironment,
   setAdminAuditSink,
   getAdminUser,
   logAdminAction,
+  type AdminAuditEntry,
 } from "./admin-auth";
 import { markAdminBypass } from "@/server/admin-bypass";
 import { markImpersonate } from "@/server/impersonation";
@@ -56,6 +63,14 @@ export interface AdminUIConfig {
     revokeSession: (sessionId: string) => Promise<void>;
     revokeAllUserSessions: (userId: string) => Promise<number>;
   };
+  // Pluggable persistence for the admin observability logs. Defaults to a
+  // self-falling-back KV/in-memory hybrid; pass a custom adapter (e.g. one
+  // backed by your database) to persist durably.
+  observability?: {
+    auditAdapter?: ObservabilityLogAdapter<AdminAuditEntry>;
+    requestAdapter?: ObservabilityLogAdapter<RequestLog>;
+    errorAdapter?: ObservabilityLogAdapter<ErrorLog>;
+  };
   security?: AdminSecurityConfig;
   dataExplorer?: DataExplorerConfig;
   taskMonitor?: TaskMonitorConfig;
@@ -85,19 +100,33 @@ interface ErrorLog {
   statusCode: number;
 }
 
-const requestLogs: RequestLog[] = [];
-const errorLogs: ErrorLog[] = [];
 const MAX_LOGS = 500;
 const MAX_AUDIT_EXPORT = 1000;
 
+let requestLogAdapter: ObservabilityLogAdapter<RequestLog> = createKVLogAdapter<RequestLog>({
+  maxEntries: MAX_LOGS,
+  order: "newest-first",
+  keyPrefix: "covara:obs:request",
+});
+let errorLogAdapter: ObservabilityLogAdapter<ErrorLog> = createKVLogAdapter<ErrorLog>({
+  maxEntries: MAX_LOGS,
+  order: "newest-first",
+  keyPrefix: "covara:obs:error",
+});
+
+export const setRequestLogAdapter = (adapter: ObservabilityLogAdapter<RequestLog>): void => {
+  requestLogAdapter = adapter;
+};
+export const setErrorLogAdapter = (adapter: ObservabilityLogAdapter<ErrorLog>): void => {
+  errorLogAdapter = adapter;
+};
+
 export const logRequest = (log: RequestLog) => {
-  requestLogs.unshift(log);
-  if (requestLogs.length > MAX_LOGS) requestLogs.pop();
+  requestLogAdapter.append(log);
 };
 
 export const logError = (log: ErrorLog) => {
-  errorLogs.unshift(log);
-  if (errorLogs.length > MAX_LOGS) errorLogs.pop();
+  errorLogAdapter.append(log);
 };
 
 export interface AdminRequestLoggerOptions {
@@ -143,6 +172,16 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
 
   if (config.security?.auditSink) {
     setAdminAuditSink(config.security.auditSink);
+  }
+
+  if (config.observability?.auditAdapter) {
+    setAdminAuditAdapter(config.observability.auditAdapter);
+  }
+  if (config.observability?.requestAdapter) {
+    setRequestLogAdapter(config.observability.requestAdapter);
+  }
+  if (config.observability?.errorAdapter) {
+    setErrorLogAdapter(config.observability.errorAdapter);
   }
 
   // The admin UI is a self-contained HTML app that loads its own (locally
@@ -205,17 +244,17 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   }
 
   // Admin audit log endpoint
-  router.get("/api/admin-audit", adminAuth, (c) => {
+  router.get("/api/admin-audit", adminAuth, async (c) => {
     const limit = parseInt(String(c.req.query("limit"))) || 100;
     const offset = parseInt(String(c.req.query("offset"))) || 0;
-    const entries = getAdminAuditLog(limit, offset);
+    const entries = await getAdminAuditLogAsync(limit, offset);
     return c.json({ entries, mode });
   });
 
   // Admin audit export endpoint
-  router.get("/api/admin-audit/export", adminAuth, (c) => {
+  router.get("/api/admin-audit/export", adminAuth, async (c) => {
     const format = c.req.query("format") || 'json';
-    const entries = getAdminAuditLog(1000, 0);
+    const entries = await getAdminAuditLogAsync(MAX_AUDIT_EXPORT, 0);
 
     if (format === 'csv') {
       const headers = ['timestamp', 'userId', 'userEmail', 'operation', 'resource', 'resourceId', 'reason'];
@@ -239,8 +278,8 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   });
 
   // Canonical JSON audit export endpoint (authz-gated via /admin/* router.use above)
-  router.get("/admin/audit/export", adminAuth, (c) => {
-    const entries = getAdminAuditLog(MAX_AUDIT_EXPORT, 0);
+  router.get("/admin/audit/export", adminAuth, async (c) => {
+    const entries = await getAdminAuditLogAsync(MAX_AUDIT_EXPORT, 0);
     c.header("Content-Disposition", 'attachment; filename="audit-log.json"');
     return c.json({ entries, mode, exportedAt: new Date().toISOString() });
   });
@@ -280,11 +319,11 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   });
 
   router.get("/api/requests", (c) => {
-    return c.json({ requests: requestLogs.slice(0, 200) });
+    return c.json({ requests: requestLogAdapter.querySync({ limit: 200 }) });
   });
 
   router.get("/api/errors", (c) => {
-    return c.json({ errors: errorLogs.slice(0, 100) });
+    return c.json({ errors: errorLogAdapter.querySync({ limit: 100 }) });
   });
 
   router.get("/api/changelog", async (c) => {
@@ -820,7 +859,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   // Dashboard
   router.get("/ui", async (c) => {
     const resources = getAllResourcesForDisplay();
-    const recentRequests = requestLogs.slice(0, 10).map(r => ({
+    const recentRequests = requestLogAdapter.querySync({ limit: 10 }).map(r => ({
       id: r.id,
       method: r.method,
       path: r.path,
@@ -843,8 +882,8 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
     const content = pages.dashboardPage({
       stats: {
         resources: resources.length,
-        requests: requestLogs.length,
-        errors: errorLogs.length,
+        requests: requestLogAdapter.countSync(),
+        errors: errorLogAdapter.countSync(),
         subscriptions: subscriptions.length,
         changelog: changelogCount,
       },
@@ -883,7 +922,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
 
   // Requests
   router.get("/ui/requests", (c) => {
-    const requests = requestLogs.slice(0, 200).map(r => ({
+    const requests = requestLogAdapter.querySync({ limit: 200 }).map(r => ({
       id: r.id,
       method: r.method,
       path: r.path,
@@ -899,7 +938,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
 
   // Errors
   router.get("/ui/errors", (c) => {
-    const errors = errorLogs.slice(0, 100).map(e => ({
+    const errors = errorLogAdapter.querySync({ limit: 100 }).map(e => ({
       id: e.id,
       status: e.statusCode,
       path: e.path,
@@ -1046,7 +1085,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
 
   // Request list partial
   router.get("/ui/requests/list", (c) => {
-    let requests = requestLogs.slice(0, 200);
+    let requests = requestLogAdapter.querySync({ limit: 200 });
 
     const method = c.req.query("method");
     const status = c.req.query("status");
@@ -1080,7 +1119,7 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   // Request detail partial
   router.get("/ui/requests/:id", (c) => {
     const id = c.req.param("id");
-    const request = requestLogs.find(r => r.id === id);
+    const request = requestLogAdapter.querySync().find(r => r.id === id);
 
     if (!request) {
       return c.html(emptyState('✕', 'Request not found', 'The request may have been purged from logs'));

@@ -16,6 +16,7 @@ import {
   renderDockerCompose,
   renderCiWorkflow,
 } from "./deploy.js";
+import { buildFrontendFiles } from "./frontend.js";
 
 export const buildProjectFiles = (
   options: ScaffoldOptions
@@ -33,13 +34,17 @@ export const buildProjectFiles = (
   if (options.template === "node") {
     files["tsconfig.json"] = NODE_TSCONFIG;
     files["src/index.ts"] = renderNodeIndex(options);
-    files["Dockerfile"] = renderDockerfile();
+    files["Dockerfile"] = renderDockerfile(options);
     files[".dockerignore"] = renderDockerignore();
     files["docker-compose.yml"] = renderDockerCompose(options);
   } else {
     files["tsconfig.json"] = CLOUDFLARE_TSCONFIG;
     files["src/worker.ts"] = renderWorker(options);
     files["wrangler.toml"] = renderWranglerToml(options);
+  }
+
+  if (options.frontend === "react") {
+    Object.assign(files, buildFrontendFiles(options));
   }
 
   return files;
@@ -62,3 +67,4 @@ export {
   renderDockerCompose,
   renderCiWorkflow,
 } from "./deploy.js";
+export { buildFrontendFiles } from "./frontend.js";

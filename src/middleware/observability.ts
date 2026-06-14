@@ -1,6 +1,11 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { randomUUID } from "node:crypto";
 import { getLogger } from "@/server/logger";
+import {
+  createInMemoryLogAdapter,
+  createKVLogAdapter,
+  type ObservabilityLogAdapter,
+} from "@/observability/log-adapter";
 
 declare module "hono" {
   interface ContextVariableMap {
@@ -271,54 +276,73 @@ export const getRequestDuration = (c: Context): number => {
 
 export interface MetricsCollectorConfig {
   maxMetrics?: number;
+  // "memory" (default) keeps metrics per-process; "kv" persists them to the
+  // configured KV store (shared across instances; derived stats still read the
+  // local mirror).
+  storage?: "memory" | "kv";
 }
 
 export const createMetricsCollector = (config: MetricsCollectorConfig = {}) => {
-  const requestMetrics: RequestMetrics[] = [];
-  const subscriptionMetrics: SubscriptionMetrics[] = [];
-  const errorMetrics: ErrorMetrics[] = [];
-
   let maxEntries = config.maxMetrics ?? 1000;
+  const storage = config.storage ?? "memory";
 
-  const pruneOldEntries = <T>(arr: T[]): void => {
-    if (arr.length > maxEntries) {
-      arr.splice(0, arr.length - maxEntries);
-    }
-  };
+  const make = <T>(prefix: string): ObservabilityLogAdapter<T> =>
+    storage === "kv"
+      ? createKVLogAdapter<T>({
+          maxEntries,
+          order: "oldest-first",
+          keyPrefix: `covara:obs:metrics:${prefix}`,
+        })
+      : createInMemoryLogAdapter<T>({ maxEntries, order: "oldest-first" });
+
+  let requestAdapter = make<RequestMetrics>("request");
+  let subscriptionAdapter = make<SubscriptionMetrics>("subscription");
+  let errorAdapter = make<ErrorMetrics>("error");
+
+  const allRequests = (): RequestMetrics[] => requestAdapter.querySync();
+  const allSubscriptions = (): SubscriptionMetrics[] =>
+    subscriptionAdapter.querySync();
+  const allErrors = (): ErrorMetrics[] => errorAdapter.querySync();
 
   return {
     setMaxEntries: (max: number) => {
       maxEntries = max;
+      const keptR = requestAdapter.querySync({ limit: max });
+      const keptS = subscriptionAdapter.querySync({ limit: max });
+      const keptE = errorAdapter.querySync({ limit: max });
+      requestAdapter = make<RequestMetrics>("request");
+      subscriptionAdapter = make<SubscriptionMetrics>("subscription");
+      errorAdapter = make<ErrorMetrics>("error");
+      keptR.forEach((m) => requestAdapter.append(m));
+      keptS.forEach((m) => subscriptionAdapter.append(m));
+      keptE.forEach((m) => errorAdapter.append(m));
     },
 
     record: (metrics: RequestMetrics) => {
-      requestMetrics.push(metrics);
-      pruneOldEntries(requestMetrics);
+      requestAdapter.append(metrics);
     },
 
     onRequest: (metrics: RequestMetrics) => {
-      requestMetrics.push(metrics);
-      pruneOldEntries(requestMetrics);
+      requestAdapter.append(metrics);
     },
 
     onSubscription: (metrics: SubscriptionMetrics) => {
-      subscriptionMetrics.push(metrics);
-      pruneOldEntries(subscriptionMetrics);
+      subscriptionAdapter.append(metrics);
     },
 
     onError: (metrics: ErrorMetrics) => {
-      errorMetrics.push(metrics);
-      pruneOldEntries(errorMetrics);
+      errorAdapter.append(metrics);
     },
 
     getRecent: (count: number): RequestMetrics[] => {
-      return requestMetrics.slice(-count);
+      return requestAdapter.querySync({ limit: count });
     },
 
     getRequestMetrics: (filter?: Partial<RequestMetrics>): RequestMetrics[] => {
-      if (!filter) return [...requestMetrics];
+      const all = allRequests();
+      if (!filter) return all;
 
-      return requestMetrics.filter((m) => {
+      return all.filter((m) => {
         for (const [key, value] of Object.entries(filter)) {
           if (m[key as keyof RequestMetrics] !== value) return false;
         }
@@ -327,22 +351,23 @@ export const createMetricsCollector = (config: MetricsCollectorConfig = {}) => {
     },
 
     getByPath: (path: string): RequestMetrics[] => {
-      return requestMetrics.filter((m) => m.path === path);
+      return allRequests().filter((m) => m.path === path);
     },
 
     getSlow: (thresholdMs: number): RequestMetrics[] => {
-      return requestMetrics.filter((m) => m.duration > thresholdMs);
+      return allRequests().filter((m) => m.duration > thresholdMs);
     },
 
     getSubscriptionMetrics: (): SubscriptionMetrics[] => {
-      return [...subscriptionMetrics];
+      return allSubscriptions();
     },
 
     getErrorMetrics: (): ErrorMetrics[] => {
-      return [...errorMetrics];
+      return allErrors();
     },
 
     getStats: () => {
+      const requestMetrics = allRequests();
       const total = requestMetrics.length;
       const avgDuration =
         total > 0
@@ -368,16 +393,16 @@ export const createMetricsCollector = (config: MetricsCollectorConfig = {}) => {
         errorRate,
         requestsPerMinute: recentRequests.length,
         requestsLast5Minutes: last5MinRequests.length,
-        activeSubscriptions: subscriptionMetrics.filter(
+        activeSubscriptions: allSubscriptions().filter(
           (m) => m.event === "connected"
         ).length,
       };
     },
 
     clear: () => {
-      requestMetrics.length = 0;
-      subscriptionMetrics.length = 0;
-      errorMetrics.length = 0;
+      void requestAdapter.clear();
+      void subscriptionAdapter.clear();
+      void errorAdapter.clear();
     },
   };
 };
