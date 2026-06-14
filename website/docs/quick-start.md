@@ -2,7 +2,7 @@
 id: quick-start
 title: Quick Start
 sidebar_label: Quick Start
-description: Scaffold a Covara project with the CLI, or add it to an existing Hono app, and get a full REST + real-time API in minutes.
+description: Scaffold a Covara project with the CLI — add --frontend react for a full-stack real-time app — or drop it into an existing Hono app for a full REST + real-time API in minutes.
 ---
 
 # Quick Start
@@ -19,19 +19,31 @@ npx covara create my-app --template cloudflare    # Cloudflare Workers + D1
 npx covara create my-app --db postgres            # PostgreSQL
 ```
 
+:::tip Want a full-stack app? Add `--frontend react`
+
+```bash
+npx covara create my-app --frontend react
+```
+
+This is the easiest way to get a complete real-time full-stack application. On top of the API it scaffolds a **React + Vite** SPA wired to the typed client with [`useLiveList`](./client/react-hooks.md) — so the UI updates in real time out of the box — and a **single-process dev server**: `npm run dev` serves the SPA (with HMR), the API (`/api`), and the admin UI (`/__covara`) on one origin, while live-regenerating the typed client. No proxy, no second terminal.
+
+:::
+
 | Flag | Values | Default |
 |------|--------|---------|
+| `--frontend` | `react`, `none` | `none` |
 | `--template` | `node`, `cloudflare` | `node` |
 | `--db` | `sqlite`, `postgres` | `sqlite` |
 | `--no-install` | skip dependency install | — |
 
-This generates a complete project: a Drizzle schema, database setup, a `drizzle.config.ts`, a running server, and the right `package.json` scripts. See the [CLI reference](./tooling/cli.md) for everything it produces.
+This generates a complete project: a Drizzle schema, database setup, a `drizzle.config.ts`, a running server, the right `package.json` scripts, and — with `--frontend react` — a ready-to-edit React frontend. See the [CLI reference](./tooling/cli.md) for everything it produces.
 
 ```bash
 cd my-app
-npm run db:push   # create tables
-npm run dev       # start the server
+npm run dev       # start the server — covara dev creates/updates tables automatically
 ```
+
+`npm run dev` runs [`covara dev`](./tooling/cli.md#covara-dev), which auto-applies additive schema changes on start (creating your tables on first run), so there's no separate `npm run db:push`. Use `db:push` only for destructive changes or in CI.
 
 ## Option 2 — Add to an existing app
 

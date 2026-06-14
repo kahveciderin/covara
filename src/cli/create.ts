@@ -78,7 +78,7 @@ export const renderNextSteps = (
 
   if (options.template === "node") {
     steps.push("cp .env.example .env");
-    steps.push(run("db:push"));
+    // covara dev auto-applies additive schema changes on start — no db:push.
     steps.push(run("dev"));
   } else if (options.db === "sqlite") {
     steps.push(`wrangler d1 create ${options.name}-db   # then copy database_id into wrangler.toml`);

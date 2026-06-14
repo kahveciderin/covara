@@ -54,7 +54,9 @@ export const renderPackageJson = (options: ScaffoldOptions): string => {
       };
     } else {
       scripts = {
-        dev: "tsx watch src/index.ts",
+        // covara dev runs the server (tsx watch) and watches the schema,
+        // auto-applying additive changes — no separate db:push needed.
+        dev: "covara dev",
         build: "tsc -p tsconfig.json",
         start: "node dist/index.js",
         test: "vitest run",

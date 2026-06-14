@@ -82,10 +82,12 @@ describe("scaffoldProject", () => {
         expect.arrayContaining(["typescript", "tsx", "drizzle-kit", "@types/node"])
       );
       expect(pkg.devDependencies.wrangler).toBeUndefined();
-      expect(pkg.scripts.dev).toContain("tsx watch");
+      // covara dev runs the server + streams schema changes (no db:push needed).
+      expect(pkg.scripts.dev).toBe("covara dev");
       expect(pkg.scripts.build).toContain("tsc");
       expect(pkg.scripts.start).toContain("node dist");
       expect(pkg.scripts["db:generate"]).toBe("drizzle-kit generate");
+      // db:push is still available for destructive changes / CI, just not required.
       expect(pkg.scripts["db:push"]).toBe("drizzle-kit push");
     });
 

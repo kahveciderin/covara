@@ -18,7 +18,6 @@ A real-time resource API built with [Covara](https://github.com/kahveciderin/cov
 \`\`\`bash
 cp .env.example .env
 npm install
-npm run db:push
 \`\`\`
 
 ${dbSetup}
@@ -28,6 +27,8 @@ ${dbSetup}
 \`\`\`bash
 npm run dev
 \`\`\`
+
+\`covara dev\` runs the server and watches \`src/schema.ts\`, auto-applying additive schema changes (it creates your tables on first run) and regenerating the typed client — so there's no separate \`db:push\` step. Destructive changes are reported, not applied; run \`npm run db:push\` (drizzle-kit) yourself when you want those, e.g. in CI.
 
 The API is served at \`http://localhost:3000\`:
 

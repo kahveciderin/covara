@@ -34,9 +34,10 @@ Generated projects are deploy-ready. Alongside your source and schema, the scaff
 
 ```bash
 cd my-app
-npm run db:push   # create tables
-npm run dev       # start the server
+npm run dev       # start the server — covara dev creates/updates tables automatically
 ```
+
+`npm run dev` (which runs [`covara dev`](#covara-dev)) auto-applies additive schema changes on start, so it creates your tables on first run — there's no separate `npm run db:push`. Run `db:push` yourself only for destructive changes or in CI.
 
 ### `--frontend react`
 
