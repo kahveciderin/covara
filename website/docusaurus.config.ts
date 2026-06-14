@@ -40,7 +40,8 @@ const config: Config = {
         docs: {
           routeBasePath: "/",
           sidebarPath: "./sidebars.ts",
-          editUrl: "https://github.com/kahveciderin/covara/tree/master/website/",
+          editUrl:
+            "https://github.com/kahveciderin/covara/tree/master/website/",
           showLastUpdateTime: true,
           showLastUpdateAuthor: true,
         },
@@ -137,6 +138,16 @@ const config: Config = {
     //   indexName: "covara",
     // },
   } satisfies Preset.ThemeConfig,
+
+  plugins: [
+    [
+      "docusaurus-plugin-llms",
+      {
+        addMdExtension: true,
+        generateMarkdownFiles: true,
+      },
+    ],
+  ],
 };
 
 export default config;

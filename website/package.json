@@ -1,6 +1,6 @@
 {
   "name": "covara-docs",
-  "version": "0.10.3",
+  "version": "0.10.4",
   "private": true,
   "description": "Documentation site for Covara",
   "scripts": {
@@ -26,10 +26,15 @@
     "@docusaurus/module-type-aliases": "^3.8.1",
     "@docusaurus/tsconfig": "^3.8.1",
     "@docusaurus/types": "^3.8.1",
+    "docusaurus-plugin-llms": "^0.4.0",
     "typescript": "~5.6.2"
   },
   "browserslist": {
-    "production": [">0.5%", "not dead", "not op_mini all"],
+    "production": [
+      ">0.5%",
+      "not dead",
+      "not op_mini all"
+    ],
     "development": [
       "last 3 chrome version",
       "last 3 firefox version",

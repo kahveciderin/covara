@@ -136,6 +136,86 @@ describe("node deployment scaffold", () => {
   });
 });
 
+describe("AGENTS.md scaffold", () => {
+  it("writes AGENTS.md for every template variant", () => {
+    const variants: ScaffoldOptions[] = [
+      { name: "node-app", template: "node", db: "sqlite" },
+      { name: "node-pg", template: "node", db: "postgres" },
+      { name: "node-react", template: "node", db: "sqlite", frontend: "react" },
+      { name: "edge-app", template: "cloudflare", db: "sqlite" },
+      { name: "edge-react", template: "cloudflare", db: "postgres", frontend: "react" },
+    ];
+    for (const options of variants) {
+      const dir = scaffold(options);
+      const agents = read(dir, "AGENTS.md");
+      expect(agents).toContain("# AGENTS.md");
+      expect(agents).toContain(options.name);
+      expect(agents).toContain("src/schema.ts");
+    }
+  });
+
+  it("links to the docs site and llms.txt", () => {
+    const dir = scaffold({ name: "node-app", template: "node", db: "sqlite" });
+    const agents = read(dir, "AGENTS.md");
+    expect(agents).toContain("https://kahveciderin.github.io/covara/");
+    expect(agents).toContain("https://kahveciderin.github.io/covara/llms.txt");
+    expect(agents).toContain("https://kahveciderin.github.io/covara/llms-full.txt");
+  });
+
+  it("references the correct entry file per template", () => {
+    const node = read(scaffold({ name: "node-app", template: "node", db: "sqlite" }), "AGENTS.md");
+    expect(node).toContain("src/index.ts");
+    expect(node).not.toContain("src/worker.ts");
+
+    const edge = read(
+      scaffold({ name: "edge-app", template: "cloudflare", db: "sqlite" }),
+      "AGENTS.md"
+    );
+    expect(edge).toContain("src/worker.ts");
+    expect(edge).toContain("npm run deploy");
+  });
+
+  it("documents the frontend type generation only for the react variant", () => {
+    const react = read(
+      scaffold({ name: "node-react", template: "node", db: "sqlite", frontend: "react" }),
+      "AGENTS.md"
+    );
+    expect(react).toContain("frontend/src/generated/api-types.ts");
+    expect(react).toContain("npm run types");
+
+    const backend = read(
+      scaffold({ name: "node-app", template: "node", db: "sqlite" }),
+      "AGENTS.md"
+    );
+    expect(backend).not.toContain("frontend/");
+  });
+
+  it("explains covara dev handles reload, frontend, and schema sync with force push for destructive changes", () => {
+    const react = read(
+      scaffold({ name: "node-react", template: "node", db: "sqlite", frontend: "react" }),
+      "AGENTS.md"
+    );
+    expect(react).toContain("covara dev");
+    expect(react).toContain("live-reload");
+    expect(react).toContain("Vite HMR");
+    expect(react).toContain("covara push --force");
+
+    const backend = read(
+      scaffold({ name: "node-app", template: "node", db: "sqlite" }),
+      "AGENTS.md"
+    );
+    expect(backend).toContain("covara push --force");
+    expect(backend).not.toContain("Vite HMR");
+  });
+
+  it("warns that the starter resource is public", () => {
+    const dir = scaffold({ name: "node-app", template: "node", db: "sqlite" });
+    const agents = read(dir, "AGENTS.md");
+    expect(agents.toLowerCase()).toContain("public");
+    expect(agents).toContain("auth");
+  });
+});
+
 describe("generate resource", () => {
   it("produces a table file containing the resource name", () => {
     const cwd = makeTempDir();

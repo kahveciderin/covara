@@ -10,6 +10,7 @@ import {
 } from "./configs.js";
 import { renderSchema, renderNodeIndex, renderWorker } from "./source.js";
 import { renderReadme } from "./readme.js";
+import { renderAgents } from "./agents.js";
 import {
   renderDockerfile,
   renderDockerignore,
@@ -26,6 +27,7 @@ export const buildProjectFiles = (
     "drizzle.config.ts": renderDrizzleConfig(options),
     "src/schema.ts": renderSchema(options),
     "README.md": renderReadme(options),
+    "AGENTS.md": renderAgents(options),
     ".gitignore": renderGitignore(options),
     ".env.example": renderEnvExample(options),
     ".github/workflows/ci.yml": renderCiWorkflow(),
@@ -61,6 +63,7 @@ export {
 export { renderPackageJson } from "./package-json.js";
 export { renderSchema, renderNodeIndex, renderWorker } from "./source.js";
 export { renderReadme } from "./readme.js";
+export { renderAgents } from "./agents.js";
 export {
   renderDockerfile,
   renderDockerignore,
