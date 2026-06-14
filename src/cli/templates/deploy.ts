@@ -1,12 +1,6 @@
 import type { ScaffoldOptions } from "../options.js";
 
-export const renderDockerfile = (options: ScaffoldOptions): string => {
-  // The React variant's `npm run build` emits the SPA to ./public; the runtime
-  // stage must copy it so serveStatic can find it.
-  const copyPublic =
-    options.frontend === "react"
-      ? "COPY --from=build --chown=covara:covara /app/public ./public\n"
-      : "";
+export const renderDockerfile = (): string => {
   return `# syntax=docker/dockerfile:1
 
 FROM node:22-slim AS build
@@ -38,7 +32,7 @@ RUN groupadd --system --gid 1001 covara && \\
 COPY --chown=covara:covara package.json ./
 COPY --from=deps --chown=covara:covara /app/node_modules ./node_modules
 COPY --from=build --chown=covara:covara /app/dist ./dist
-${copyPublic}USER covara
+USER covara
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \\
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"

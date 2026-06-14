@@ -45,7 +45,7 @@ npm run dev       # start the server — covara dev creates/updates tables autom
 Scaffolds a [live React SPA](../client/react-hooks.md) (under `frontend/`) wired to the generated `todos` resource with `useLiveList`, served by the backend itself — **one process, one port, no separate build step**:
 
 - **`npm run dev`** runs a single process that serves the SPA with **Vite HMR** *and* the API (`/api`) and admin UI (`/__covara`) on the same origin (no proxy), while [`covara dev`](#covara-dev) live-applies schema changes and regenerates the typed client into `frontend/src/generated/api-types.ts`.
-- **`npm run build`** builds the SPA (to `public/`) and compiles the backend; **`npm start`** serves the built SPA with an SPA fallback that excludes `/api` and `/__covara`.
+- **`npm run build`** builds the SPA into `dist/public/` and compiles the backend into `dist/`, so `dist/` is a self-contained deployable; **`npm start`** serves the built SPA with an SPA fallback that excludes `/api` and `/__covara`.
 - On **Cloudflare**, the SPA is served via Wrangler [`[assets]`](https://developers.cloudflare.com/workers/static-assets/) with `run_worker_first` for `/api` + `/__covara`; run `npm run dev:web` for Vite HMR alongside `wrangler dev`.
 
 The starter uses the generic typed hook with a hand-written `Todo` interface so it compiles before any codegen; run `npm run types` (or just `npm run dev`) to generate the full typed client and switch to `createTypedClient`.

@@ -94,7 +94,7 @@ console.log(\`List:   curl http://localhost:\${server.port}/api/todos\`);
 // Node entry for the React-frontend variant: one process serves the SPA (with
 // Vite HMR in dev) AND the API/admin. In dev it embeds Vite in middleware mode
 // and routes /api + /__covara to the Hono app; in production it serves the
-// built SPA from ../public with an SPA fallback.
+// built SPA from dist/public with an SPA fallback.
 const NODE_REACT_DB_SETUP_SQLITE = `import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { createCovara } from "covara";
@@ -161,8 +161,9 @@ if (process.env.NODE_ENV === "development") {
     console.log(\`Admin UI: http://localhost:\${port}/__covara/ui\`);
   });
 } else {
-  // Production: serve the built SPA (../public) and fall through to the API.
-  const publicDir = path.join(here, "../public");
+  // Production: serve the built SPA (bundled into dist/public by vite build)
+  // and fall through to the API.
+  const publicDir = path.join(here, "public");
   app.use("*", serveStatic({ root: publicDir }));
   const spa = serveStatic({ root: publicDir, path: "index.html" });
   app.get("*", (c, next) => (isApi(c.req.path) ? next() : spa(c, next)));

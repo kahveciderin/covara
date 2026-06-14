@@ -304,8 +304,14 @@ describe("scaffoldProject", () => {
       // Offline/optimistic mode is wired so creates reconcile (no duplicates).
       expect(app).toContain("offline: true");
 
-      expect(read(targetDir, ".gitignore")).toContain("public/");
-      expect(read(targetDir, "Dockerfile")).toContain("/app/public ./public");
+      // The SPA builds into dist/public, so dist/ (already ignored) covers it
+      // and the runtime image only needs to copy dist — no separate public copy.
+      expect(read(targetDir, ".gitignore")).not.toContain("public/");
+      expect(read(targetDir, "frontend/vite.config.ts")).toContain('outDir: "../dist/public"');
+      expect(read(targetDir, "src/index.ts")).toContain('path.join(here, "public")');
+      const dockerfile = read(targetDir, "Dockerfile");
+      expect(dockerfile).toContain("/app/dist ./dist");
+      expect(dockerfile).not.toContain("/app/public ./public");
     });
 
     it("grants public subscribe so the live frontend works without auth", () => {
@@ -335,6 +341,9 @@ describe("scaffoldProject", () => {
       expect(wrangler).toContain("[assets]");
       expect(wrangler).toContain('directory = "./public"');
       expect(wrangler).toContain('run_worker_first = ["/api/*", "/__covara/*"]');
+      // Wrangler [assets] serves a top-level dir, so the SPA stays at ./public
+      // (not bundled into dist as on the node template).
+      expect(read(targetDir, "frontend/vite.config.ts")).toContain('outDir: "../public"');
       const pkg = readJson(targetDir, "package.json");
       expect(pkg.scripts.build).toContain("vite build");
       expect(fs.existsSync(path.join(targetDir, "frontend/src/App.tsx"))).toBe(true);

@@ -8,8 +8,12 @@ const proxyTarget = (options: ScaffoldOptions): string =>
     ? "http://localhost:8787"
     : "http://localhost:3000";
 
-export const renderViteConfig = (options: ScaffoldOptions): string =>
-  `import { defineConfig } from "vite";
+export const renderViteConfig = (options: ScaffoldOptions): string => {
+  // Node serves the SPA itself, so the build goes inside ./dist to keep the
+  // server artifact self-contained (ship dist/, the SPA travels with it).
+  // Cloudflare serves it via wrangler [assets], which points at a top-level dir.
+  const outDir = options.template === "cloudflare" ? "../public" : "../dist/public";
+  return `import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 // The node template embeds this Vite server in-process during \`covara dev\`
@@ -19,7 +23,7 @@ export default defineConfig({
   root: __dirname,
   plugins: [react()],
   build: {
-    outDir: "../public",
+    outDir: "${outDir}",
     emptyOutDir: true,
   },
   server: {
@@ -30,6 +34,7 @@ export default defineConfig({
   },
 });
 `;
+};
 
 export const FRONTEND_TSCONFIG = `{
   "compilerOptions": {

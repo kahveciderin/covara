@@ -163,7 +163,7 @@ database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
 export const renderGitignore = (options: ScaffoldOptions): string => {
   const lines = ["node_modules/", "dist/", ".env", ".env.*", "!.env.example"];
-  if (options.frontend === "react") {
+  if (options.frontend === "react" && options.template === "cloudflare") {
     lines.push("public/");
   }
   if (options.db === "sqlite") {

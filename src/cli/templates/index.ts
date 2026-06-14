@@ -36,7 +36,7 @@ export const buildProjectFiles = (
   if (options.template === "node") {
     files["tsconfig.json"] = NODE_TSCONFIG;
     files["src/index.ts"] = renderNodeIndex(options);
-    files["Dockerfile"] = renderDockerfile(options);
+    files["Dockerfile"] = renderDockerfile();
     files[".dockerignore"] = renderDockerignore();
     files["docker-compose.yml"] = renderDockerCompose(options);
   } else {
