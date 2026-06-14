@@ -129,7 +129,7 @@ Enable RFC 7591-style registration:
 registration: {
   enabled: true,
   defaultScopes: ["openid", "profile", "email"],
-  initialAccessToken: process.env.OIDC_REGISTRATION_TOKEN, // optional gate
+  initialAccessToken: env.OIDC_REGISTRATION_TOKEN, // optional gate
 }
 ```
 

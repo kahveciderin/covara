@@ -30,6 +30,97 @@ describe("createClient", () => {
     expect(client.offline).toBeUndefined();
   });
 
+  it("builds social login URLs (default and custom base path)", () => {
+    const client = createClient({ baseUrl: "http://localhost:3000" });
+    expect(client.socialLoginUrl("github")).toBe(
+      "http://localhost:3000/api/auth/social/github"
+    );
+
+    const custom = createClient({
+      baseUrl: "http://localhost:3000",
+      social: { basePath: "/auth/social" },
+    });
+    expect(custom.socialLoginUrl("discord")).toBe(
+      "http://localhost:3000/auth/social/discord"
+    );
+  });
+
+  it("loginWithSocial navigates the browser to the provider URL", () => {
+    const client = createClient({ baseUrl: "http://localhost:3000" });
+    const assign = vi.fn();
+    vi.stubGlobal("window", { location: { assign } });
+    try {
+      client.loginWithSocial("github");
+      expect(assign).toHaveBeenCalledWith(
+        "http://localhost:3000/api/auth/social/github"
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("loginWithSocial throws outside a browser", () => {
+    const client = createClient({ baseUrl: "http://localhost:3000" });
+    expect(() => client.loginWithSocial("github")).toThrow(/requires a browser/);
+  });
+
+  describe("session auth", () => {
+    const bodyOf = (call: unknown[]) =>
+      JSON.parse((call[1] as { body: string }).body);
+    const urlOf = (call: unknown[]) => String(call[0]);
+
+    it("login posts credentials to /api/auth/login", async () => {
+      const client = createClient({ baseUrl: "http://localhost:3000" });
+      await client.session.login("a@b.com", "pw");
+      const call = mockFetch.mock.calls.at(-1)!;
+      expect(urlOf(call)).toBe("http://localhost:3000/api/auth/login");
+      expect((call[1] as { method: string }).method).toBe("POST");
+      expect(bodyOf(call)).toEqual({ email: "a@b.com", password: "pw" });
+    });
+
+    it("signup, logout and email-confirmation hit the right routes", async () => {
+      const client = createClient({ baseUrl: "http://localhost:3000" });
+
+      await client.session.signup({ email: "a@b.com", password: "pw", name: "A" });
+      expect(urlOf(mockFetch.mock.calls.at(-1)!)).toBe("http://localhost:3000/api/auth/signup");
+
+      await client.session.logout();
+      expect(urlOf(mockFetch.mock.calls.at(-1)!)).toBe("http://localhost:3000/api/auth/logout");
+
+      await client.session.requestEmailVerification("a@b.com");
+      expect(urlOf(mockFetch.mock.calls.at(-1)!)).toBe("http://localhost:3000/api/auth/verify/request");
+
+      await client.session.confirmEmail("a@b.com", "tok");
+      const confirm = mockFetch.mock.calls.at(-1)!;
+      expect(urlOf(confirm)).toBe("http://localhost:3000/api/auth/verify/confirm");
+      expect(bodyOf(confirm)).toEqual({ email: "a@b.com", token: "tok" });
+    });
+
+    it("me() returns the current user", async () => {
+      const client = createClient({ baseUrl: "http://localhost:3000" });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: () => Promise.resolve({ user: { id: "u1", email: "a@b.com" } }),
+      });
+      const user = await client.session.me<{ id: string; email: string }>();
+      expect(user).toEqual({ id: "u1", email: "a@b.com" });
+      const call = mockFetch.mock.calls.at(-1)!;
+      expect(urlOf(call)).toBe("http://localhost:3000/api/auth/me");
+      expect((call[1] as { method: string }).method).toBe("GET");
+    });
+
+    it("respects a custom session basePath", async () => {
+      const client = createClient({
+        baseUrl: "http://localhost:3000",
+        session: { basePath: "/auth" },
+      });
+      await client.session.login("a@b.com", "pw");
+      expect(urlOf(mockFetch.mock.calls.at(-1)!)).toBe("http://localhost:3000/auth/login");
+    });
+  });
+
   it("should create client with headers", async () => {
     const client = createClient({
       baseUrl: "http://localhost:3000",

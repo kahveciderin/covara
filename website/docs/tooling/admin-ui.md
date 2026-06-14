@@ -15,8 +15,8 @@ const app = createCovara({
     title: "My App Admin",
     metricsCollector,
     security: {
-      mode: process.env.NODE_ENV ?? "development",
-      auth: { disabled: process.env.NODE_ENV !== "production" },
+      mode: isProduction() ? "production" : "development",
+      auth: { disabled: !isProduction() },
     },
     dataExplorer: { enabled: true, readOnly: false, maxLimit: 100, excludeFields: { users: ["passwordHash"] } },
     kvInspector: { enabled: true, kv: getGlobalKV(), readOnly: false },
@@ -51,7 +51,7 @@ const app = createCovara({
 ```typescript
 security: {
   mode: "development" | "staging" | "production",
-  auth: { disabled: process.env.NODE_ENV !== "production" },
+  auth: { disabled: !isProduction() },
 }
 ```
 

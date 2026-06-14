@@ -54,7 +54,11 @@ auth: scopePatterns.ownerOnly("userId"),
 auth: scopePatterns.publicReadOwnerWrite("userId"),
 auth: scopePatterns.ownerOrAdmin("userId", (user) => user.metadata?.role === "admin"),
 auth: scopePatterns.orgBased("organizationId"),
+auth: scopePatterns.authenticatedFullAccess(),        // any signed-in user, full access
+auth: scopePatterns.fullyPublic(),                    // every op public, incl. anonymous writes — demos only
 ```
+
+> `fullyPublic()` opts **every** operation in (read, subscribe, create, update, delete) for unauthenticated callers — it's the `covara create` starter default so the app works end-to-end; lock it down before production. For public reads with authenticated writes, use `publicReadOwnerWrite`.
 
 ## Building scopes programmatically
 

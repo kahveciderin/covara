@@ -17,7 +17,7 @@ export const env = createEnv({
   searchConfig: {
     opensearchUrl: envVariable(opensearchUrl, z.string().optional()),
   },
-  NODE_ENV: z.enum(["development", "production"]),
+  NODE_ENV: z.enum(["development", "staging", "production"]).default("development"),
   PUBLIC_VERSION: z.string().min(1),
   PUBLIC_OPENSEARCH_ENABLED: z.boolean().default(!!opensearchUrl),
 });

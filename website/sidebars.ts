@@ -42,11 +42,13 @@ const sidebars: SidebarsConfig = {
       label: "Authentication & Security",
       items: [
         "auth/overview",
+        "auth/getting-started",
         "auth/sessions",
         "auth/internal-tables",
         "auth/jwt",
         "auth/oidc-provider",
         "auth/federated",
+        "auth/social",
         "auth/api-keys",
         "auth/mfa",
         "auth/magic-links",

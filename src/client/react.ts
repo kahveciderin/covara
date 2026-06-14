@@ -545,6 +545,10 @@ export interface UseAuthOptions {
   token?: string;
   apiKey?: string;
   baseUrl?: string;
+  /** Social login route prefix (mounted server-side, default `/api/auth/social`). */
+  socialBasePath?: string;
+  /** Session auth route prefix (mounted server-side, default `/api/auth`). */
+  authBasePath?: string;
 }
 
 export interface UseAuthResult<TUser = unknown> {
@@ -555,6 +559,20 @@ export interface UseAuthResult<TUser = unknown> {
   logout: () => Promise<void>;
   refetch: () => Promise<void>;
   accessToken: string | null;
+  /** Email/password login; refreshes `user` on success. */
+  login: (email: string, password: string) => Promise<void>;
+  /** Email/password signup; refreshes `user` on success. */
+  signup: (input: { email: string; password: string; name?: string }) => Promise<void>;
+  /** Email confirmation: ask the server to email a verification token. */
+  requestEmailVerification: (email: string) => Promise<void>;
+  /** Email confirmation: confirm the token from the email link. */
+  confirmEmail: (email: string, token: string) => Promise<void>;
+  /**
+   * Begin a social (Passport) login by navigating to the provider, e.g.
+   * `signInWith("github")`. After the server completes the OAuth flow it sets the
+   * session cookie and redirects back. Browser-only.
+   */
+  signInWith: (provider: string) => void;
 }
 
 /**
@@ -587,6 +605,9 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
   const [user, setUser] = useState<TUser | null>(null);
   const [status, setStatus] = useState<"loading" | "authenticated" | "unauthenticated">("loading");
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  // Bearer token captured from login/signup when the server uses a JWT session
+  // strategy. Held in a ref so the immediately-following checkAuth() sees it.
+  const sessionTokenRef = useRef<string | null>(null);
 
   const client = useMemo(() => {
     try {
@@ -619,6 +640,11 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
 
   const getAuthHeaders = useCallback((): Record<string, string> => {
     const headers: Record<string, string> = {};
+
+    // A JWT captured from login/signup (jwtSession) authenticates every request.
+    if (sessionTokenRef.current) {
+      headers["Authorization"] = `Bearer ${sessionTokenRef.current}`;
+    }
 
     switch (effectiveStrategy) {
       case "jwt": {
@@ -697,10 +723,95 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
       // Ignore logout errors
     }
 
+    sessionTokenRef.current = null;
+    client?.clearAuthToken?.();
     setUser(null);
     setStatus("unauthenticated");
     setAccessToken(null);
   }, [baseUrl, options.logoutUrl, effectiveStrategy, getAuthHeaders, client]);
+
+  const authBase = options.authBasePath ?? "/api/auth";
+
+  const postAuth = useCallback(
+    async (path: string, body?: unknown): Promise<unknown> => {
+      const res = await fetch(`${baseUrl}${authBase}${path}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as
+          | { error?: { message?: string } }
+          | null;
+        throw new Error(data?.error?.message ?? `Request failed (${res.status})`);
+      }
+      return res.json().catch(() => ({}));
+    },
+    [baseUrl, authBase]
+  );
+
+  // Capture a JWT access token from a login/signup response (jwtSession) so the
+  // hook authenticates uniformly whether the server uses cookies or JWTs.
+  const captureToken = useCallback(
+    (body: unknown) => {
+      const token = (body as { accessToken?: string } | null)?.accessToken;
+      if (token) {
+        sessionTokenRef.current = token;
+        setAccessToken(token);
+        client?.setAuthToken?.(token); // share with the client's transport
+      }
+    },
+    [client]
+  );
+
+  const login = useCallback(
+    async (email: string, password: string) => {
+      captureToken(await postAuth("/login", { email, password }));
+      await checkAuth();
+    },
+    [postAuth, checkAuth, captureToken]
+  );
+
+  const signup = useCallback(
+    async (input: { email: string; password: string; name?: string }) => {
+      captureToken(await postAuth("/signup", input));
+      await checkAuth();
+    },
+    [postAuth, checkAuth, captureToken]
+  );
+
+  const requestEmailVerification = useCallback(
+    async (email: string) => {
+      await postAuth("/verify/request", { email });
+    },
+    [postAuth]
+  );
+
+  const confirmEmail = useCallback(
+    async (email: string, token: string) => {
+      await postAuth("/verify/confirm", { email, token });
+    },
+    [postAuth]
+  );
+
+  const signInWith = useCallback(
+    (provider: string) => {
+      if (client) {
+        client.loginWithSocial(provider);
+        return;
+      }
+      if (typeof window === "undefined" || !window.location) {
+        throw new Error(
+          "signInWith requires a browser. On React Native, navigate to the " +
+            "social login URL yourself."
+        );
+      }
+      const base = options.socialBasePath ?? "/api/auth/social";
+      window.location.assign(`${baseUrl}${base}/${encodeURIComponent(provider)}`);
+    },
+    [client, baseUrl, options.socialBasePath]
+  );
 
   useEffect(() => {
     if (effectiveStrategy === "jwt" && client?.jwt) {
@@ -751,6 +862,11 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
     logout,
     refetch: checkAuth,
     accessToken,
+    login,
+    signup,
+    requestEmailVerification,
+    confirmEmail,
+    signInWith,
   };
 }
 

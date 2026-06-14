@@ -109,12 +109,12 @@ A failure while *caching* the response is always logged and swallowed; the respo
 
 ```typescript
 import { createRateLimiter, createSlidingWindowRateLimiter } from "covara/middleware/rateLimit";
-import { getClientIP } from "covara";
+import { getClientIP, getUser } from "covara";
 
 app.use("*", createRateLimiter({
   windowMs: 60_000,
   maxRequests: 100,
-  keyGenerator: (c) => c.get("user")?.id ?? getClientIP(c),
+  keyGenerator: (c) => getUser(c)?.id ?? getClientIP(c),
   skip: (c) => c.req.path === "/healthz",
   // store: kvRateLimitStore, // distributed; default is in-memory
 }));

@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { useResource } from "@/resource/hook";
+import { scopePatterns } from "@/auth/scope";
 import { sql } from "drizzle-orm";
 import { createTestApp, get, post, patch, put, del } from "../helpers/hono";
 
@@ -59,6 +60,34 @@ describe("useResource Integration Tests", () => {
   afterEach(() => {
     libsqlClient.close();
     vi.clearAllMocks();
+  });
+
+  // The `covara create` starter mounts resources with scopePatterns.fullyPublic()
+  // so the app works end-to-end with no auth — including anonymous writes.
+  describe("scopePatterns.fullyPublic() — anonymous CRUD", () => {
+    it("allows create / update / delete with no authenticated user", async () => {
+      const anon = new Hono(); // no user middleware → c.get("user") is undefined
+      anon.route(
+        "/users",
+        useResource(testUsersTable, {
+          id: testUsersTable.id,
+          db,
+          auth: scopePatterns.fullyPublic(),
+        })
+      );
+
+      const created = await post(anon, "/users", {
+        name: "Anon",
+        email: "anon@test.com",
+        age: 22,
+      });
+      expect(created.status).toBe(201);
+      const id = created.body.id;
+
+      expect((await get(anon, "/users")).status).toBe(200);
+      expect((await patch(anon, `/users/${id}`, { age: 23 })).status).toBe(200);
+      expect((await del(anon, `/users/${id}`)).status).toBe(204);
+    });
   });
 
   describe("Basic CRUD Operations", () => {

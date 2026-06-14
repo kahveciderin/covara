@@ -2,6 +2,11 @@
 
 ## Guarantees
 
+### Session strategy decoupling
+- **Orthogonal to credentials**: `useAuth`'s `session` strategy (how the identity is persisted/validated/issued) is independent of the credential providers (`login`/`signup`/`social`/`verification`/`mfa`/`magicLink`). Any provider composes with any strategy — e.g. a Passport social provider issuing JWTs.
+- **Single issuance path**: every successful login (password, social, magic link, signup) goes through `strategy.issue(c, userId)`; the auth middleware authenticates every request through `strategy.authenticate(c)`. `cookieSession` mints a server-side session + cookie; `jwtSession` mints a bearer access token + refresh cookie and exposes `/refresh`.
+- **Back-compat**: a legacy `adapter` passed to `useAuth` is mapped to a session strategy internally, preserving its prior behavior.
+
 ### Token Validation
 - **Required claims checked**: `iss`, `aud`, `exp` are always validated
 - **Algorithm enforcement**: Only configured algorithms accepted; `none` always rejected
@@ -20,6 +25,8 @@
 ### OIDC Hardening
 - **Redirect URI component validation**: `redirect_uri` is matched component-by-component (protocol, host, port, normalized path, and query/fragment when registered), never by prefix; an unregistered URI is rejected with `400` before any redirect is issued
 - **Federated id_token verification**: external `id_token`s are signature-verified against the provider's JWKS (issuer + audience checked), the nonce is compared to the stored interaction nonce, and the `id_token` `sub` is cross-checked against the `userinfo` `sub`
+- **External login resumes the interaction**: a successful external callback (federated OIDC or `backends.passport`) establishes the provider session and continues the pending `/authorize` interaction to consent or the authorization-code redirect — the same completion path as email/password login; it never returns the user as a bare JSON body
+- **Passport backend state binding**: `backends.passport` carries the OAuth `state`/PKCE handle across the redirect→callback in a signed, `httpOnly`, short-lived cookie + state store; a callback with missing/expired/mismatched state is rejected before any token exchange
 - **Correct at_hash**: the `id_token` `at_hash` claim is the left-half of the hash matching the signing algorithm, computed whenever an access token is issued
 - **Endpoint rate limiting**: `/token`, `/jwks`, `/introspect` rate-limited per client/IP when `security.rateLimiting` is configured (KV-backed when a global KV exists)
 - **Persistent stores by default**: clients, codes, refresh tokens, consents, interactions, and state are KV-backed (with expiry-derived TTLs) whenever a global KV is registered; `stores.type: "memory"` forces in-memory

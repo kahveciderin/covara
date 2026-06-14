@@ -1,5 +1,5 @@
 import { eq, count, desc, max } from "drizzle-orm";
-import { randomUUID, createHash } from "crypto";
+import { randomUUID } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -8,11 +8,13 @@ import {
   rsql,
   createMetricsCollector,
   createCovara,
-  createPassportAdapter,
+  cookieSession,
+  InMemorySessionStore,
   useAuth,
+  hashPassword,
+  verifyPassword,
   UnauthorizedError,
   ValidationError,
-  changelog,
   initializeKV,
   getGlobalKV,
   usePublicEnv,
@@ -56,15 +58,15 @@ if (env.searchConfig.opensearchUrl) {
   );
 }
 
-const hashPassword = (password: string): string => {
-  return createHash("sha256").update(password).digest("hex");
-};
-
 const metricsCollector = createMetricsCollector({
   maxMetrics: 1000,
 });
 
-const authAdapter = createPassportAdapter({
+// Server-side sessions, decoupled from credential validation. Swap for
+// jwtSession({ secret, getUserById }) and every provider below issues JWTs instead.
+const sessionStore = new InMemorySessionStore();
+const session = cookieSession({
+  store: sessionStore,
   getUserById: async (id) => {
     const [user] = await db
       .select()
@@ -76,7 +78,7 @@ const authAdapter = createPassportAdapter({
 });
 
 const auth = useAuth({
-  adapter: authAdapter,
+  session,
   login: {
     validateCredentials: async (email, password) => {
       const [user] = await db
@@ -84,7 +86,7 @@ const auth = useAuth({
         .from(usersTable)
         .where(eq(usersTable.email, email))
         .limit(1);
-      if (!user || user.passwordHash !== hashPassword(password)) {
+      if (!user || !(await verifyPassword(password, user.passwordHash))) {
         return null;
       }
       return { id: user.id, email: user.email, name: user.name };
@@ -108,7 +110,7 @@ const auth = useAuth({
           id,
           email,
           name: name ?? "User",
-          passwordHash: hashPassword(password),
+          passwordHash: await hashPassword(password),
         })
         .returning();
 
@@ -126,25 +128,23 @@ const adminUI = {
   metricsCollector,
   // Security configuration - development mode allows unauthenticated access
   security: {
-    mode:
-      (process.env.NODE_ENV as "development" | "staging" | "production") ||
-      "development",
+    mode: env.NODE_ENV,
     auth: {
-      disabled: process.env.NODE_ENV !== "production",
+      disabled: env.NODE_ENV !== "production",
     },
   },
   dataExplorer: {
     enabled: true,
-    readOnly: process.env.NODE_ENV === "production",
+    readOnly: env.NODE_ENV === "production",
     excludeFields: {
       users: ["passwordHash"],
     },
     maxLimit: 100,
   },
   kvInspector: {
-    enabled: process.env.NODE_ENV !== "production",
+    enabled: env.NODE_ENV !== "production",
     kv: getGlobalKV(),
-    readOnly: process.env.NODE_ENV === "staging",
+    readOnly: env.NODE_ENV === "staging",
   },
   userManager: {
     listUsers: async (limit = 50, offset = 0) => {
@@ -164,8 +164,7 @@ const adminUI = {
       ]);
       const withLastLogin = await Promise.all(
         users.map(async (u) => {
-          const sessions =
-            (await authAdapter.sessionStore.getByUser?.(u.id)) ?? [];
+          const sessions = (await sessionStore.getByUser?.(u.id)) ?? [];
           const lastLoginAt = sessions.reduce<Date | undefined>(
             (latest, s) =>
               !latest || s.createdAt > latest ? s.createdAt : latest,
@@ -191,7 +190,7 @@ const adminUI = {
           id: randomUUID(),
           email: data.email,
           name: data.name || "User",
-          passwordHash: hashPassword("password123"),
+          passwordHash: await hashPassword("password123"),
         })
         .returning();
       return user;
@@ -210,7 +209,7 @@ const adminUI = {
   },
   sessionManager: {
     listSessions: async () => {
-      const sessions = (await authAdapter.sessionStore.getAll?.()) ?? [];
+      const sessions = (await sessionStore.getAll?.()) ?? [];
       return sessions.map((s) => ({
         id: s.id,
         userId: s.userId,
@@ -220,8 +219,7 @@ const adminUI = {
       }));
     },
     getSessionsByUser: async (userId: string) => {
-      const sessions =
-        (await authAdapter.sessionStore.getByUser?.(userId)) ?? [];
+      const sessions = (await sessionStore.getByUser?.(userId)) ?? [];
       return sessions.map((s) => ({
         id: s.id,
         userId: s.userId,
@@ -231,18 +229,25 @@ const adminUI = {
       }));
     },
     createSession: async (userId: string) => {
-      const session = await authAdapter.createSession(userId);
-      return { token: session.id, expiresAt: session.expiresAt };
+      const ttlMs = 24 * 60 * 60 * 1000;
+      const sess = {
+        id: randomUUID(),
+        userId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + ttlMs),
+      };
+      await sessionStore.set(sess.id, sess, ttlMs);
+      return { token: sess.id, expiresAt: sess.expiresAt };
     },
     revokeSession: async (sessionId: string) => {
-      await authAdapter.invalidateSession(sessionId);
+      await sessionStore.delete(sessionId);
     },
     revokeAllUserSessions: async (userId: string) => {
-      const sessions = (await authAdapter.sessionStore.getAll?.()) ?? [];
+      const sessions = (await sessionStore.getAll?.()) ?? [];
       let revokedCount = 0;
       for (const s of sessions) {
         if (s.userId === userId) {
-          await authAdapter.invalidateSession(s.id);
+          await sessionStore.delete(s.id);
           revokedCount++;
         }
       }

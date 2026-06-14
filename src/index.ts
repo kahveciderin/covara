@@ -127,6 +127,28 @@ export {
   type Operation,
 } from "./auth/scope";
 export { createPassportAdapter } from "./auth/adapters/passport";
+export {
+  fromPassport,
+  normalizePassportProfile,
+  installFetchTransport,
+} from "./auth/passport-bridge";
+export type {
+  SocialProvider,
+  SocialAccount,
+  NormalizedProfile,
+  FromPassportOptions,
+  PassportStrategyLike,
+} from "./auth/passport-bridge";
+export { createKvSocialStateStore } from "./auth/social";
+export type { SocialAuthOptions, SocialStateStore } from "./auth/social";
+export { cookieSession, jwtSession, fromAuthAdapter } from "./auth/session";
+export type {
+  SessionStrategy,
+  SessionUser,
+  IssuedSession,
+  CookieSessionOptions,
+  JwtSessionOptions,
+} from "./auth/session";
 export { createAuthJsAdapter } from "./auth/adapters/authjs";
 export { createJWTAdapter } from "./auth/adapters/jwt";
 export type { JWTConfig, JWTAdapterOptions } from "./auth/adapters/jwt";
@@ -158,6 +180,7 @@ export type {
 } from "./auth";
 export { useAuth, createAuthRoutes } from "./auth/routes";
 export type { UseAuthOptions, AuthRouterResult, AuthUser } from "./auth/routes";
+export { InMemorySessionStore } from "./auth/types";
 export type {
   AuthCredentials,
   AuthResult,
@@ -317,6 +340,7 @@ export {
   createTokenService,
   createEmailPasswordBackend,
   createFederatedBackend,
+  createPassportBackend,
 } from "./oidc";
 export type {
   OIDCProviderConfig,
@@ -331,6 +355,7 @@ export type {
   AuthBackendResult,
   AuthBackendsConfig,
   EmailPasswordBackendConfig,
+  PassportBackendConfig,
   FederatedProvider,
   IDTokenClaims,
   AccessTokenClaims,

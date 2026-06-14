@@ -23,6 +23,9 @@ export const renderAgents = (options: ScaffoldOptions): string => {
   const structure = [
     `- \`src/schema.ts\` — Drizzle table definitions. **This is the source of truth.** Adding or changing a column here changes the API.`,
     `- \`${entry}\` — app entry. Builds the Covara app with \`createCovara(...)\` and mounts each table with \`.resource(table, { ... })\`.`,
+    cloudflare
+      ? undefined
+      : `- \`src/env.ts\` — typed \`createEnv\` config. Read env vars via \`env.X\` here, never \`process.env\`.`,
     react
       ? `- \`frontend/\` — the React SPA. \`frontend/src/generated/api-types.ts\` is generated from the running API — do not edit it by hand.`
       : undefined,

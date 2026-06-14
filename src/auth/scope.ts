@@ -188,22 +188,15 @@ export const scopePatterns = {
     },
   }),
 
+  // Every operation public, including unauthenticated writes. Intended for
+  // starters/demos — lock down before production.
   fullyPublic: (): ScopeConfig => ({
     public: {
       read: true,
       subscribe: true,
-    },
-    create: async () => {
-      const { allScope } = await import("./rsql");
-      return allScope();
-    },
-    update: async () => {
-      const { allScope } = await import("./rsql");
-      return allScope();
-    },
-    delete: async () => {
-      const { allScope } = await import("./rsql");
-      return allScope();
+      create: true,
+      update: true,
+      delete: true,
     },
   }),
 };

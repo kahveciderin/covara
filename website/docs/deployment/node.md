@@ -15,15 +15,16 @@ import { drizzle } from "drizzle-orm/libsql";
 import { createCovara } from "covara";
 import { startServer } from "covara/node";
 import { todos } from "./schema.js";
+import { env } from "./env.js"; // your createEnv schema — see Environment variables
 
-const db = drizzle(createClient({ url: process.env.DB_FILE_NAME ?? "file:./dev.db" }));
+const db = drizzle(createClient({ url: env.DB_FILE_NAME }));
 
 const app = createCovara({ cors: true }).resource(todos, {
   db, id: todos.id, auth: { public: true },
 });
 
 const server = await startServer(app, {
-  port: Number(process.env.PORT ?? 3000),
+  port: env.PORT,
   hostname: "0.0.0.0",
   onListen: ({ port }) => console.log(`Listening on ${port}`),
 });

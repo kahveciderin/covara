@@ -121,7 +121,7 @@ Run as many instances as you like behind a load balancer. For realtime to stay c
 
 ```typescript
 import { initializeKV } from "covara/kv";
-await initializeKV({ type: "redis", redis: { url: process.env.REDIS_URL! } });
+await initializeKV({ type: "redis", redis: { url: env.REDIS_URL } });
 ```
 
 `initializeKV` calls `initializeEventSubscription()` for any distributed store, so a mutation on one instance reaches subscribers on another, and rate limits, sessions, and the task queue are shared. The explicit `void initializeEventSubscription()` is only needed when you use `setGlobalKV(...)` directly. The in-memory KV is per-process and must not be used when state spans instances.

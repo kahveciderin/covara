@@ -22,8 +22,13 @@ export {
   KVStateStore,
 } from "./stores";
 
-export { createEmailPasswordBackend, createFederatedBackend } from "./backends";
+export {
+  createEmailPasswordBackend,
+  createFederatedBackend,
+  createPassportBackend,
+} from "./backends";
 export { clearFederatedCaches } from "./backends/federated";
+export { finishInteractiveLogin, createExternalAuthRoutes } from "./complete-login";
 
 export {
   createAuthorizeEndpoint,

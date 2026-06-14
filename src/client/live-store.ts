@@ -111,6 +111,16 @@ export const createLiveQuery = <T extends { id: string }>(
   let isLoadingMore = false;
   let nextCursor: string | null = null;
 
+  // Keep the requested totalCount in sync with live membership changes so a
+  // "N of M loaded" UI doesn't go stale after the user adds/removes a row.
+  // No-op until the initial fetch populates totalCount (and `refresh()` re-reads
+  // the authoritative server total, healing any drift).
+  const bumpTotal = (delta: number) => {
+    if (totalCount !== undefined) {
+      totalCount = Math.max(0, totalCount + delta);
+    }
+  };
+
   const sortFn = createSortFn<T>(options.orderBy);
 
   // Cached snapshot for useSyncExternalStore compatibility
@@ -206,7 +216,13 @@ export const createLiveQuery = <T extends { id: string }>(
       }
     }
 
+    // Was this row already counted? Either it reconciles one of our optimistic
+    // creates (already counted at create time) or it's already in the cache.
+    const alreadyCounted = cache.has(item.id);
+    let reconcilesOptimistic = false;
+
     if (optimisticId && optimisticIds.has(optimisticId)) {
+      reconcilesOptimistic = true;
       cache.delete(optimisticId);
       optimisticIds.delete(optimisticId);
       idMappings.set(optimisticId, item.id);
@@ -225,6 +241,7 @@ export const createLiveQuery = <T extends { id: string }>(
     )?.[0];
 
     if (mappedOptimisticId && cache.has(mappedOptimisticId)) {
+      reconcilesOptimistic = true;
       cache.delete(mappedOptimisticId);
     }
 
@@ -236,6 +253,7 @@ export const createLiveQuery = <T extends { id: string }>(
     }
 
     cache.set(item.id, finalItem);
+    if (!reconcilesOptimistic && !alreadyCounted) bumpTotal(1);
     notify();
   };
 
@@ -429,6 +447,10 @@ export const createLiveQuery = <T extends { id: string }>(
   };
 
   const handleRemove = (id: string) => {
+    // Only adjust the total if we were actually still counting this row — an
+    // optimistic delete already decremented it, so the later server "removed"
+    // event must not double-count.
+    if (cache.has(id)) bumpTotal(-1);
     cache.delete(id);
     optimisticIds.delete(id);
     // Server confirmed removal, clear pending delete
@@ -695,6 +717,7 @@ export const createLiveQuery = <T extends { id: string }>(
 
       optimisticIds.add(optimisticId);
       cache.set(optimisticId, optimisticItem);
+      bumpTotal(1);
       notify();
 
       repo.create(data, { optimisticId }).then((created) => {
@@ -751,6 +774,7 @@ export const createLiveQuery = <T extends { id: string }>(
     },
 
     delete: (id) => {
+      if (cache.has(id)) bumpTotal(-1);
       cache.delete(id);
       optimisticIds.delete(id);
       // Track pending delete so item doesn't reappear on reconnection

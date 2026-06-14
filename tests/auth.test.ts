@@ -568,11 +568,15 @@ describe("Scope Resolution", () => {
       expect(scope.toString()).toContain("org-456");
     });
 
-    it("should create fully public scope", async () => {
+    it("should create fully public scope — every operation, even anonymous", async () => {
       const config = scopePatterns.fullyPublic();
       const resolver = createScopeResolver(config, "public-items");
 
-      expect(await resolver.canPerform("read", null)).toBe(true);
+      // "Fully public" must allow unauthenticated writes too (the create-starter
+      // relies on this). Previously create/update/delete required a user.
+      for (const op of ["read", "subscribe", "create", "update", "delete"] as const) {
+        expect(await resolver.canPerform(op, null)).toBe(true);
+      }
       expect(await resolver.canPerform("create", mockUser)).toBe(true);
     });
   });

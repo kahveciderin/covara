@@ -82,12 +82,12 @@ Set a `cursorSigningSecret` to HMAC-sign cursors — the encoded payload is suff
 import { setGlobalCursorSigningSecret } from "covara";
 
 // Global default for every resource:
-setGlobalCursorSigningSecret(process.env.CURSOR_SECRET);
+setGlobalCursorSigningSecret(env.CURSOR_SECRET);
 
 useResource(usersTable, {
   id: usersTable.id,
   db,
-  cursorSigningSecret: process.env.CURSOR_SECRET, // per-resource (overrides global)
+  cursorSigningSecret: env.CURSOR_SECRET, // per-resource (overrides global)
 });
 ```
 

@@ -2388,3 +2388,80 @@ describe("SubscriptionManager onExisting callback", () => {
     }
   });
 });
+
+describe("LiveStore totalCount stays live", () => {
+  const repoWith = (items: Todo[], total: number) => {
+    const repo = createMockRepo<Todo>();
+    repo.list = async () => ({
+      items,
+      nextCursor: null,
+      hasMore: false,
+      totalCount: total,
+    });
+    return repo;
+  };
+
+  it("increments totalCount on optimistic create, without double-counting reconcile", async () => {
+    const repo = repoWith(
+      [
+        { id: "1", title: "A", completed: false },
+        { id: "2", title: "B", completed: false },
+      ],
+      2
+    );
+    const query = createLiveQuery<Todo>(repo, { limit: 5 });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(query.getSnapshot().totalCount).toBe(2);
+    expect(query.getSnapshot().items).toHaveLength(2);
+
+    const optId = query.mutate.create({ title: "C", completed: false } as Omit<Todo, "id">);
+    expect(query.getSnapshot().items).toHaveLength(3);
+    expect(query.getSnapshot().totalCount).toBe(3);
+
+    // The server's reconciliation of our own optimistic add must not bump again.
+    repo.triggerEvent("added", {
+      item: { id: "srv-3", title: "C", completed: false },
+      meta: { optimisticId: optId },
+    });
+    expect(query.getSnapshot().items).toHaveLength(3);
+    expect(query.getSnapshot().totalCount).toBe(3);
+
+    query.destroy();
+  });
+
+  it("decrements totalCount on delete, without double-counting the server removed event", async () => {
+    const repo = repoWith(
+      [
+        { id: "1", title: "A", completed: false },
+        { id: "2", title: "B", completed: false },
+      ],
+      2
+    );
+    const query = createLiveQuery<Todo>(repo, { limit: 5 });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(query.getSnapshot().totalCount).toBe(2);
+
+    query.mutate.delete("1");
+    expect(query.getSnapshot().items).toHaveLength(1);
+    expect(query.getSnapshot().totalCount).toBe(1);
+
+    repo.triggerEvent("removed", "1");
+    expect(query.getSnapshot().totalCount).toBe(1);
+
+    query.destroy();
+  });
+
+  it("increments totalCount when a new row arrives from another client (live mode)", async () => {
+    const repo = repoWith([{ id: "1", title: "A", completed: false }], 1);
+    const query = createLiveQuery<Todo>(repo, {}); // no limit -> live mode
+    await new Promise((r) => setTimeout(r, 10));
+    expect(query.getSnapshot().totalCount).toBe(1);
+
+    repo.triggerEvent("added", { item: { id: "2", title: "B", completed: false } });
+    expect(query.getSnapshot().items).toHaveLength(2);
+    expect(query.getSnapshot().totalCount).toBe(2);
+
+    query.destroy();
+  });
+});

@@ -23,7 +23,12 @@ import {
 import { createRegisterEndpoint } from "./endpoints/register";
 import { createOIDCRateLimiter } from "./rate-limit";
 import { createLoginHandler, createConsentHandler } from "./ui";
-import { createEmailPasswordBackend, createFederatedBackend } from "./backends";
+import {
+  createEmailPasswordBackend,
+  createFederatedBackend,
+  createPassportBackend,
+} from "./backends";
+import { createExternalAuthRoutes } from "./complete-login";
 import { InMemorySessionStore, SessionStore } from "@/auth/types";
 
 export interface OIDCProviderResult {
@@ -57,7 +62,11 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
 
   const findUserById = async (id: string): Promise<OIDCUser | null> => {
     if (config.backends.emailPassword?.findUserById) {
-      return config.backends.emailPassword.findUserById(id);
+      const user = await config.backends.emailPassword.findUserById(id);
+      if (user) return user;
+    }
+    if (config.backends.passport?.findUserById) {
+      return config.backends.passport.findUserById(id);
     }
     return null;
   };
@@ -82,6 +91,21 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
           familyName: userInfo.family_name as string | undefined,
           picture: userInfo.picture as string | undefined,
         }),
+      })
+    );
+  }
+
+  if (config.backends.passport && config.backends.passport.providers.length > 0) {
+    backends.push(
+      createPassportBackend({
+        providers: config.backends.passport.providers,
+        baseUrl: config.baseUrl ?? config.issuer,
+        findUserByAccount:
+          config.backends.passport.findUserByAccount ??
+          (async () => null),
+        createUser: config.backends.passport.createUser,
+        linkAccount: config.backends.passport.linkAccount,
+        stateStore: config.backends.passport.stateStore,
       })
     );
   }
@@ -192,7 +216,14 @@ export const createOIDCProvider = (config: OIDCProviderConfig): OIDCProviderResu
   );
 
   for (const backend of backends) {
-    if (backend.getRoutes) {
+    if (backend.initiateExternalAuth && backend.handleExternalCallback) {
+      // The provider owns the external redirect/callback routes so a successful
+      // callback resumes the pending /authorize interaction (session + auth code).
+      router.route(
+        `/auth/${backend.name}`,
+        createExternalAuthRoutes(backend, { config, stores, sessionStore })
+      );
+    } else if (backend.getRoutes) {
       router.route(`/auth/${backend.name}`, backend.getRoutes());
     }
   }

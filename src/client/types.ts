@@ -491,11 +491,41 @@ export interface CheckAuthResult<TUser = unknown> {
   expiresAt?: Date;
 }
 
+/** First-class methods for session (cookie) auth — the routes `useAuth` mounts. */
+export interface SessionAuthClient {
+  signup(input: {
+    email: string;
+    password: string;
+    name?: string;
+  }): Promise<{ user: { id: string; email?: string; name?: string } }>;
+  login(
+    email: string,
+    password: string
+  ): Promise<{
+    user: Record<string, unknown>;
+    // Present with a cookie session strategy.
+    sessionId?: string;
+    // Present with a JWT session strategy.
+    accessToken?: string;
+    expiresIn?: number;
+    tokenType?: string;
+  }>;
+  logout(): Promise<void>;
+  /** Email-confirmation: ask the server to send a verification token. */
+  requestEmailVerification(email: string): Promise<void>;
+  /** Email-confirmation: confirm the token from the link in the email. */
+  confirmEmail(email: string, token: string): Promise<void>;
+  /** The current user, or null. */
+  me<TUser = unknown>(): Promise<TUser | null>;
+}
+
 export interface CovaraClient {
   readonly transport: Transport;
   readonly offline?: OfflineManager;
   readonly auth: AuthManager;
   readonly jwt?: JWTClient;
+  /** Email/password session auth — signup, login, logout, email confirmation. */
+  readonly session: SessionAuthClient;
   /** Typed billing client for checkout, subscriptions, credits and the portal. */
   readonly billing: BillingClient;
   resource<T extends { id: string }, P extends Record<keyof P, ProcedureDef> = AnyProcedures>(
@@ -503,6 +533,10 @@ export interface CovaraClient {
   ): ResourceClient<T, P>;
   setAuthToken(token: string): void;
   clearAuthToken(): void;
+  /** Build the URL that starts a social (Passport) login for a provider. */
+  socialLoginUrl(provider: string): string;
+  /** Navigate the browser to begin a social (Passport) login. Browser-only. */
+  loginWithSocial(provider: string): void;
   setAuthErrorHandler(handler: () => void): void;
   getPendingCount(): Promise<number>;
   checkAuth<TUser = unknown>(url?: string): Promise<CheckAuthResult<TUser>>;

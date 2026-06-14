@@ -86,6 +86,34 @@ export {
 
 export { AuthJsAdapter, createAuthJsAdapter } from "./adapters/authjs";
 export { PassportAdapter, createPassportAdapter, fromPassportUser } from "./adapters/passport";
+export {
+  fromPassport,
+  installFetchTransport,
+  runStrategy,
+  normalizePassportProfile,
+} from "./passport-bridge";
+export type {
+  SocialProvider,
+  SocialAccount,
+  NormalizedProfile,
+  FromPassportOptions,
+  PassportStrategyLike,
+  PassportRequest,
+  PassportOutcome,
+} from "./passport-bridge";
+export {
+  createSocialRouter,
+  createKvSocialStateStore,
+} from "./social";
+export type { SocialAuthOptions, SocialStateStore } from "./social";
+export { cookieSession, jwtSession, fromAuthAdapter } from "./session";
+export type {
+  SessionStrategy,
+  SessionUser,
+  IssuedSession,
+  CookieSessionOptions,
+  JwtSessionOptions,
+} from "./session";
 export { JWTAdapter, createJWTAdapter } from "./adapters/jwt";
 export type { JWTConfig, JWTAdapterOptions, JWTPayload, JWTUser } from "./adapters/jwt";
 export { OIDCAdapter, createOIDCAdapter, oidcProviders } from "./adapters/oidc";

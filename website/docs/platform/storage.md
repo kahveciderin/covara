@@ -62,7 +62,7 @@ initializeStorage({ type: "r2", r2: { binding: env.MY_BUCKET, publicUrl: "https:
 // R2 via S3-compatible API (anywhere)
 initializeStorage({
   type: "r2",
-  r2: { accountId: process.env.R2_ACCOUNT_ID!, bucket: "my-bucket", accessKeyId: "...", secretAccessKey: "...", presignedUrlExpiry: 3600 },
+  r2: { accountId: env.R2_ACCOUNT_ID, bucket: "my-bucket", accessKeyId: "...", secretAccessKey: "...", presignedUrlExpiry: 3600 },
 });
 ```
 

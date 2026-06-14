@@ -76,7 +76,8 @@ function TodoList() {
 - **OIDC Provider** - Built-in OpenID Connect server with PKCE, token revocation (RFC 7009) and introspection (RFC 7662)
 - **OIDC Hardening** - Component-wise redirect-URI validation, PKCE-required public clients (plain rejected), federated id_token verification, endpoint rate limiting, KV-backed stores by default
 - **Dynamic Client Registration & Consent Revocation** - Opt-in `POST /register`, plus `POST /consent/revoke` and consent TTL
-- **Federated Login** - Google, Microsoft, Okta, Auth0, Keycloak, custom
+- **Federated Login** - Google, Microsoft, Okta, Auth0, Keycloak, custom (OIDC); plus `backends.passport` to use any Passport.js OAuth2 strategy (GitHub, Discord, …) as an upstream under your own OIDC provider
+- **Social Login** - Drop in any Passport.js OAuth2 strategy (GitHub, Discord, Google, …) via `fromPassport`; runs on Node *and* Workers, with one-call `loginWithSocial` / `signInWith` on the client
 - **JWT Auth** - JWT bearer adapter on the server, `JWTClient` + `useJWTAuth` hook on the client with pluggable token storage (localStorage, memory, AsyncStorage)
 - **Session Auth** - Auth.js, Passport.js, and session adapters with session rotation on login
 - **Multi-Factor Auth** - Opt-in TOTP MFA with backup codes

@@ -29,30 +29,48 @@ export const todos = pgTable("todos", {
 export const renderSchema = (options: ScaffoldOptions): string =>
   options.db === "sqlite" ? SQLITE_SCHEMA : POSTGRES_SCHEMA;
 
+// Typed, validated, Workers-safe config for the Node entry. `createEnv` reads
+// through the runtime-safe primitives, so it never touches `process.env` directly.
+export const renderEnv = (options: ScaffoldOptions): string => {
+  const lines: string[] = [];
+  lines.push(
+    options.db === "sqlite"
+      ? `  DB_FILE_NAME: z.string().default("file:./dev.db"),`
+      : `  DATABASE_URL: z.string().url(),`
+  );
+  lines.push(`  PORT: z.string().default("3000").transform(Number),`);
+  if (options.frontend === "react") {
+    // Selects the dev (Vite + HMR) path; `covara dev` sets NODE_ENV=development.
+    lines.push(`  NODE_ENV: z.string().default("production"),`);
+  }
+  return `import { createEnv } from "covara";
+import { z } from "zod";
+
+export const env = createEnv({
+${lines.join("\n")}
+});
+`;
+};
+
 export const NODE_SQLITE_INDEX = `import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
-import { createCovara } from "covara";
+import { createCovara, scopePatterns } from "covara";
 import { startServer } from "covara/node";
 import { todos } from "./schema.js";
+import { env } from "./env.js";
 
-const client = createClient({
-  url: process.env.DB_FILE_NAME ?? "file:./dev.db",
-});
+const client = createClient({ url: env.DB_FILE_NAME });
 const db = drizzle(client);
 
 const app = createCovara({ cors: true, adminUI: true }).resource(todos, {
   db,
   id: todos.id,
-  // Public CRUD so the starter works end-to-end. Lock this down with auth
+  // Fully public so the starter works end-to-end. Lock this down with auth
   // scopes before deploying: https://github.com/kahveciderin/covara#auth
-  auth: {
-    public: { read: true, subscribe: true, create: true, update: true, delete: true },
-  },
+  auth: scopePatterns.fullyPublic(),
 });
 
-const server = await startServer(app, {
-  port: Number(process.env.PORT ?? 3000),
-});
+const server = await startServer(app, { port: env.PORT });
 
 console.log(\`Covara running at http://localhost:\${server.port}\`);
 console.log(\`Create: curl -X POST http://localhost:\${server.port}/api/todos -H 'content-type: application/json' -d '{"title":"hello"}'\`);
@@ -61,30 +79,23 @@ console.log(\`List:   curl http://localhost:\${server.port}/api/todos\`);
 
 export const NODE_POSTGRES_INDEX = `import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { createCovara } from "covara";
+import { createCovara, scopePatterns } from "covara";
 import { startServer } from "covara/node";
 import { todos } from "./schema.js";
+import { env } from "./env.js";
 
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL is required");
-}
-
-const client = postgres(process.env.DATABASE_URL);
+const client = postgres(env.DATABASE_URL);
 const db = drizzle(client);
 
 const app = createCovara({ cors: true, adminUI: true }).resource(todos, {
   db,
   id: todos.id,
-  // Public CRUD so the starter works end-to-end. Lock this down with auth
+  // Fully public so the starter works end-to-end. Lock this down with auth
   // scopes before deploying: https://github.com/kahveciderin/covara#auth
-  auth: {
-    public: { read: true, subscribe: true, create: true, update: true, delete: true },
-  },
+  auth: scopePatterns.fullyPublic(),
 });
 
-const server = await startServer(app, {
-  port: Number(process.env.PORT ?? 3000),
-});
+const server = await startServer(app, { port: env.PORT });
 
 console.log(\`Covara running at http://localhost:\${server.port}\`);
 console.log(\`Create: curl -X POST http://localhost:\${server.port}/api/todos -H 'content-type: application/json' -d '{"title":"hello"}'\`);
@@ -97,24 +108,20 @@ console.log(\`List:   curl http://localhost:\${server.port}/api/todos\`);
 // built SPA from dist/public with an SPA fallback.
 const NODE_REACT_DB_SETUP_SQLITE = `import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
-import { createCovara } from "covara";
+import { createCovara, scopePatterns } from "covara";
 import { todos } from "./schema.js";
+import { env } from "./env.js";
 
-const client = createClient({
-  url: process.env.DB_FILE_NAME ?? "file:./dev.db",
-});
+const client = createClient({ url: env.DB_FILE_NAME });
 const db = drizzle(client);`;
 
 const NODE_REACT_DB_SETUP_POSTGRES = `import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { createCovara } from "covara";
+import { createCovara, scopePatterns } from "covara";
 import { todos } from "./schema.js";
+import { env } from "./env.js";
 
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL is required");
-}
-
-const client = postgres(process.env.DATABASE_URL);
+const client = postgres(env.DATABASE_URL);
 const db = drizzle(client);`;
 
 const renderNodeReactIndex = (options: ScaffoldOptions): string => {
@@ -133,18 +140,16 @@ import path from "node:path";
 const app = createCovara({ cors: true, adminUI: true }).resource(todos, {
   db,
   id: todos.id,
-  // Public CRUD so the starter works end-to-end. Lock this down with auth
+  // Fully public so the starter works end-to-end. Lock this down with auth
   // scopes before deploying: https://github.com/kahveciderin/covara#auth
-  auth: {
-    public: { read: true, subscribe: true, create: true, update: true, delete: true },
-  },
+  auth: scopePatterns.fullyPublic(),
 });
 
-const port = Number(process.env.PORT ?? 3000);
+const port = env.PORT;
 const here = path.dirname(fileURLToPath(import.meta.url));
 const isApi = (p: string) => p.startsWith("/api") || p.startsWith("/__covara");
 
-if (process.env.NODE_ENV === "development") {
+if (env.NODE_ENV === "development") {
   // Single process: Vite (SPA + HMR) for everything else, Covara for the API.
   const { createServer: createViteServer } = await import("vite");
   const vite = await createViteServer({
@@ -181,6 +186,7 @@ export const renderNodeIndex = (options: ScaffoldOptions): string => {
 export const CLOUDFLARE_D1_WORKER = `import { drizzle } from "drizzle-orm/d1";
 import {
   createCovara,
+  scopePatterns,
   createDurableObjectKV,
   setGlobalKV,
   initializeEventSubscription,
@@ -206,11 +212,9 @@ const buildApp = (env: Env): CovaraApp => {
   return createCovara({ cors: true, adminUI: true }).resource(todos, {
     db,
     id: todos.id,
-    // Public CRUD so the starter works end-to-end. Lock this down with auth
+    // Fully public so the starter works end-to-end. Lock this down with auth
     // scopes before deploying: https://github.com/kahveciderin/covara#auth
-    auth: {
-    public: { read: true, subscribe: true, create: true, update: true, delete: true },
-  },
+    auth: scopePatterns.fullyPublic(),
   });
 };
 
@@ -226,6 +230,7 @@ export const CLOUDFLARE_POSTGRES_WORKER = `import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import {
   createCovara,
+  scopePatterns,
   createDurableObjectKV,
   setGlobalKV,
   initializeEventSubscription,
@@ -252,11 +257,9 @@ const buildApp = (env: Env): CovaraApp => {
   return createCovara({ cors: true, adminUI: true }).resource(todos, {
     db,
     id: todos.id,
-    // Public CRUD so the starter works end-to-end. Lock this down with auth
+    // Fully public so the starter works end-to-end. Lock this down with auth
     // scopes before deploying: https://github.com/kahveciderin/covara#auth
-    auth: {
-    public: { read: true, subscribe: true, create: true, update: true, delete: true },
-  },
+    auth: scopePatterns.fullyPublic(),
   });
 };
 

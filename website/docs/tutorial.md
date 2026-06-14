@@ -74,8 +74,9 @@ export const filesTable = sqliteTable("files", {
 // src/db/db.ts
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient } from "@libsql/client";
+import { env } from "../env"; // your createEnv schema — see Environment variables
 
-const client = createClient({ url: process.env.DB_FILE_NAME ?? "file:./data.db" });
+const client = createClient({ url: env.DB_FILE_NAME });
 export const db = drizzle(client);
 ```
 
@@ -330,7 +331,7 @@ function TodoApp() {
 Generate types from the running API and wrap the client to get fully-typed resource accessors and a fluent query builder:
 
 ```bash
-npx covara generate types --url http://localhost:3000 --out src/generated/api-types.ts
+npx covara types --url http://localhost:3000 --out src/generated/api-types.ts
 ```
 
 ```tsx

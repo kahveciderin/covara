@@ -8,7 +8,7 @@ import {
   renderGitignore,
   renderEnvExample,
 } from "./configs.js";
-import { renderSchema, renderNodeIndex, renderWorker } from "./source.js";
+import { renderSchema, renderEnv, renderNodeIndex, renderWorker } from "./source.js";
 import { renderReadme } from "./readme.js";
 import { renderAgents } from "./agents.js";
 import {
@@ -35,6 +35,7 @@ export const buildProjectFiles = (
 
   if (options.template === "node") {
     files["tsconfig.json"] = NODE_TSCONFIG;
+    files["src/env.ts"] = renderEnv(options);
     files["src/index.ts"] = renderNodeIndex(options);
     files["Dockerfile"] = renderDockerfile();
     files[".dockerignore"] = renderDockerignore();
@@ -61,7 +62,7 @@ export {
   renderEnvExample,
 } from "./configs.js";
 export { renderPackageJson } from "./package-json.js";
-export { renderSchema, renderNodeIndex, renderWorker } from "./source.js";
+export { renderSchema, renderEnv, renderNodeIndex, renderWorker } from "./source.js";
 export { renderReadme } from "./readme.js";
 export { renderAgents } from "./agents.js";
 export {

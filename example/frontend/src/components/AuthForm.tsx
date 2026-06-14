@@ -1,4 +1,5 @@
 import { useState, FormEvent } from 'react';
+import { useAuth } from 'covara/client/react';
 
 interface AuthFormProps {
   onLogin: () => void;
@@ -12,6 +13,7 @@ export function AuthForm({ onLogin, version }: AuthFormProps) {
   const [name, setName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const { login, signup } = useAuth();
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -19,22 +21,11 @@ export function AuthForm({ onLogin, version }: AuthFormProps) {
     setLoading(true);
 
     try {
-      const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/signup';
-      const body = mode === 'login' ? { email, password } : { email, password, name };
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(body),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.detail || data.error || 'Failed');
+      if (mode === 'login') {
+        await login(email, password);
+      } else {
+        await signup({ email, password, name });
       }
-
       onLogin();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'An error occurred');

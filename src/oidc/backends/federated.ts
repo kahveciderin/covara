@@ -1,4 +1,4 @@
-import { Hono, type Context } from "hono";
+import { type Context } from "hono";
 import * as crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import {
@@ -286,33 +286,18 @@ export const createFederatedBackend = (config: FederatedBackendConfig): AuthBack
         }
       }
 
+      const interactionId = stateData.returnTo
+        ? (new URL(stateData.returnTo, "http://x").searchParams.get("interaction") ?? undefined)
+        : undefined;
+
       return {
         success: true,
         user,
         authTime: Math.floor(Date.now() / 1000),
         amr: ["fed"],
         provider: stateData.provider,
+        interactionId,
       };
-    },
-
-    getRoutes() {
-      const router = new Hono();
-
-      router.get("/callback", async (c) => {
-        const result = await this.handleExternalCallback!(c);
-
-        if (!result.success) {
-          return c.json({ error: result.error }, 400);
-        }
-
-        return c.json({ success: true, user: result.user });
-      });
-
-      router.get("/:provider", async (c) => {
-        return this.initiateExternalAuth!(c.req.param("provider"), c);
-      });
-
-      return router;
     },
   };
 };

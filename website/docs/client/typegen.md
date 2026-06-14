@@ -12,7 +12,7 @@ Covara generates TypeScript types from your running API, giving you end-to-end t
 ## CLI
 
 ```bash
-npx covara generate types --url http://localhost:3000 --out src/generated/api-types.ts
+npx covara types --url http://localhost:3000 --out src/generated/api-types.ts
 ```
 
 Or a script entry point:

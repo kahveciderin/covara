@@ -7,7 +7,9 @@ description: Type-safe env config with Zod validation, automatic public/private 
 
 # Environment variables
 
-`createEnv` defines a Zod-validated environment schema with automatic public/private separation, an HTTP endpoint to expose public variables (with ETag caching), a React hook, and type generation. Covara itself never reads `process.env` directly — it uses runtime-safe helpers (`readEnv`, `isProduction`, `isDebugEnabled`) so it works on Workers too.
+`createEnv` defines a Zod-validated environment schema with automatic public/private separation, an HTTP endpoint to expose public variables (with ETag caching), a React hook, and type generation. **This is the recommended way to read config and secrets in your app** — reference the typed `env.X` everywhere instead of `process.env`.
+
+Under the hood it reads through the runtime-safe primitives `readEnv`, `isProduction`, and `isDebugEnabled` (so it works on Workers too — Covara itself never touches `process.env` directly). Reach for those primitives directly only for a quick one-off read where a full schema is overkill; otherwise prefer `createEnv` for type safety and fail-fast validation.
 
 ## Define a schema
 
@@ -108,7 +110,7 @@ export type PublicEnv = { PUBLIC_API_URL: string; PUBLIC_VERSION: string };
 ```
 
 ```bash
-npx covara generate types --url http://localhost:3000 --out src/generated/api-types.ts
+npx covara types --url http://localhost:3000 --out src/generated/api-types.ts
 ```
 
 ## Best practices

@@ -28,7 +28,7 @@ import { initializeKV } from "covara/kv";
 await initializeKV({ type: "memory", prefix: "my-app" });
 
 // Production (Node)
-await initializeKV({ type: "redis", redis: { url: process.env.REDIS_URL! } });
+await initializeKV({ type: "redis", redis: { url: env.REDIS_URL } });
 ```
 
 For any distributed (non-memory) store, `initializeKV` calls `initializeEventSubscription()` for you, so a mutation on one instance reaches subscribers on another. If you instead set the global KV directly with `setGlobalKV(...)`, call `initializeEventSubscription()` yourself.

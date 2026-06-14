@@ -81,7 +81,7 @@ export const renderResourceRegistration = (name: string): string => {
 //      app.resource(${varName}, {
 //        db,
 //        id: ${varName}.id,
-//        auth: { public: true },
+//        auth: { public: true }, // read + subscribe without auth; writes require a user
 //      });
 //
 // The endpoints are mounted at /api/${name} (${pascal}).`;

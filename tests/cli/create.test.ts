@@ -52,6 +52,7 @@ describe("scaffoldProject", () => {
         "docker-compose.yml",
         "drizzle.config.ts",
         "package.json",
+        "src/env.ts",
         "src/index.ts",
         "src/schema.ts",
         "tsconfig.json",
@@ -103,12 +104,16 @@ describe("scaffoldProject", () => {
       expect(index).toContain('from "drizzle-orm/libsql"');
       expect(index).toContain("createCovara");
       expect(index).toContain('startServer } from "covara/node"');
-      // Starter ships fully-public CRUD + subscribe so it works end-to-end out of the box.
-      expect(index).toContain(
-        "public: { read: true, subscribe: true, create: true, update: true, delete: true }"
-      );
-      expect(index).toContain("process.env.PORT");
-      expect(index).toContain("process.env.DB_FILE_NAME");
+      // Starter ships fully-public CRUD so it works end-to-end out of the box.
+      expect(index).toContain("scopePatterns.fullyPublic()");
+      // Typed, validated env (createEnv) — no direct process.env in the entry.
+      expect(index).toContain('import { env } from "./env.js"');
+      expect(index).toContain("env.DB_FILE_NAME");
+      expect(index).toContain("env.PORT");
+      expect(index).not.toContain("process.env");
+      const envSchema = read(targetDir, "src/env.ts");
+      expect(envSchema).toContain("createEnv");
+      expect(envSchema).toContain("DB_FILE_NAME");
       const drizzleConfig = read(targetDir, "drizzle.config.ts");
       expect(drizzleConfig).toContain('dialect: "sqlite"');
       expect(read(targetDir, ".env.example")).toContain("DB_FILE_NAME");
@@ -134,7 +139,9 @@ describe("scaffoldProject", () => {
       const index = read(targetDir, "src/index.ts");
       expect(index).toContain('from "postgres"');
       expect(index).toContain('from "drizzle-orm/postgres-js"');
-      expect(index).toContain("process.env.DATABASE_URL");
+      expect(index).toContain("env.DATABASE_URL");
+      expect(index).not.toContain("process.env");
+      expect(read(targetDir, "src/env.ts")).toContain("DATABASE_URL: z.string().url()");
       expect(read(targetDir, "drizzle.config.ts")).toContain(
         'dialect: "postgresql"'
       );
@@ -291,7 +298,8 @@ describe("scaffoldProject", () => {
 
       const index = read(targetDir, "src/index.ts");
       expect(index).toContain("getRequestListener");
-      expect(index).toContain('process.env.NODE_ENV === "development"');
+      expect(index).toContain('env.NODE_ENV === "development"');
+      expect(index).not.toContain("process.env");
       expect(index).toContain('import("vite")');
       expect(index).toContain("middlewareMode");
       expect(index).toContain("serveStatic");
@@ -314,10 +322,11 @@ describe("scaffoldProject", () => {
       expect(dockerfile).not.toContain("/app/public ./public");
     });
 
-    it("grants public subscribe so the live frontend works without auth", () => {
+    it("grants public access so the live frontend works without auth", () => {
       const { targetDir } = scaffold(options);
       const index = read(targetDir, "src/index.ts");
-      expect(index).toContain("subscribe: true");
+      // scopePatterns.fullyPublic() enables public CRUD (incl. anonymous writes).
+      expect(index).toContain("scopePatterns.fullyPublic()");
     });
 
     it("ships a light-scheme stylesheet with explicit text contrast", () => {

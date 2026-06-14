@@ -18,7 +18,7 @@ import {
   createStripeAdapter, createLemonSqueezyAdapter, createPaddleAdapter, createPolarAdapter,
 } from "covara/billing";
 
-const adapter = createStripeAdapter({ apiKey: process.env.STRIPE_SECRET_KEY! });
+const adapter = createStripeAdapter({ apiKey: env.STRIPE_SECRET_KEY });
 // createLemonSqueezyAdapter({ apiKey, storeId })
 // createPaddleAdapter({ apiKey, sandbox: true })
 // createPolarAdapter({ accessToken, server: "sandbox" })
@@ -40,7 +40,7 @@ import { createBilling } from "covara/billing";
 
 const billing = createBilling({
   adapter,
-  webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+  webhookSecret: env.STRIPE_WEBHOOK_SECRET,
   plans: [
     { key: "pro_monthly", priceId: "price_123", type: "subscription", interval: "month", credits: 10_000 },
     { key: "credits_pack", priceId: "price_456", type: "one_time", credits: 5_000 },
@@ -107,11 +107,12 @@ Disable auto-granting with `autoGrantCredits: false`, or customize account resol
 
 ```typescript
 import { createBillingRouter } from "covara/billing";
+import { getUser } from "covara";
 
 app.route("/api/billing", createBillingRouter(billing, {
-  getAccount: (c) => c.get("user")?.id,
-  getCustomerId: (c) => c.get("user")?.billingCustomerId,
-  getCustomerEmail: (c) => c.get("user")?.email,
+  getAccount: (c) => getUser(c)?.id,
+  getCustomerId: (c) => getUser(c)?.billingCustomerId,
+  getCustomerEmail: (c) => getUser(c)?.email,
 }));
 ```
 

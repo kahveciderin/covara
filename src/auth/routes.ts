@@ -1,5 +1,4 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
-import { setCookie, deleteCookie, getCookie } from "hono/cookie";
 import type { CookieOptions } from "hono/utils/cookie";
 import { AuthAdapter } from "./types";
 import { UnauthorizedError, ValidationError, RateLimitError } from "@/resource/error";
@@ -31,6 +30,8 @@ import {
   enforcePasswordStrength,
   type PasswordPolicyOptions,
 } from "./password-policy";
+import { createSocialRouter, type SocialAuthOptions } from "./social";
+import { fromAuthAdapter, type SessionStrategy } from "./session";
 
 // Request metadata stored in session.data so the admin UI can show where a
 // session came from. Lives inside `data` because every session store already
@@ -52,7 +53,13 @@ export interface AuthUser {
 }
 
 export interface UseAuthOptions {
-  adapter: AuthAdapter;
+  // How the authenticated identity is persisted, validated per request, and
+  // issued at login — `cookieSession(...)` or `jwtSession(...)`. Decoupled from
+  // the credential providers below, so any provider works with any session type.
+  session?: SessionStrategy;
+  // Deprecated: pass a legacy AuthAdapter instead of `session`. Kept working via
+  // an internal shim; prefer `session`.
+  adapter?: AuthAdapter;
   cookieName?: string;
   cookieOptions?: {
     httpOnly?: boolean;
@@ -104,6 +111,10 @@ export interface UseAuthOptions {
   passwordPolicy?: PasswordPolicyOptions;
   mfa?: MfaOptions;
   magicLink?: MagicLinkAuthOptions;
+  // Social login via any Passport.js OAuth2 strategy (github, discord, google,
+  // ...). Mounts redirect + callback routes that mint the same session as a
+  // password login. See `fromPassport`.
+  social?: SocialAuthOptions;
 }
 
 export interface MfaEnrollment {
@@ -176,6 +187,7 @@ const toCookieOptions = (
 export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
   const {
     adapter,
+    session: sessionOption,
     cookieName = "session",
     cookieOptions = {},
     login,
@@ -191,6 +203,7 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
     passwordPolicy,
     mfa,
     magicLink,
+    social,
   } = options;
 
   const finalCookieOptions = {
@@ -198,6 +211,20 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
     secure: isProduction(),
     ...cookieOptions,
   };
+
+  const strategy: SessionStrategy =
+    sessionOption ??
+    (adapter
+      ? fromAuthAdapter(adapter, {
+          name: cookieName,
+          options: toCookieOptions(finalCookieOptions),
+        })
+      : (() => {
+          throw new Error(
+            "useAuth requires a `session` strategy (cookieSession/jwtSession) or a legacy `adapter`."
+          );
+        })());
+
   const router = new Hono();
 
   const csrfOptions: CsrfOptions | null = csrf
@@ -214,41 +241,41 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
     ? new LoginThrottle(typeof throttle === "object" ? throttle : {})
     : null;
 
+  // Mint a session/token via the configured strategy and assemble the JSON body.
+  // Returns null only if issuance fails, preserving the prior contract.
+  const issueLogin = async (
+    c: Context,
+    userId: string
+  ): Promise<{ body: Record<string, unknown>; user: UserContext } | null> => {
+    try {
+      const issued = await strategy.issue(c, userId, sessionRequestMeta(c));
+      const body: Record<string, unknown> = { user: serializeUser(issued.user) };
+      if (issued.sessionId) body.sessionId = issued.sessionId;
+      if (issued.accessToken) {
+        body.accessToken = issued.accessToken;
+        body.expiresIn = issued.expiresIn;
+        body.tokenType = "Bearer";
+      }
+      return { body, user: issued.user };
+    } catch {
+      return null;
+    }
+  };
+
   const completeLogin = async (
     c: Context,
     userId: string
-  ): Promise<{ user: Record<string, unknown>; sessionId: string } | null> => {
-    if (!adapter.createSession) {
-      throw new Error("Adapter does not support session creation");
-    }
-
-    const priorSessionId = getCookie(c, cookieName);
-    if (priorSessionId) {
-      await adapter.invalidateSession(priorSessionId);
-    }
-
-    const session = await adapter.createSession(userId, sessionRequestMeta(c));
-    const authResult = await adapter.validateCredentials({
-      type: "session",
-      sessionId: session.id,
-    });
-
-    if (!authResult.success || !authResult.user) {
-      return null;
-    }
-
-    setCookie(c, cookieName, session.id, toCookieOptions({
-      ...finalCookieOptions,
-      expires: session.expiresAt,
-    }));
+  ): Promise<Record<string, unknown> | null> => {
+    const issued = await issueLogin(c, userId);
+    if (!issued) return null;
 
     if (csrfOptions) {
       issueCsrfToken(c, csrfOptions);
     }
 
-    await onLogin?.(authResult.user, c);
+    await onLogin?.(issued.user, c);
 
-    return { user: serializeUser(authResult.user), sessionId: session.id };
+    return issued.body;
   };
 
   const verifyMfaChallenge = async (
@@ -272,17 +299,10 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
 
   const middleware: MiddlewareHandler = async (c, next) => {
     try {
-      const credentials = adapter.extractCredentials(c);
-      if (!credentials) {
-        return next();
+      const result = await strategy.authenticate(c);
+      if (result.success && result.user) {
+        c.set("user", result.user);
       }
-
-      const result = await adapter.validateCredentials(credentials);
-      if (!result.success || !result.user) {
-        return next();
-      }
-
-      c.set("user", result.user);
       return next();
     } catch {
       return next();
@@ -291,18 +311,11 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
 
   router.get("/me", async (c) => {
     try {
-      const credentials = adapter.extractCredentials(c);
-      if (!credentials) {
-        return c.json({ user: null });
-      }
-
-      const result = await adapter.validateCredentials(credentials);
+      const result = await strategy.authenticate(c);
       if (!result.success || !result.user) {
         return c.json({ user: null });
       }
-
-      const serialized = serializeUser(result.user);
-      return c.json({ user: serialized, expiresAt: result.expiresAt });
+      return c.json({ user: serializeUser(result.user), expiresAt: result.expiresAt });
     } catch {
       return c.json({ user: null });
     }
@@ -394,49 +407,40 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
 
       const user = await signup.createUser({ email, password, name });
 
-      if (!adapter.createSession) {
-        throw new Error("Adapter does not support session creation");
+      const issued = await issueLogin(c, user.id);
+      if (!issued) {
+        throw new UnauthorizedError("Failed to create session");
       }
-
-      const session = await adapter.createSession(user.id, sessionRequestMeta(c));
-
-      setCookie(c, cookieName, session.id, toCookieOptions({
-        ...finalCookieOptions,
-        expires: session.expiresAt,
-      }));
-
       await onSignup?.(user, c);
 
-      return c.json({ user: { id: user.id, email: user.email, name: user.name } });
+      // Preserve the original `user` shape; merge in any session/token artifacts.
+      const body: Record<string, unknown> = {
+        user: { id: user.id, email: user.email, name: user.name },
+      };
+      if (issued.body.sessionId) body.sessionId = issued.body.sessionId;
+      if (issued.body.accessToken) {
+        body.accessToken = issued.body.accessToken;
+        body.expiresIn = issued.body.expiresIn;
+        body.tokenType = "Bearer";
+      }
+      return c.json(body);
     });
   }
 
   router.post("/logout", async (c) => {
     try {
-      const credentials = adapter.extractCredentials(c);
       let user: UserContext | null = null;
-
-      if (credentials) {
-        const result = await adapter.validateCredentials(credentials);
-        if (result.success && result.user) {
-          user = result.user;
-        }
-
-        const sessionToken = credentials.sessionId ?? credentials.token;
-        if (sessionToken) {
-          await adapter.invalidateSession(sessionToken);
-        }
+      const result = await strategy.authenticate(c);
+      if (result.success && result.user) {
+        user = result.user;
       }
 
-      deleteCookie(c, cookieName);
-      deleteCookie(c, "connect.sid");
-      deleteCookie(c, "session");
-
+      await strategy.logout(c);
       await onLogout?.(user, c);
 
       return c.json({ success: true });
     } catch {
-      deleteCookie(c, cookieName);
+      await strategy.logout(c).catch(() => {});
       return c.json({ success: true });
     }
   });
@@ -530,8 +534,8 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
 
       if (passwordReset.logoutEverywhere && passwordReset.findUserByEmail) {
         const user = await passwordReset.findUserByEmail(email);
-        if (user && adapter.invalidateUserSessions) {
-          await adapter.invalidateUserSessions(user.id);
+        if (user && strategy.invalidateUserSessions) {
+          await strategy.invalidateUserSessions(user.id);
         }
       }
 
@@ -541,12 +545,9 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
 
   if (mfa) {
     const requireCurrentUser = async (c: Context): Promise<UserContext> => {
-      const credentials = adapter.extractCredentials(c);
-      if (credentials) {
-        const result = await adapter.validateCredentials(credentials);
-        if (result.success && result.user) {
-          return result.user;
-        }
+      const result = await strategy.authenticate(c);
+      if (result.success && result.user) {
+        return result.user;
       }
       throw new UnauthorizedError("Authentication required");
     };
@@ -675,6 +676,20 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
 
       return c.json(result);
     });
+  }
+
+  if (social) {
+    const socialRouter = createSocialRouter(social, {
+      completeLogin,
+      cookieSecure: finalCookieOptions.secure,
+      cookiePath: finalCookieOptions.path,
+    });
+    router.route(social.basePath ?? "/social", socialRouter);
+  }
+
+  // Strategy-owned routes (e.g. JWT `/refresh`).
+  if (strategy.getRoutes) {
+    router.route("/", strategy.getRoutes());
   }
 
   return { router, middleware };

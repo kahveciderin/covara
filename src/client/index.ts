@@ -1,4 +1,4 @@
-import { ClientConfig, ResourceClient, OfflineConfig, CovaraClient, CheckAuthResult, ProcedureDef, AnyProcedures } from "./types";
+import { ClientConfig, ResourceClient, OfflineConfig, CovaraClient, CheckAuthResult, ProcedureDef, AnyProcedures, SessionAuthClient } from "./types";
 import { createTransport } from "./transport";
 import { createRepository } from "./repository";
 import { createOfflineManager, OfflineManager, LocalStorageOfflineStorage } from "./offline";
@@ -32,6 +32,10 @@ export interface SimplifiedClientConfig {
   parseDates?: boolean | DateFieldRegistry;
   /** Configure the typed billing client (mounted server-side, default `/api/billing`). */
   billing?: { basePath?: string };
+  /** Social login routes (mounted server-side, default `/api/auth/social`). */
+  social?: { basePath?: string };
+  /** Session auth routes (mounted server-side, default `/api/auth`). */
+  session?: { basePath?: string };
 }
 
 export const createClient = (config: SimplifiedClientConfig): CovaraClient => {
@@ -186,13 +190,71 @@ export const createClient = (config: SimplifiedClientConfig): CovaraClient => {
     }
   });
 
+  const socialBasePath = config.social?.basePath ?? "/api/auth/social";
+  const socialLoginUrl = (provider: string): string =>
+    `${config.baseUrl}${socialBasePath}/${encodeURIComponent(provider)}`;
+
+  const authBasePath = config.session?.basePath ?? "/api/auth";
+  const session: SessionAuthClient = {
+    async signup(input) {
+      const res = await transport.request<{ user: { id: string; email?: string; name?: string } }>(
+        { method: "POST", path: `${authBasePath}/signup`, body: input }
+      );
+      return res.data;
+    },
+    async login(email, password) {
+      const res = await transport.request<{
+        user: Record<string, unknown>;
+        sessionId?: string;
+        accessToken?: string;
+        expiresIn?: number;
+        tokenType?: string;
+      }>({ method: "POST", path: `${authBasePath}/login`, body: { email, password } });
+      // With a JWT session strategy, carry the bearer token on subsequent
+      // requests. A cookie session needs nothing (the browser sends the cookie).
+      if (res.data.accessToken) {
+        transport.setHeader("Authorization", `Bearer ${res.data.accessToken}`);
+      }
+      return res.data;
+    },
+    async logout() {
+      await transport.request({ method: "POST", path: `${authBasePath}/logout` });
+      transport.removeHeader("Authorization");
+    },
+    async requestEmailVerification(email) {
+      await transport.request({ method: "POST", path: `${authBasePath}/verify/request`, body: { email } });
+    },
+    async confirmEmail(email, token) {
+      await transport.request({ method: "POST", path: `${authBasePath}/verify/confirm`, body: { email, token } });
+    },
+    async me<TUser = unknown>() {
+      const res = await transport.request<{ user: TUser | null }>(
+        { method: "GET", path: `${authBasePath}/me` }
+      );
+      return res.data.user;
+    },
+  };
+
   const client: CovaraClient = {
     transport,
     offline,
     auth,
     jwt: jwtClient,
+    session,
     billing: createBillingClient({ transport, basePath: config.billing?.basePath }),
     queryCache,
+
+    socialLoginUrl,
+
+    loginWithSocial(provider: string): void {
+      if (typeof window === "undefined" || !window.location) {
+        throw new Error(
+          "loginWithSocial requires a browser. On React Native, call " +
+            "socialLoginUrl(provider) and open it yourself."
+        );
+      }
+      window.location.assign(socialLoginUrl(provider));
+    },
 
     resource<T extends { id: string }, P extends Record<keyof P, ProcedureDef> = AnyProcedures>(
       path: string

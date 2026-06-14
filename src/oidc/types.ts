@@ -1,6 +1,8 @@
 import type { Context, Hono } from "hono";
 import { SessionStore } from "@/auth/types";
 import { KVAdapter } from "@/kv/types";
+import type { SocialProvider, SocialAccount } from "@/auth/passport-bridge";
+import type { SocialStateStore } from "@/auth/social";
 
 export type GrantType =
   | "authorization_code"
@@ -248,9 +250,28 @@ export interface EmailPasswordBackendConfig {
 }
 
 export interface PassportBackendConfig {
-  strategies: string[];
-  passportInstance?: unknown;
-  getUserFromPassportUser?: (passportUser: unknown) => OIDCUser;
+  // Any Passport.js OAuth2 strategies, wrapped with `fromPassport(...)`. Each
+  // becomes a federated login button on the provider's login page.
+  providers: SocialProvider[];
+  // Resolve an existing local user for a verified provider account.
+  findUserByAccount?: (
+    provider: string,
+    providerAccountId: string
+  ) => Promise<OIDCUser | null>;
+  // Resolve a user by id — needed so consent / token / userinfo can look the
+  // user up after login when no email/password backend is configured.
+  findUserById?: (id: string) => Promise<OIDCUser | null>;
+  // Create (or upsert) the local user for a first-time provider account.
+  createUser: (account: SocialAccount) => Promise<OIDCUser>;
+  // Optional: persist the provider↔user link after creation.
+  linkAccount?: (
+    userId: string,
+    provider: string,
+    providerAccountId: string
+  ) => Promise<void>;
+  // Shared store for the redirect→callback handshake (default: KV when a global
+  // KV is configured, else in-memory). Use a shared store on Workers / multi-instance.
+  stateStore?: SocialStateStore;
 }
 
 export interface AuthJsBackendConfig {
@@ -475,6 +496,9 @@ export interface AuthBackendResult {
   authTime?: number;
   amr?: string[];
   provider?: string;
+  // The pending OIDC interaction this external login should resume, carried
+  // through the provider's state from `initiateExternalAuth`.
+  interactionId?: string;
 }
 
 export interface KeyManager {

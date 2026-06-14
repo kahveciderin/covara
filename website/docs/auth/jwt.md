@@ -11,26 +11,42 @@ JWT auth uses signed bearer tokens instead of cookie sessions — a good fit for
 
 ## Server
 
-Use the JWT adapter so the auth middleware validates `Authorization: Bearer <token>` and populates the [request user](./overview.md#the-request-user).
+Use the `jwtSession` [session strategy](./sessions.md#session-strategies) so the middleware validates `Authorization: Bearer <token>` and populates the [request user](./overview.md#the-request-user). It's decoupled from how the user logs in — so the **same credential providers** (`login`, `signup`, [`social`](./social.md), …) issue JWTs instead of cookies just by swapping the strategy.
 
 ```typescript
-import { createJWTAdapter, useAuth } from "covara";
-
-const adapter = createJWTAdapter({
-  secret: process.env.JWT_SECRET!,         // HMAC, or use a key pair for RS256/ES256
-  getUserById: async (id) => db.query.users.findFirst({ where: eq(users.id, id) }),
-});
+import { jwtSession, useAuth } from "covara";
 
 const { router, middleware } = useAuth({
-  adapter,
+  session: jwtSession({
+    secret: env.JWT_SECRET,         // HMAC, or a key pair for RS256/ES256
+    getUserById: async (id) => db.query.users.findFirst({ where: eq(users.id, id) }),
+    refreshStore: kvStore,          // optional: revocable refresh tokens
+  }),
   login: { validateCredentials: async (email, password) => { /* ... */ } },
   signup: { createUser: async (data) => { /* ... */ } },
 });
 ```
 
-`/login` and `/signup` return an access token (and a refresh token when configured) instead of setting a session cookie. Protected routes read the bearer token.
+`/login` and `/signup` return `{ accessToken, expiresIn, tokenType: "Bearer" }` and set an `httpOnly` refresh cookie (instead of a session cookie); `POST /api/auth/refresh` mints a fresh access token. Protected routes read the bearer token.
 
-## Client — `useJWTAuth`
+> **Migrating from `createJWTAdapter`:** the standalone `createJWTAdapter` (mounted via its own `getRoutes()` + `middleware`) still works but is deprecated in favor of `jwtSession`, which integrates with `useAuth` (and its social/MFA/magic-link providers). Its options map 1:1.
+
+## Client
+
+With `jwtSession`, the standard [`useAuth()` hook](../client/auth.md) handles JWTs uniformly — `login`/`signup` capture the returned access token and send it as a bearer on subsequent requests (and `client.session.login` does the same outside React):
+
+```tsx
+import { useAuth } from "covara/client/react";
+
+function SignIn() {
+  const { login, signup, signInWith } = useAuth<User>();
+  // login(email, password) -> stores the JWT and authenticates; same code as a cookie session
+}
+```
+
+For finer control (manual token storage, refresh scheduling, React Native), use the dedicated `useJWTAuth` hook / `JWTClient`:
+
+### `useJWTAuth`
 
 ```tsx
 import { initJWTClient, useJWTAuth } from "covara/client/react";

@@ -50,6 +50,8 @@ interface UseAuthOptions {
   token?: string;      // bearer
   apiKey?: string;     // apiKey
   baseUrl?: string;
+  authBasePath?: string;   // default /api/auth (login/signup/verify)
+  socialBasePath?: string; // default /api/auth/social
 }
 
 interface UseAuthResult<TUser> {
@@ -60,6 +62,14 @@ interface UseAuthResult<TUser> {
   logout: () => Promise<void>;
   refetch: () => Promise<void>;
   accessToken: string | null;
+  // Email/password (refresh `user` on success)
+  login: (email: string, password: string) => Promise<void>;
+  signup: (input: { email: string; password: string; name?: string }) => Promise<void>;
+  // Email confirmation
+  requestEmailVerification: (email: string) => Promise<void>;
+  confirmEmail: (email: string, token: string) => Promise<void>;
+  // Social (Passport) — redirects to the provider
+  signInWith: (provider: string) => void;
 }
 ```
 
@@ -68,6 +78,34 @@ Set a global 401 handler to redirect on auth loss:
 ```tsx
 useEffect(() => { client.setAuthErrorHandler(logout); }, [logout]);
 ```
+
+### Email/password & social flows
+
+The hook drives the [`useAuth` server routes](../auth/getting-started.md) directly — no hand-written `fetch`:
+
+```tsx
+const { login, signup, logout, signInWith, requestEmailVerification, confirmEmail } = useAuth<User>();
+
+await login("a@b.com", "secret");        // refreshes `user`
+await signup({ email, password, name }); // refreshes `user`
+signInWith("github");                    // redirect to a social provider
+```
+
+This is the same code whether the server uses a [cookie or JWT session](../auth/sessions.md#session-strategies): with `jwtSession`, `login`/`signup` capture the returned access token and send it as a bearer automatically (cleared on `logout`).
+
+Outside React, the same flows are first-class methods on the client:
+
+```typescript
+await client.session.signup({ email, password, name });
+await client.session.requestEmailVerification(email);
+await client.session.confirmEmail(email, token);
+await client.session.login(email, password);
+const user = await client.session.me<User>();
+await client.session.logout();
+client.loginWithSocial("github");
+```
+
+Both default to the `/api/auth` mount; override with `useAuth({ authBasePath })` or `createClient({ session: { basePath } })`.
 
 For JWT login/signup/refresh control, use [`useJWTAuth`](../auth/jwt.md).
 

@@ -14,7 +14,7 @@ Covara ships a small, provider-agnostic email layer: a unified `EmailAdapter` in
 ```typescript
 import { createResendAdapter, setGlobalEmail } from "covara/email";
 
-setGlobalEmail(createResendAdapter({ apiKey: process.env.RESEND_API_KEY! }));
+setGlobalEmail(createResendAdapter({ apiKey: env.RESEND_API_KEY }));
 ```
 
 On Cloudflare Workers, use the Email Service binding (no API key, no network egress):

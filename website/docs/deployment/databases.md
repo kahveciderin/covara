@@ -38,12 +38,12 @@ const db = drizzle(env.DB);
 // postgres-js
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-const db = drizzle(postgres(process.env.DATABASE_URL!));
+const db = drizzle(postgres(env.DATABASE_URL));
 
 // Neon (HTTP, edge-friendly)
 import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
-const db = drizzle(neon(process.env.DATABASE_URL!));
+const db = drizzle(neon(env.DATABASE_URL));
 
 // PGlite (embedded, tests)
 import { PGlite } from "@electric-sql/pglite";

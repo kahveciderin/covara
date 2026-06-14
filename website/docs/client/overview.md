@@ -66,6 +66,10 @@ client.setAuthErrorHandler(() => location.assign("/login")); // global 401 handl
 await client.getPendingCount();                          // queued offline mutations
 const { user } = await client.checkAuth();
 
+await client.session.login(email, password);             // email/password session auth
+client.loginWithSocial("github");                        // social (Passport) login
+// also: session.signup / logout / requestEmailVerification / confirmEmail / me — see Client auth
+
 client.invalidate("/api/todos");                         // mark cached LiveQueries stale → refetch
 client.invalidate((path, opts) => opts.filter === "completed==true");
 await client.prefetch("/api/todos", { orderBy: "createdAt:desc", limit: 20 }); // warm the cache

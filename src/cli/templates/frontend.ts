@@ -84,21 +84,15 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 export const FRONTEND_APP = `import { useState } from "react";
 import { getOrCreateClient } from "covara/client";
 import { useLiveList } from "covara/client/react";
+import type { Todo } from "./generated/api-types";
 
 // A live, real-time view of the scaffolded \`todos\` resource. \`useLiveList\`
 // opens an SSE subscription, so inserts/updates/deletes (from this tab or any
 // other client) stream in automatically.
 //
-// This uses the generic typed hook with a hand-written Todo interface so it
-// compiles on the first run with no codegen. Run \`npm run types\` against the
-// dev server to generate \`src/generated/api-types.ts\` and switch to the fully
-// typed client (createTypedClient) when you want end-to-end inferred types.
-interface Todo {
-  id: string;
-  title: string;
-  completed: boolean;
-  createdAt: string;
-}
+// \`Todo\` comes from \`src/generated/api-types.ts\` (a committed placeholder until
+// you run \`npm run types\` / \`covara dev\`, which regenerates it from the running
+// API). Switch to \`createTypedClient\` for end-to-end inferred types when you want.
 
 const client = getOrCreateClient({
   baseUrl: location.origin,

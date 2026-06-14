@@ -30,6 +30,7 @@ Generated projects are deploy-ready. Alongside your source and schema, the scaff
 - **Node:** a `Dockerfile` and `docker-compose.yml` (app + Redis, plus a Postgres service when `--db postgres`) and a `.dockerignore`.
 - **Cloudflare:** a complete `wrangler.toml` — `nodejs_compat`, a `[[d1_databases]]` binding, a commented `[[kv_namespaces]]` block, and the `CovaraKVDurableObject` [Durable Object KV](../deployment/durable-object-kv.md) binding + migration.
 - A GitHub Actions CI workflow (`.github/workflows/ci.yml`) that installs, lints, tests, and builds.
+- **Node:** a typed [`createEnv`](../deployment/environment-variables.md) schema in `src/env.ts` — the generated server reads config via `env.X`, never `process.env`.
 - `.env.example` documenting the expected [environment variables](../deployment/environment-variables.md).
 - An `AGENTS.md` orienting AI coding agents — project layout, how resources map to endpoints, the commands, and links to these docs plus the machine-readable [`llms.txt`](https://kahveciderin.github.io/covara/llms.txt) / [`llms-full.txt`](https://kahveciderin.github.io/covara/llms-full.txt).
 

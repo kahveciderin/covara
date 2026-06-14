@@ -1,16 +1,13 @@
 import { Hono } from "hono";
-import { setCookie } from "hono/cookie";
-import * as crypto from "node:crypto";
 import {
   AuthBackend,
-  AuthorizationCode,
   OIDCProviderConfig,
   OIDCProviderStores,
 } from "../types";
 import { SessionStore } from "@/auth/types";
-import { isProduction } from "@/server/env";
 import { readFormBody } from "../body";
 import { escapeHtml } from "../util";
+import { finishInteractiveLogin } from "../complete-login";
 
 const defaultLoginTemplate = (
   error?: string,
@@ -152,76 +149,17 @@ export const createLoginHandler = ({
       return c.html(template, 401);
     }
 
-    const sessionId = crypto.randomUUID();
-    await sessionStore.set(
-      sessionId,
+    return finishInteractiveLogin(
+      c,
+      { config, stores, sessionStore },
       {
-        id: sessionId,
-        userId: result.user.id,
-        createdAt: new Date(),
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        data: { amr: result.amr },
-      },
-      24 * 60 * 60 * 1000
+        interactionId,
+        user: result.user,
+        amr: result.amr,
+        authTime: result.authTime,
+        method: "email-password",
+      }
     );
-
-    setCookie(c, "oidc_session", sessionId, {
-      httpOnly: true,
-      secure: isProduction(),
-      sameSite: "lax",
-      maxAge: 24 * 60 * 60,
-      path: "/",
-    });
-
-    if (config.hooks?.onUserAuthenticated) {
-      await config.hooks.onUserAuthenticated(result.user, "email-password");
-    }
-
-    await stores.interactions.delete(interactionId);
-
-    const authRequest = interaction.authRequest;
-    const requestedScopes = authRequest.scope.split(" ");
-    const existingConsent = await stores.consent.get(result.user.id, authRequest.clientId);
-    const needsConsent =
-      !existingConsent || !requestedScopes.every((s) => existingConsent.scopes.includes(s));
-
-    if (needsConsent) {
-      const newInteractionId = crypto.randomUUID();
-      await stores.interactions.set(newInteractionId, {
-        authRequest,
-        userId: result.user.id,
-        expiresAt: Date.now() + 10 * 60 * 1000,
-      });
-
-      const consentUrl = new URL(
-        config.ui?.consentPath ?? "/consent",
-        config.baseUrl ?? config.issuer
-      );
-      consentUrl.searchParams.set("interaction", newInteractionId);
-      return c.redirect(consentUrl.toString(), 302);
-    }
-
-    const code = crypto.randomBytes(32).toString("hex");
-    const authCode: AuthorizationCode = {
-      code,
-      clientId: authRequest.clientId,
-      userId: result.user.id,
-      redirectUri: authRequest.redirectUri,
-      scope: authRequest.scope,
-      nonce: authRequest.nonce,
-      codeChallenge: authRequest.codeChallenge,
-      codeChallengeMethod: authRequest.codeChallengeMethod,
-      authTime: result.authTime ?? Math.floor(Date.now() / 1000),
-      expiresAt: Date.now() + (config.tokens?.authorizationCode?.ttlSeconds ?? 600) * 1000,
-    };
-
-    await stores.authorizationCodes.set(authCode);
-
-    const redirectUrl = new URL(authRequest.redirectUri);
-    redirectUrl.searchParams.set("code", code);
-    redirectUrl.searchParams.set("state", authRequest.state);
-
-    return c.redirect(redirectUrl.toString(), 302);
   });
 
   return router;
