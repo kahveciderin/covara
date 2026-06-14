@@ -697,7 +697,17 @@ export const createLiveQuery = <T extends { id: string }>(
       cache.set(optimisticId, optimisticItem);
       notify();
 
-      repo.create(data, { optimisticId }).then(() => {
+      repo.create(data, { optimisticId }).then((created) => {
+        // Reconcile off the create response. With an offline manager, repo.create
+        // resolves to the optimistic stand-in (id === optimisticId) and the real
+        // reconciliation arrives via the SSE "added" event's optimisticId meta —
+        // skip here. Without one, it resolves to the real server row but sends no
+        // optimisticId header, so the SSE event carries no meta; reconcile here so
+        // the optimistic entry is replaced instead of left as a duplicate.
+        const serverId = (created as T | undefined)?.id;
+        if (serverId && serverId !== optimisticId) {
+          handleAdd(created as T, { optimisticId });
+        }
         updatePendingCount();
       });
 

@@ -51,7 +51,7 @@ Required: `identifier`, `token`, `expires`.
 
 ## Bringing your own tables (and remapping columns)
 
-Use `defineInternalSchema(...)` to point Covara at your own Drizzle tables. Each table accepts a `fieldMap` that maps Covara's **logical keys** to the **property names** on your table — so a schema with Auth.js-style or snake_case columns works unchanged.
+Use `defineInternalSchema(...)` to point Covara at your own Drizzle tables. Each table accepts a `fieldMap` that maps Covara's **logical keys** to your columns — so a schema with Auth.js-style or snake_case columns works unchanged. Each value can be either the **Drizzle column object** (type-safe and refactor-safe — recommended) or the **property name** as a string.
 
 ```typescript
 import { defineInternalSchema, createDrizzleSessionStore, createPassportAdapter } from "covara";
@@ -61,11 +61,11 @@ const internal = defineInternalSchema({
   dialect: "sqlite",
   sessions: {
     table: mySessions,           // any table name
-    fieldMap: {                  // logical key -> your column property
-      userId: "user_id",
-      createdAt: "created_at",
-      expiresAt: "expires",
-      data: "blob",
+    fieldMap: {                  // logical key -> your column (object or property name)
+      userId: mySessions.ownerId,   // pass the Drizzle column directly
+      createdAt: mySessions.created, // (or a string: createdAt: "created")
+      expiresAt: mySessions.expires,
+      data: mySessions.blob,
     },
   },
 });
@@ -80,7 +80,7 @@ const adapter = createPassportAdapter({
 const app = createCovara({ internalSchema: internal, auth: useAuth({ adapter }) });
 ```
 
-- `defineInternalSchema` **validates required keys at startup** and throws a precise error (e.g. `internalSchema.sessions.expiresAt: required column not found…`) if a required column is missing — fail-fast, never at query time.
+- `defineInternalSchema` **validates required keys at startup** and throws a precise error (e.g. `internalSchema.sessions.expiresAt: required column not found…`) if a required column is missing — fail-fast, never at query time. Passing a column object that belongs to a different table is also rejected at startup.
 - Omitting a table override falls back to the built-in table, so today's behavior is unchanged when you pass nothing.
 - `createCovara({ internalSchema })` records the bundle for migration + introspection. It does **not** rewire already-constructed stores — build `createDrizzleSessionStore({ resolver })` yourself (as above).
 - The `SessionData` shape your app sees stays in logical keys (`id`/`userId`/`createdAt`/`expiresAt`/`data`); remapping happens only at the SQL boundary.
@@ -118,9 +118,9 @@ If you use [file uploads](../platform/storage.md) via `fileResource`, you supply
 
 ## Changelog & rate limits are not DB tables
 
-The [changelog](../realtime/changelog.md) is stored in the [KV store](../platform/kv.md) (sorted set) with an in-memory fallback. [Rate limiting](../tooling/middleware.md) uses the KV store or an in-memory map. **Neither reads a database table.** If you saw `changelog`/`rate_limits` tables in an example schema, they are illustrative only — Covara does not populate or query them.
+The [changelog](../realtime/changelog.md) is stored in the [KV store](../platform/kv.md) (sorted set) with an in-memory fallback. [Rate limiting](../tooling/middleware.md) uses the KV store or an in-memory map. **Neither reads a database table.** 
 
-## Related
+# Related
 
 - [Sessions](./sessions.md) · [API keys](./api-keys.md) · [KV store](../platform/kv.md)
 - [Auth contract](../contracts/auth.md)

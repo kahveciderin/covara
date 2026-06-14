@@ -13,7 +13,7 @@ import {
   primaryKey as pgPrimaryKey,
   index as pgIndex,
 } from "drizzle-orm/pg-core";
-import { getTableColumns } from "drizzle-orm";
+import { getTableColumns, type AnyColumn } from "drizzle-orm";
 
 export type InternalTableName =
   | "auth_sessions"
@@ -270,16 +270,21 @@ export interface TableResolver<K extends string> {
   has(key: K): boolean;
 }
 
+// A field can be remapped either by the table's property name (string) or, for
+// type-safe/refactor-safe remapping, by passing the Drizzle column object itself
+// (e.g. `fieldMap: { userId: mySessions.ownerId }`).
+export type FieldRef = string | AnyColumn;
+
 export interface InternalTableOverride<K extends string> {
   table: AnyTable;
-  fieldMap?: Partial<Record<K, string>>;
+  fieldMap?: Partial<Record<K, FieldRef>>;
 }
 
 const makeResolver = <K extends string>(
   table: AnyTable,
   required: readonly K[],
   label: string,
-  fieldMap?: Partial<Record<K, string>>
+  fieldMap?: Partial<Record<K, FieldRef>>
 ): TableResolver<K> => {
   let columns: Record<string, { name?: string }> = {};
   try {
@@ -290,9 +295,33 @@ const makeResolver = <K extends string>(
   } catch {
     columns = {};
   }
-  const propOf = (key: K): string => (fieldMap?.[key] ?? key) as string;
+  const propByColumn = new Map<unknown, string>();
+  for (const [p, column] of Object.entries(columns)) propByColumn.set(column, p);
+
+  const propOf = (key: K): string => {
+    const ref = fieldMap?.[key];
+    if (ref == null) return key as string;
+    if (typeof ref === "string") return ref;
+    return propByColumn.get(ref) ?? (ref as { name?: string }).name ?? (key as string);
+  };
+  const colOf = (key: K): unknown => {
+    const ref = fieldMap?.[key];
+    if (ref != null && typeof ref !== "string") return ref;
+    const p = propOf(key);
+    return columns[p] ?? table[p];
+  };
   const hasProp = (p: string): boolean =>
     columns[p] != null || table[p] != null;
+
+  if (fieldMap) {
+    for (const [key, ref] of Object.entries(fieldMap)) {
+      if (ref != null && typeof ref !== "string" && !propByColumn.has(ref)) {
+        throw new Error(
+          `internalSchema.${label}.${key}: the supplied column does not belong to the given table.`
+        );
+      }
+    }
+  }
 
   for (const key of required) {
     const p = propOf(key);
@@ -305,7 +334,7 @@ const makeResolver = <K extends string>(
 
   return {
     table,
-    col: (key) => columns[propOf(key)] ?? table[propOf(key)],
+    col: (key) => colOf(key),
     prop: (key) => propOf(key),
     dbName: (key) => columns[propOf(key)]?.name ?? propOf(key),
     has: (key) => hasProp(propOf(key)),

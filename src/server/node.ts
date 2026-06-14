@@ -47,7 +47,7 @@ export const startServer = async (
         };
 
         if (options.gracefulShutdown !== false) {
-          installSignalHandlers(close);
+          installSignalHandlers(close, drainTimeoutMs);
         }
 
         options.onListen?.({ port: info.port, address: info.address });
@@ -59,20 +59,33 @@ export const startServer = async (
 
 let signalHandlersInstalled = false;
 
-const installSignalHandlers = (close: () => Promise<void>): void => {
+const installSignalHandlers = (
+  close: () => Promise<void>,
+  drainTimeoutMs: number
+): void => {
   const proc = (globalThis as { process?: NodeProcess }).process;
   if (!proc?.on || signalHandlersInstalled) return;
   signalHandlersInstalled = true;
 
-  const handle = (signal: string) => {
+  let stopping = false;
+  const handle = () => {
+    // A second signal (impatient Ctrl+C) exits immediately.
+    if (stopping) {
+      proc.exit?.(0);
+      return;
+    }
+    stopping = true;
+    // Backstop: never let a stuck drain (e.g. a lingering keep-alive socket)
+    // trap the process — force exit shortly after the drain window.
+    const forced = setTimeout(() => proc.exit?.(0), drainTimeoutMs + 1000);
+    (forced as { unref?: () => void }).unref?.();
     void close()
       .then(() => proc.exit?.(0))
       .catch(() => proc.exit?.(1));
-    void signal;
   };
 
-  proc.on("SIGTERM", () => handle("SIGTERM"));
-  proc.on("SIGINT", () => handle("SIGINT"));
+  proc.on("SIGTERM", handle);
+  proc.on("SIGINT", handle);
 };
 
 interface NodeProcess {

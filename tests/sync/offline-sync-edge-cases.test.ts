@@ -143,7 +143,15 @@ const createMockRepo = <T extends { id: string }>(): ResourceClient<T> & {
     },
     async create(data: Omit<T, "id">, options?: unknown): Promise<T> {
       createCalls.push({ data, options });
-      const id = `server_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      // Mirror the offline repository path: resolve to the optimistic stand-in
+      // (id === optimisticId). Reconciliation to the real server id is then
+      // driven by the OfflineManager mapping + SSE events, which these tests
+      // simulate explicitly. (The non-offline path, where create resolves to a
+      // distinct server id, is covered in live-store.test.ts.)
+      const optimisticId = (options as { optimisticId?: string } | undefined)
+        ?.optimisticId;
+      const id =
+        optimisticId ?? `server_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       return { ...data, id } as T;
     },
     async update(id: string, data: Partial<T>): Promise<T> {

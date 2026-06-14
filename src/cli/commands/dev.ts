@@ -14,6 +14,64 @@ const ENTRY_CANDIDATES = [
   "index.ts",
 ];
 
+export interface ChildHandle {
+  kill: (signal?: NodeJS.Signals | number) => void;
+  readonly exitCode: number | null;
+  onClose: (cb: () => void) => void;
+}
+
+export interface DevShutdownOptions {
+  child?: ChildHandle | null;
+  cleanup: () => void;
+  exit: (code: number) => void;
+  schedule: (fn: () => void, ms: number) => () => void;
+  forceKillMs?: number;
+}
+
+// Coordinates a clean shutdown of `covara dev`: forward SIGTERM to the spawned
+// server, escalate to SIGKILL if it doesn't exit, and always run `cleanup`
+// (close the schema watcher, clear timers) so the process can actually exit.
+// A second signal force-kills immediately. Extracted for unit testing because
+// real signal handling is awkward to drive in tests.
+export const createDevShutdown = (
+  opts: DevShutdownOptions
+): { onSignal: () => void } => {
+  const { child, cleanup, exit, schedule, forceKillMs = 3000 } = opts;
+  let stopping = false;
+  let cancelForce: (() => void) | undefined;
+  let finished = false;
+
+  const finish = (code: number): void => {
+    if (finished) return;
+    finished = true;
+    cancelForce?.();
+    cleanup();
+    exit(code);
+  };
+
+  if (child) child.onClose(() => finish(0));
+
+  const onSignal = (): void => {
+    if (stopping) {
+      child?.kill("SIGKILL");
+      finish(0);
+      return;
+    }
+    stopping = true;
+    if (child && child.exitCode === null) {
+      child.kill("SIGTERM");
+      cancelForce = schedule(() => {
+        child.kill("SIGKILL");
+        finish(0);
+      }, forceKillMs);
+    } else {
+      finish(0);
+    }
+  };
+
+  return { onSignal };
+};
+
 const findEntry = (cwd: string, explicit?: string): string | null => {
   if (explicit) {
     const p = path.resolve(cwd, explicit);
@@ -105,8 +163,9 @@ export const devCommand = async (args: string[]): Promise<number> => {
   await sync();
 
   let timer: NodeJS.Timeout | undefined;
+  let watcher: fs.FSWatcher | undefined;
   try {
-    fs.watch(schemaPath, () => {
+    watcher = fs.watch(schemaPath, () => {
       clearTimeout(timer);
       timer = setTimeout(() => void sync(), 300);
     });
@@ -115,13 +174,38 @@ export const devCommand = async (args: string[]): Promise<number> => {
   }
   console.log(`[covara] watching ${path.relative(cwd, schemaPath)} for schema changes`);
 
-  return new Promise<number>((resolve) => {
-    const shutdown = () => {
-      if (serverChild) serverChild.kill();
-      resolve(0);
-    };
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
-    if (serverChild) serverChild.on("close", () => resolve(0));
+  const child: ChildHandle | null = serverChild
+    ? {
+        kill: (signal) => serverChild!.kill(signal as NodeJS.Signals),
+        get exitCode() {
+          return serverChild!.exitCode;
+        },
+        onClose: (cb) => serverChild!.on("close", cb),
+      }
+    : null;
+
+  let onSignal: () => void = () => {};
+  const controller = createDevShutdown({
+    child,
+    cleanup: () => {
+      clearTimeout(timer);
+      watcher?.close();
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+    },
+    exit: (code) => process.exit(code),
+    schedule: (fn, ms) => {
+      const t = setTimeout(fn, ms);
+      t.unref?.();
+      return () => clearTimeout(t);
+    },
+  });
+  onSignal = controller.onSignal;
+
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+
+  return new Promise<number>(() => {
+    // Resolves only via process.exit() from the shutdown handler above.
   });
 };

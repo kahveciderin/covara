@@ -33,7 +33,7 @@ useResource(postsTable, {
 
 Operations: `read`, `create`, `update`, `delete`, `subscribe`. Omit one to deny it (unless `public` grants it).
 
-**Anonymous access — `public`.** `public: true` makes **read and subscribe** public (writes still require auth — a safe default). The object form opts each operation in explicitly and can open **writes** too: `public: { read: true, create: true, update: true, delete: true }` for a fully-public resource (e.g. a prototype or a genuinely open collection). An operation not granted by `public` and reached without a user returns `401`.
+**Anonymous access — `public`.** `public: true` makes **read and subscribe** public (writes still require auth — a safe default). The object form opts each operation in explicitly and can open **writes** too: `public: { read: true, subscribe: true, create: true, update: true, delete: true }` for a fully-public resource (e.g. a prototype or a genuinely open collection). With the object form, `subscribe` is **not** implied by `read` — grant it explicitly or anonymous SSE subscriptions return `401`. An operation not granted by `public` and reached without a user returns `401`.
 
 ```mermaid
 flowchart LR

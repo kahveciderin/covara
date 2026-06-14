@@ -98,6 +98,10 @@ interface Todo {
 const client = getOrCreateClient({
   baseUrl: location.origin,
   credentials: "include",
+  // Optimistic mutations + a LocalStorage-backed queue that syncs when the
+  // connection returns. Optimistic creates reconcile against the live "added"
+  // event, so items never duplicate on the sender.
+  offline: true,
 });
 
 export function App() {
@@ -156,12 +160,13 @@ export function App() {
 `;
 
 export const FRONTEND_STYLES = `:root {
-  color-scheme: light dark;
+  color-scheme: light;
   font-family: system-ui, -apple-system, sans-serif;
 }
 body {
   margin: 0;
   background: #f6f7f9;
+  color: #1f2937;
 }
 .app {
   max-width: 32rem;
@@ -187,6 +192,8 @@ body {
   padding: 0.5rem 0.75rem;
   border: 1px solid #ccc;
   border-radius: 6px;
+  background: white;
+  color: #1f2937;
 }
 .app__add button {
   padding: 0.5rem 1rem;

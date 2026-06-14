@@ -45,7 +45,9 @@ const app = createCovara({ cors: true, adminUI: true }).resource(todos, {
   id: todos.id,
   // Public CRUD so the starter works end-to-end. Lock this down with auth
   // scopes before deploying: https://github.com/kahveciderin/covara#auth
-  auth: { public: { read: true, create: true, update: true, delete: true } },
+  auth: {
+    public: { read: true, subscribe: true, create: true, update: true, delete: true },
+  },
 });
 
 const server = await startServer(app, {
@@ -75,7 +77,9 @@ const app = createCovara({ cors: true, adminUI: true }).resource(todos, {
   id: todos.id,
   // Public CRUD so the starter works end-to-end. Lock this down with auth
   // scopes before deploying: https://github.com/kahveciderin/covara#auth
-  auth: { public: { read: true, create: true, update: true, delete: true } },
+  auth: {
+    public: { read: true, subscribe: true, create: true, update: true, delete: true },
+  },
 });
 
 const server = await startServer(app, {
@@ -131,7 +135,9 @@ const app = createCovara({ cors: true, adminUI: true }).resource(todos, {
   id: todos.id,
   // Public CRUD so the starter works end-to-end. Lock this down with auth
   // scopes before deploying: https://github.com/kahveciderin/covara#auth
-  auth: { public: { read: true, create: true, update: true, delete: true } },
+  auth: {
+    public: { read: true, subscribe: true, create: true, update: true, delete: true },
+  },
 });
 
 const port = Number(process.env.PORT ?? 3000);
@@ -201,7 +207,9 @@ const buildApp = (env: Env): CovaraApp => {
     id: todos.id,
     // Public CRUD so the starter works end-to-end. Lock this down with auth
     // scopes before deploying: https://github.com/kahveciderin/covara#auth
-    auth: { public: { read: true, create: true, update: true, delete: true } },
+    auth: {
+    public: { read: true, subscribe: true, create: true, update: true, delete: true },
+  },
   });
 };
 
@@ -245,7 +253,9 @@ const buildApp = (env: Env): CovaraApp => {
     id: todos.id,
     // Public CRUD so the starter works end-to-end. Lock this down with auth
     // scopes before deploying: https://github.com/kahveciderin/covara#auth
-    auth: { public: { read: true, create: true, update: true, delete: true } },
+    auth: {
+    public: { read: true, subscribe: true, create: true, update: true, delete: true },
+  },
   });
 };
 

@@ -52,6 +52,78 @@ describe("defineInternalSchema + TableResolver", () => {
     expect(bundle.sessions.has("data")).toBe(true);
   });
 
+  it("remaps logical keys via Drizzle column objects in fieldMap", () => {
+    const sessions = sqliteTable("sessions", {
+      id: text("id").primaryKey(),
+      owner: text("owner_id").notNull(),
+      created_at: integer("created_at", { mode: "timestamp" }).notNull(),
+      expires: integer("expires", { mode: "timestamp" }).notNull(),
+      blob: text("blob"),
+    });
+
+    const bundle = defineInternalSchema({
+      sessions: {
+        table: sessions,
+        fieldMap: {
+          userId: sessions.owner,
+          createdAt: sessions.created_at,
+          expiresAt: sessions.expires,
+          data: sessions.blob,
+        },
+      },
+    });
+
+    expect(bundle.sessions.prop("userId")).toBe("owner");
+    expect(bundle.sessions.dbName("userId")).toBe("owner_id");
+    expect(bundle.sessions.dbName("expiresAt")).toBe("expires");
+    expect(bundle.sessions.col("createdAt")).toBe(
+      (sessions as Record<string, unknown>).created_at
+    );
+    expect(bundle.sessions.has("data")).toBe(true);
+  });
+
+  it("allows mixing string and column-object fieldMap entries", () => {
+    const sessions = sqliteTable("sessions", {
+      id: text("id").primaryKey(),
+      owner: text("owner_id").notNull(),
+      created_at: integer("created_at", { mode: "timestamp" }).notNull(),
+      expires: integer("expires", { mode: "timestamp" }).notNull(),
+    });
+
+    const bundle = defineInternalSchema({
+      sessions: {
+        table: sessions,
+        fieldMap: {
+          userId: sessions.owner,
+          createdAt: "created_at",
+          expiresAt: sessions.expires,
+        },
+      },
+    });
+
+    expect(bundle.sessions.prop("userId")).toBe("owner");
+    expect(bundle.sessions.prop("createdAt")).toBe("created_at");
+    expect(bundle.sessions.dbName("expiresAt")).toBe("expires");
+  });
+
+  it("throws when a fieldMap column belongs to a different table", () => {
+    const sessions = sqliteTable("sessions", {
+      id: text("id").primaryKey(),
+      userId: text("userId").notNull(),
+      createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
+      expiresAt: integer("expiresAt", { mode: "timestamp" }).notNull(),
+    });
+    const other = sqliteTable("other", {
+      stray: text("stray").notNull(),
+    });
+
+    expect(() =>
+      defineInternalSchema({
+        sessions: { table: sessions, fieldMap: { userId: other.stray } },
+      })
+    ).toThrow(/does not belong to the given table/);
+  });
+
   it("treats an omitted optional column as absent", () => {
     const sessions = sqliteTable("sessions", {
       id: text("id").primaryKey(),

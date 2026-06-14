@@ -48,8 +48,13 @@ const createMockRepo = <T extends { id: string }>(): ResourceClient<T> & {
     async aggregate() {
       return { groups: [] };
     },
-    async create(data: Omit<T, "id">): Promise<T> {
-      return { ...data, id: "new-id" } as T;
+    async create(
+      data: Omit<T, "id">,
+      options?: { optimisticId?: string }
+    ): Promise<T> {
+      // Mirror the offline/optimistic repo path: resolve to the optimistic
+      // stand-in so the store reconciles via the SSE "added" optimisticId meta.
+      return { ...data, id: options?.optimisticId ?? "new-id" } as T;
     },
     async update(id: string, data: Partial<T>): Promise<T> {
       return { ...data, id } as T;
@@ -230,6 +235,67 @@ describe("LiveStore", () => {
       // Should have only one item - the server one
       expect(snapshot.items).toHaveLength(1);
       expect(snapshot.items[0].id).toBe("server_789");
+
+      query.destroy();
+    });
+
+    it("reconciles the optimistic item from the create response when the server echoes no optimisticId meta", async () => {
+      // Regression: without an offline manager, repo.create resolves with the
+      // real server row but sends no X-Covara-Optimistic-Id header, so the SSE
+      // "added" event carries no optimisticId meta. The store must still drop
+      // the optimistic entry (reconciling off the create response) instead of
+      // leaving a duplicate alongside the server row.
+      const repo = createMockRepo<Todo>();
+      repo.create = async (data) =>
+        ({ ...(data as object), id: "server_xyz" } as Todo);
+      const query = createLiveQuery<Todo>(repo, {});
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      query.mutate.create({ title: "Hello", completed: false });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(query.getSnapshot().items).toHaveLength(1);
+
+      // SSE "added" event for the same row, WITHOUT optimisticId meta.
+      repo.triggerEvent("added", {
+        item: { id: "server_xyz", title: "Hello", completed: false },
+        meta: undefined,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const snapshot = query.getSnapshot();
+      expect(snapshot.items).toHaveLength(1);
+      expect(snapshot.items[0].id).toBe("server_xyz");
+
+      query.destroy();
+    });
+
+    it("reconciles even when the SSE added event (no meta) arrives before the create response", async () => {
+      const repo = createMockRepo<Todo>();
+      let resolveCreate: (t: Todo) => void = () => {};
+      repo.create = () =>
+        new Promise<Todo>((resolve) => {
+          resolveCreate = resolve;
+        });
+      const query = createLiveQuery<Todo>(repo, {});
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      query.mutate.create({ title: "Race", completed: false });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Server pushes the added event first (no meta), before create resolves.
+      repo.triggerEvent("added", {
+        item: { id: "server_race", title: "Race", completed: false },
+        meta: undefined,
+      });
+      // Now the create POST response comes back with the real id.
+      resolveCreate({ id: "server_race", title: "Race", completed: false } as Todo);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const snapshot = query.getSnapshot();
+      expect(snapshot.items).toHaveLength(1);
+      expect(snapshot.items[0].id).toBe("server_race");
 
       query.destroy();
     });

@@ -100,8 +100,10 @@ describe("scaffoldProject", () => {
       expect(index).toContain('from "drizzle-orm/libsql"');
       expect(index).toContain("createCovara");
       expect(index).toContain('startServer } from "covara/node"');
-      // Starter ships fully-public CRUD so it works end-to-end out of the box.
-      expect(index).toContain("public: { read: true, create: true, update: true, delete: true }");
+      // Starter ships fully-public CRUD + subscribe so it works end-to-end out of the box.
+      expect(index).toContain(
+        "public: { read: true, subscribe: true, create: true, update: true, delete: true }"
+      );
       expect(index).toContain("process.env.PORT");
       expect(index).toContain("process.env.DB_FILE_NAME");
       const drizzleConfig = read(targetDir, "drizzle.config.ts");
@@ -295,9 +297,25 @@ describe("scaffoldProject", () => {
       const app = read(targetDir, "frontend/src/App.tsx");
       expect(app).toContain('from "covara/client/react"');
       expect(app).toContain("useLiveList");
+      // Offline/optimistic mode is wired so creates reconcile (no duplicates).
+      expect(app).toContain("offline: true");
 
       expect(read(targetDir, ".gitignore")).toContain("public/");
       expect(read(targetDir, "Dockerfile")).toContain("/app/public ./public");
+    });
+
+    it("grants public subscribe so the live frontend works without auth", () => {
+      const { targetDir } = scaffold(options);
+      const index = read(targetDir, "src/index.ts");
+      expect(index).toContain("subscribe: true");
+    });
+
+    it("ships a light-scheme stylesheet with explicit text contrast", () => {
+      const { targetDir } = scaffold(options);
+      const styles = read(targetDir, "frontend/src/styles.css");
+      expect(styles).not.toContain("color-scheme: light dark");
+      expect(styles).toContain("color-scheme: light");
+      expect(styles).toContain("color: #1f2937");
     });
   });
 
