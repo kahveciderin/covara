@@ -1,6 +1,6 @@
 {
   "name": "covara",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Real-time resource API framework built on Hono — runs standalone (Node) and on Cloudflare Workers, with a TypeScript client",
   "type": "module",
   "main": "./dist/index.js",
@@ -121,7 +121,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && tsc-alias -p tsconfig.json --resolve-full-paths",
+    "build": "rm -rf dist && tsc -p tsconfig.json && tsc-alias -p tsconfig.json --resolve-full-paths && chmod +x dist/cli/index.js",
     "prepublishOnly": "npm run build && npm run test",
     "start": "node dist/index.js",
     "lint": "eslint 'src/**/*.ts'",
