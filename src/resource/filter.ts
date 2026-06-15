@@ -172,9 +172,23 @@ const isFalsy = (v: unknown): boolean => {
   return false;
 };
 
+// The boolean flag of `=isnull=` / `=isempty=` parses to either a boolean
+// `true` or the string `"true"` depending on quoting — accept both.
+const isTrueLiteral = (v: unknown): boolean =>
+  v === true || (typeof v === "string" && v.toLowerCase() === "true");
+
+// `=between=` bounds: normalize Dates to ISO strings so the comparison matches
+// how `>`/`<` convert date values.
+const normalizeBound = (v: unknown): unknown =>
+  v instanceof Date ? v.toISOString() : v;
+
 export interface OperatorDefinition {
   op: string;
-  convert: (lhs: SQLWrapper, rhs: SQLWrapper) => SQLWrapper;
+  // `rhs` is the value already wrapped as a SQL parameter; `rawRhs` is the raw
+  // parsed JS value (boolean for =isnull=, the array for =between=, null for
+  // `==null`, …) — needed by operators that branch on the literal rather than
+  // binding it.
+  convert: (lhs: SQLWrapper, rhs: SQLWrapper, rawRhs: unknown) => SQLWrapper;
   execute: (lhs: unknown, rhs: unknown) => boolean;
 }
 
@@ -215,8 +229,12 @@ export const createResourceFilter = <TConfig extends TableConfig>(
     // Basic equality operators
     {
       op: "==",
-      convert: (lhs, rhs) => eq(lhs, rhs),
+      convert: (lhs, rhs, rawRhs) => (rawRhs === null ? drizzleIsNull(lhs) : eq(lhs, rhs)),
       execute: (lhs, rhs) => {
+        // `== null` matches null/undefined (parity with IS NULL).
+        if (rhs === null) {
+          return lhs === null || lhs === undefined;
+        }
         // Handle boolean comparisons: true matches true/1/"true"/"1", false matches false/0/"false"/"0"
         if (rhs === true) {
           return isTruthy(lhs);
@@ -235,8 +253,13 @@ export const createResourceFilter = <TConfig extends TableConfig>(
     },
     {
       op: "!=",
-      convert: (lhs, rhs) => not(eq(lhs, rhs)),
+      convert: (lhs, rhs, rawRhs) =>
+        rawRhs === null ? drizzleIsNotNull(lhs) : not(eq(lhs, rhs)),
       execute: (lhs, rhs) => {
+        // `!= null` matches non-null (parity with IS NOT NULL).
+        if (rhs === null) {
+          return lhs !== null && lhs !== undefined;
+        }
         // Handle boolean comparisons
         if (rhs === true) {
           return !isTruthy(lhs);
@@ -279,26 +302,26 @@ export const createResourceFilter = <TConfig extends TableConfig>(
     // Null check operators
     {
       op: "=isnull=",
-      convert: (lhs, rhs) => {
-        const checkNull = String(rhs).toLowerCase() === "true";
+      convert: (lhs, _rhs, rawRhs) => {
+        const checkNull = isTrueLiteral(rawRhs);
         return checkNull ? drizzleIsNull(lhs) : drizzleIsNotNull(lhs);
       },
       execute: (lhs, rhs) => {
-        const checkNull = String(rhs).toLowerCase() === "true";
+        const checkNull = isTrueLiteral(rhs);
         return checkNull ? lhs === null || lhs === undefined : lhs !== null && lhs !== undefined;
       },
     },
     {
       op: "=isempty=",
-      convert: (lhs, rhs) => {
-        const checkEmpty = String(rhs).toLowerCase() === "true";
+      convert: (lhs, _rhs, rawRhs) => {
+        const checkEmpty = isTrueLiteral(rawRhs);
         if (checkEmpty) {
           return sql`(${lhs} IS NULL OR ${lhs} = '')`;
         }
         return sql`(${lhs} IS NOT NULL AND ${lhs} != '')`;
       },
       execute: (lhs, rhs) => {
-        const checkEmpty = String(rhs).toLowerCase() === "true";
+        const checkEmpty = isTrueLiteral(rhs);
         const isEmpty = lhs === null || lhs === undefined || lhs === "";
         return checkEmpty ? isEmpty : !isEmpty;
       },
@@ -423,7 +446,13 @@ export const createResourceFilter = <TConfig extends TableConfig>(
     // Range/between operator
     {
       op: "=between=",
-      convert: (lhs, rhs) => sql`${lhs} BETWEEN ${rhs}`,
+      convert: (lhs, _rhs, rawRhs) => {
+        const arr = Array.isArray(rawRhs) ? rawRhs : [];
+        if (arr.length !== 2) {
+          throw new FilterParseError("=between= requires exactly two values");
+        }
+        return sql`${lhs} BETWEEN ${normalizeBound(arr[0])} AND ${normalizeBound(arr[1])}`;
+      },
       execute: (lhs, rhs) => {
         const arr = Array.isArray(rhs) ? rhs : [];
         if (arr.length !== 2) return false;
@@ -432,7 +461,13 @@ export const createResourceFilter = <TConfig extends TableConfig>(
     },
     {
       op: "=nbetween=",
-      convert: (lhs, rhs) => sql`${lhs} NOT BETWEEN ${rhs}`,
+      convert: (lhs, _rhs, rawRhs) => {
+        const arr = Array.isArray(rawRhs) ? rawRhs : [];
+        if (arr.length !== 2) {
+          throw new FilterParseError("=nbetween= requires exactly two values");
+        }
+        return sql`${lhs} NOT BETWEEN ${normalizeBound(arr[0])} AND ${normalizeBound(arr[1])}`;
+      },
       execute: (lhs, rhs) => {
         const arr = Array.isArray(rhs) ? rhs : [];
         if (arr.length !== 2) return true;
@@ -688,7 +723,9 @@ export const createResourceFilter = <TConfig extends TableConfig>(
 
       const lhs = new ColumnFilterValue(this.field).convert();
       const rhs = this.value.convert();
-      return opDef.convert(lhs, rhs);
+      // Literal values ignore the object, so `{}` yields the raw parsed value.
+      const rawRhs = this.value.execute({} as SchemaType);
+      return opDef.convert(lhs, rhs, rawRhs);
     }
 
     execute(object: SchemaType): boolean {
