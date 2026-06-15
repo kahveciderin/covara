@@ -9,6 +9,10 @@ description: Covara's RSQL-like filter language — 30+ built-in operators, comb
 
 Covara uses an RSQL-like syntax for the `filter` query parameter. The same filter string is compiled to **Drizzle SQL** for database queries and executed **in-memory** for subscription matching, so a subscription's filter always behaves identically to the equivalent list query.
 
+:::tip
+This page covers applying filters to query endpoints. For the full RSQL reference — the language, every operator, and the type-safe TypeScript builder (`rsql` tag + helpers) shared with [authorization scopes](../auth/scopes.md) — see [**RSQL**](./rsql.md).
+:::
+
 ```bash
 GET /api/users?filter=status=="active";age>18
 ```
@@ -245,3 +249,4 @@ To restrict which columns may be filtered, set [`fields.filterable`](./fields.md
 - [Fields](./fields.md) — `filterable`/`sortable` allowlists
 - [Subscriptions](../realtime/subscriptions.md) — filters scope the live stream
 - [Authorization scopes](../auth/scopes.md) — scopes are RSQL filters combined with the request filter
+- [RSQL](./rsql.md) — the full language reference + the type-safe TypeScript builder (`rsql` tag + helpers), used for both filters and scopes

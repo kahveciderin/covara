@@ -62,7 +62,7 @@ auth: scopePatterns.fullyPublic(),                    // every op public, incl. 
 
 ## Building scopes programmatically
 
-The `rsql` template helper interpolates values safely. Or compose with builders:
+The `rsql` template helper interpolates values safely. Or compose with builders. See [**RSQL**](../core/rsql.md#building-rsql-in-typescript) for the full builder reference (escaping rules, every helper, sub-scope composition, and the special `allScope()`/`emptyScope()`).
 
 ```typescript
 import { rsql, eq, ne, gt, gte, lt, lte, inList, notIn, like, notLike, isNull, isNotNull, and, or } from "covara";
@@ -100,5 +100,5 @@ Every resource endpoint routes through the [secure query builder](./secure-queri
 
 ## Related
 
-- [Secure queries](./secure-queries.md) · [Filtering](../core/filtering.md) · [Fields & masking](../core/fields.md)
+- [RSQL](../core/rsql.md) · [Secure queries](./secure-queries.md) · [Filtering](../core/filtering.md) · [Fields & masking](../core/fields.md)
 - [Subscriptions](../realtime/subscriptions.md) · [Auth contract](../contracts/auth.md)

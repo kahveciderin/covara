@@ -5,6 +5,10 @@ const escapeValue = (value: unknown): string => {
     return "null";
   }
 
+  if (value instanceof ScopeExpression) {
+    return `(${value.toString()})`;
+  }
+
   if (typeof value === "number") {
     return String(value);
   }
@@ -129,8 +133,10 @@ export const or = (...scopes: CompiledScope[]): CompiledScope => {
   );
 };
 
-export const ownerScope = (userId: string, ownerField = "userId"): CompiledScope =>
-  eq(ownerField, userId);
+export const ownerScope = (
+  userId: string,
+  ownerField = "userId"
+): CompiledScope => eq(ownerField, userId);
 
 export const publicScope = (publicField = "public"): CompiledScope =>
   eq(publicField, true);

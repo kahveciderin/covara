@@ -15,6 +15,7 @@ const sidebars: SidebarsConfig = {
         "core/resources-and-app",
         "core/crud",
         "core/filtering",
+        "core/rsql",
         "core/pagination",
         "core/aggregations",
         "core/relations",

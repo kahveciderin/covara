@@ -197,4 +197,54 @@ describe("RSQL Template Helper", () => {
       expect(scope.toString()).toBe('status=="active"');
     });
   });
+
+  // A CompiledScope interpolated into an rsql`` template (or any escaped value)
+  // is embedded as a parenthesized sub-expression — so scopes compose, rather
+  // than being stringified into a quoted string literal.
+  describe("composing scopes via interpolation", () => {
+    it("embeds an interpolated scope as a parenthesized sub-expression", () => {
+      const scope = rsql`status=="active";${eq("userId", "u-1")}`;
+      expect(scope.toString()).toBe('status=="active";(userId=="u-1")');
+    });
+
+    it("does NOT stringify an interpolated scope into a quoted literal", () => {
+      const scope = rsql`${eq("a", 1)};name==${"bob"}`;
+      // The scope is parenthesized; the plain string value is still quoted.
+      expect(scope.toString()).toBe('(a==1);name=="bob"');
+      // Guard against the previous behavior, which quoted the whole sub-scope.
+      expect(scope.toString()).not.toContain('"a==1"');
+    });
+
+    it("interpolating two scopes matches the `and` combinator", () => {
+      const a = eq("a", 1);
+      const b = eq("b", 2);
+      expect(rsql`${a};${b}`.toString()).toBe(and(a, b).toString());
+      expect(rsql`${a};${b}`.toString()).toBe("(a==1);(b==2)");
+    });
+
+    it("embeds a composite (or) scope, preserving its grouping", () => {
+      const roles = or(eq("role", "admin"), eq("role", "moderator"));
+      const scope = rsql`tenantId==${"t1"};${roles}`;
+      expect(scope.toString()).toBe(
+        'tenantId=="t1";((role=="admin"),(role=="moderator"))'
+      );
+    });
+
+    it("supports nested interpolation (scope in a template in a template)", () => {
+      const inner = eq("a", 1);
+      const mid = rsql`${inner};b==${2}`;
+      expect(mid.toString()).toBe("(a==1);b==2");
+      const outer = rsql`${mid},c==${3}`;
+      expect(outer.toString()).toBe("((a==1);b==2),c==3");
+    });
+
+    it("embeds helper-built and ownerScope expressions", () => {
+      const scope = rsql`${ownerScope("user-123")},${publicScope()}`;
+      expect(scope.toString()).toBe('(userId=="user-123"),(public==true)');
+    });
+
+    it("embeds the all-scope as a sub-expression", () => {
+      expect(rsql`x==${1};${allScope()}`.toString()).toBe("x==1;(*)");
+    });
+  });
 });
