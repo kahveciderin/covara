@@ -84,6 +84,7 @@ import { createScopeResolver, combineScopes, Operation } from "@/auth/scope";
 import { allScope } from "@/auth/rsql";
 import { isAdminBypassRequest } from "@/server/admin-bypass";
 import { createRateLimiter } from "@/middleware/rateLimit";
+import { createAbuseMiddleware, resourceHasAbuseConfig } from "@/abuse/middleware";
 import {
   parseInclude,
   RelationLoader,
@@ -459,6 +460,17 @@ export const useResource = <TConfig extends TableConfig>(
 
   if (rateLimitMiddleware) {
     router.use("*", rateLimitMiddleware);
+  }
+
+  const abuseMiddlewareConfig = {
+    cost: config.cost,
+    pow: config.pow,
+    captcha: config.captcha,
+    overflow: config.overflow,
+    procedures: config.procedures,
+  };
+  if (resourceHasAbuseConfig(abuseMiddlewareConfig)) {
+    router.use("*", createAbuseMiddleware(resourceName, abuseMiddlewareConfig));
   }
 
   if (batchConfig.create && batchConfig.create > 0) {

@@ -206,6 +206,24 @@ export interface TransportConfig {
   timeout?: number;
   refreshAuth?: () => Promise<string | void>;
   /**
+   * Transparent proof-of-work challenge solving. When the server answers a
+   * request with 428 + a `Covara-PoW-*` challenge, the transport solves it and
+   * retries automatically so callers never see the challenge. Enabled by
+   * default; set `enabled: false` to opt out.
+   */
+  pow?: { enabled?: boolean; maxAttempts?: number };
+  /**
+   * CAPTCHA challenge support (BETA). When the server answers with a 428 CAPTCHA
+   * challenge and a `solve` callback is registered, the transport calls it for a
+   * token and retries; otherwise the 428 surfaces as a TransportError whose
+   * `isCaptchaRequired()` is true. The React `<CovaraCaptcha/>` registers a
+   * solver that renders the provider widget.
+   */
+  captcha?: {
+    solve?: (challenge: { provider: string; siteKey?: string; action?: string }) => Promise<string | null>;
+    maxAttempts?: number;
+  };
+  /**
    * Opt into automatic ISO date-string -> Date conversion on parsed responses.
    * - `true`: convert every string that looks like an ISO 8601 date.
    * - a registry: convert only the listed field names per resource path. The

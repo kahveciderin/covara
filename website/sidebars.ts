@@ -114,6 +114,7 @@ const sidebars: SidebarsConfig = {
         "tooling/observability",
         "tooling/middleware",
         "tooling/error-handling",
+        "tooling/abuse-protection",
       ],
     },
     {
@@ -121,6 +122,7 @@ const sidebars: SidebarsConfig = {
       label: "Contracts (Invariants)",
       items: [
         "contracts/overview",
+        "contracts/abuse-protection",
         "contracts/auth",
         "contracts/billing",
         "contracts/email",

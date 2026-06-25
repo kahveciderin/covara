@@ -1,9 +1,10 @@
-import { useSyncExternalStore, useRef, useEffect, useCallback, useState, useMemo } from "react";
-import type { LiveListResourceClient, SearchableResourceClient, SearchResponse, SearchOptions, LiveQueryLike, ResourceClient, AggregateOptions, AggregationResponse } from "./types";
+import { useSyncExternalStore, useRef, useEffect, useCallback, useState, useMemo, createElement, type ReactNode } from "react";
+import type { LiveListResourceClient, SearchableResourceClient, SearchResponse, SearchOptions, LiveQueryLike, ResourceClient, AggregateOptions, AggregationResponse, CovaraClient } from "./types";
 import { getClient, getAuthErrorHandler } from "./globals";
 import { createLiveQuery, LiveQuery, LiveQueryOptions, LiveQueryState, LiveQueryMutations, statusLabel } from "./live-store";
 import { createMutation, resourceMutationFn, MutationOptions, MutationState, ResourceMutationVars } from "./mutation";
 import type { InvalidateTarget } from "./query-cache";
+import { captchaController, loadCaptchaWidget, type CaptchaChallenge } from "./captcha";
 
 export type LiveStatus = "loading" | "live" | "reconnecting" | "offline" | "error";
 
@@ -1084,3 +1085,107 @@ export type {
   CheckoutResult,
   PortalResult,
 } from "./billing";
+
+// ---------------------------------------------------------------------------
+// CAPTCHA (BETA)
+// ---------------------------------------------------------------------------
+
+const safeGetClient = (explicit?: CovaraClient): CovaraClient | null => {
+  if (explicit) return explicit;
+  try {
+    return getClient();
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Observe the pending CAPTCHA challenge (if any). Useful for building a custom
+ * CAPTCHA UI; resolve it with `captchaController.resolveCurrent(token)`.
+ */
+export function useCaptcha(): { pending: CaptchaChallenge | null } {
+  const current = useSyncExternalStore(
+    captchaController.subscribe,
+    captchaController.getCurrent,
+    captchaController.getCurrent
+  );
+  return { pending: current?.challenge ?? null };
+}
+
+export interface CovaraCaptchaProps {
+  /** Client to register the solver on (defaults to the global client). */
+  client?: CovaraClient;
+  /** Class for the overlay wrapper. */
+  className?: string;
+  /** Class for the widget container. */
+  containerClassName?: string;
+  /** Heading text shown above the widget. */
+  title?: string;
+}
+
+const overlayStyle = {
+  position: "fixed",
+  inset: "0",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "rgba(0,0,0,0.5)",
+  zIndex: 2147483647,
+} as const;
+
+const cardStyle = {
+  background: "#fff",
+  borderRadius: "12px",
+  padding: "20px",
+  boxShadow: "0 10px 40px rgba(0,0,0,0.2)",
+  maxWidth: "90vw",
+} as const;
+
+/**
+ * Mount once near the app root. Registers a CAPTCHA solver on the client; when
+ * the server issues a CAPTCHA challenge it renders the provider widget in a
+ * modal (or silently, for invisible providers) and resolves the token so the
+ * transport retries transparently.
+ */
+export function CovaraCaptcha(props: CovaraCaptchaProps): ReactNode {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const { pending } = useCaptcha();
+
+  useEffect(() => {
+    const client = safeGetClient(props.client);
+    if (!client) return;
+    client.transport.setCaptchaSolver(captchaController.solver);
+    return () => client.transport.setCaptchaSolver(undefined);
+  }, [props.client]);
+
+  useEffect(() => {
+    if (!pending || !containerRef.current) return;
+    let cancelled = false;
+    loadCaptchaWidget(pending, containerRef.current)
+      .then((token) => {
+        if (!cancelled) captchaController.resolveCurrent(token);
+      })
+      .catch(() => {
+        if (!cancelled) captchaController.resolveCurrent(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pending]);
+
+  if (!pending) return null;
+  return createElement(
+    "div",
+    { className: props.className, style: overlayStyle },
+    createElement(
+      "div",
+      { style: cardStyle },
+      createElement("p", { style: { margin: "0 0 12px", font: "500 14px system-ui" } },
+        props.title ?? "Please complete the verification"),
+      createElement("div", { ref: containerRef, className: props.containerClassName })
+    )
+  );
+}
+
+export { captchaController, loadCaptchaWidget } from "./captcha";
+export type { CaptchaChallenge, CaptchaSolver, PendingCaptcha } from "./captcha";

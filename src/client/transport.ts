@@ -5,21 +5,43 @@ import {
   ErrorResponse,
 } from "./types";
 import { reviveDates } from "./dates";
+import { solvePowChallenge } from "./pow";
+import type { CaptchaSolver } from "./captcha";
+import type { PowAlgorithm } from "@/pow/core";
+
+const CHALLENGE_TYPE_HEADER = "Covara-Challenge-Type";
+const POW_CHALLENGE_HEADER = "Covara-PoW-Challenge";
+const POW_DIFFICULTY_HEADER = "Covara-PoW-Difficulty";
+const POW_ALGORITHM_HEADER = "Covara-PoW-Algorithm";
+const POW_NONCE_HEADER = "Covara-PoW-Nonce";
+const CAPTCHA_PROVIDER_HEADER = "Covara-Captcha-Provider";
+const CAPTCHA_SITEKEY_HEADER = "Covara-Captcha-Sitekey";
+const CAPTCHA_ACTION_HEADER = "Covara-Captcha-Action";
+const CAPTCHA_TOKEN_HEADER = "Covara-Captcha-Token";
+const DEFAULT_POW_MAX_ATTEMPTS = 3;
+const DEFAULT_CAPTCHA_MAX_ATTEMPTS = 2;
 
 export interface Transport {
   request<T>(req: TransportRequest): Promise<TransportResponse<T>>;
   createEventSource(path: string, params?: Record<string, string>): EventSource;
   setHeader(name: string, value: string): void;
   removeHeader(name: string): void;
+  setCaptchaSolver(solver: CaptchaSolver | undefined): void;
 }
 
 export class FetchTransport implements Transport {
   private config: TransportConfig;
   private headers: Record<string, string>;
+  private captchaSolver?: CaptchaSolver;
 
   constructor(config: TransportConfig) {
     this.config = config;
     this.headers = { ...config.headers };
+    this.captchaSolver = config.captcha?.solve;
+  }
+
+  setCaptchaSolver(solver: CaptchaSolver | undefined): void {
+    this.captchaSolver = solver;
   }
 
   setHeader(name: string, value: string): void {
@@ -49,23 +71,102 @@ export class FetchTransport implements Transport {
   }
 
   async request<T>(req: TransportRequest): Promise<TransportResponse<T>> {
-    try {
-      return await this.executeRequest<T>(req);
-    } catch (error) {
-      if (
-        error instanceof TransportError &&
-        error.status === 401 &&
-        this.config.refreshAuth &&
-        !req.headers?.["X-Covara-Retried"]
-      ) {
-        await this.config.refreshAuth();
-        return this.executeRequest<T>({
-          ...req,
-          headers: { ...req.headers, "X-Covara-Retried": "1" },
-        });
+    let current = req;
+    let didRefresh = false;
+    let powAttempts = 0;
+    let captchaAttempts = 0;
+    const powEnabled = this.config.pow?.enabled !== false;
+    const powMaxAttempts = this.config.pow?.maxAttempts ?? DEFAULT_POW_MAX_ATTEMPTS;
+    const captchaMaxAttempts = this.config.captcha?.maxAttempts ?? DEFAULT_CAPTCHA_MAX_ATTEMPTS;
+
+    // Loop so a single request can transparently recover from a 401 (auth
+    // refresh, once) and one or more 428 challenges (proof-of-work, solved by
+    // CPU; or CAPTCHA, solved via the registered solver). Callers never observe
+    // these — the request just takes longer.
+    while (true) {
+      try {
+        return await this.executeRequest<T>(current);
+      } catch (error) {
+        if (
+          error instanceof TransportError &&
+          error.status === 401 &&
+          this.config.refreshAuth &&
+          !didRefresh &&
+          !current.headers?.["X-Covara-Retried"]
+        ) {
+          didRefresh = true;
+          await this.config.refreshAuth();
+          current = {
+            ...current,
+            headers: { ...current.headers, "X-Covara-Retried": "1" },
+          };
+          continue;
+        }
+
+        if (error instanceof TransportError && error.status === 428) {
+          const type = challengeType(error);
+
+          if (type === "pow" && powEnabled && powAttempts < powMaxAttempts) {
+            const solved = await this.solvePow(error, current);
+            if (solved) {
+              powAttempts++;
+              current = solved;
+              continue;
+            }
+          }
+
+          if (type === "captcha" && this.captchaSolver && captchaAttempts < captchaMaxAttempts) {
+            const solved = await this.solveCaptcha(error, current);
+            if (solved) {
+              captchaAttempts++;
+              current = solved;
+              continue;
+            }
+          }
+        }
+
+        throw error;
       }
-      throw error;
     }
+  }
+
+  private async solveCaptcha(
+    error: TransportError,
+    req: TransportRequest
+  ): Promise<TransportRequest | null> {
+    const provider = error.headers?.get(CAPTCHA_PROVIDER_HEADER);
+    if (!provider || !this.captchaSolver) return null;
+    const token = await this.captchaSolver({
+      provider,
+      siteKey: error.headers?.get(CAPTCHA_SITEKEY_HEADER) ?? undefined,
+      action: error.headers?.get(CAPTCHA_ACTION_HEADER) ?? undefined,
+    });
+    if (!token) return null;
+    return {
+      ...req,
+      headers: { ...req.headers, [CAPTCHA_TOKEN_HEADER]: token },
+    };
+  }
+
+  private async solvePow(
+    error: TransportError,
+    req: TransportRequest
+  ): Promise<TransportRequest | null> {
+    const challenge = error.headers?.get(POW_CHALLENGE_HEADER);
+    const difficulty = Number(error.headers?.get(POW_DIFFICULTY_HEADER));
+    const algorithm = (error.headers?.get(POW_ALGORITHM_HEADER) ?? "sha256") as PowAlgorithm;
+    if (!challenge || !Number.isFinite(difficulty) || difficulty <= 0) {
+      return null;
+    }
+    const nonce = await solvePowChallenge(challenge, difficulty, algorithm);
+    return {
+      ...req,
+      headers: {
+        ...req.headers,
+        [POW_CHALLENGE_HEADER]: challenge,
+        [POW_NONCE_HEADER]: nonce,
+      },
+    };
   }
 
   private async executeRequest<T>(req: TransportRequest): Promise<TransportResponse<T>> {
@@ -105,7 +206,8 @@ export class FetchTransport implements Transport {
           errorData?.error?.message ?? `HTTP ${response.status}`,
           response.status,
           errorData?.error?.code ?? "HTTP_ERROR",
-          errorData?.error?.details
+          errorData?.error?.details,
+          response.headers
         );
       }
 
@@ -233,7 +335,8 @@ export class TransportError extends Error {
     message: string,
     public status: number,
     public code: string,
-    public details?: unknown
+    public details?: unknown,
+    public headers?: Headers
   ) {
     super(message);
     this.name = "TransportError";
@@ -241,6 +344,26 @@ export class TransportError extends Error {
 
   isNotFound(): boolean {
     return this.status === 404;
+  }
+
+  isProofOfWorkRequired(): boolean {
+    return this.status === 428 && challengeType(this) === "pow";
+  }
+
+  isCaptchaRequired(): boolean {
+    return this.status === 428 && challengeType(this) === "captcha";
+  }
+
+  get captchaProvider(): string | undefined {
+    return this.headers?.get(CAPTCHA_PROVIDER_HEADER) ?? undefined;
+  }
+
+  get captchaSiteKey(): string | undefined {
+    return this.headers?.get(CAPTCHA_SITEKEY_HEADER) ?? undefined;
+  }
+
+  get captchaAction(): string | undefined {
+    return this.headers?.get(CAPTCHA_ACTION_HEADER) ?? undefined;
   }
 
   isUnauthorized(): boolean {
@@ -263,6 +386,19 @@ export class TransportError extends Error {
     return this.status >= 500;
   }
 }
+
+/**
+ * Determine which kind of 428 challenge a response carries: the explicit
+ * `Covara-Challenge-Type` header, falling back to which challenge headers are
+ * present.
+ */
+const challengeType = (error: TransportError): "pow" | "captcha" | null => {
+  const declared = error.headers?.get(CHALLENGE_TYPE_HEADER);
+  if (declared === "pow" || declared === "captcha") return declared;
+  if (error.headers?.get(CAPTCHA_PROVIDER_HEADER)) return "captcha";
+  if (error.headers?.get(POW_CHALLENGE_HEADER)) return "pow";
+  return null;
+};
 
 export const createTransport = (config: TransportConfig): Transport => {
   return new FetchTransport(config);

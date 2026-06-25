@@ -32,6 +32,8 @@ import {
 } from "./password-policy";
 import { createSocialRouter, type SocialAuthOptions } from "./social";
 import { fromAuthAdapter, type SessionStrategy } from "./session";
+import { enforceAbuse } from "@/abuse/enforce";
+import type { EndpointCaptchaConfig, EndpointPowConfig } from "@/abuse/config";
 
 // Request metadata stored in session.data so the admin UI can show where a
 // session came from. Lives inside `data` because every session store already
@@ -70,11 +72,24 @@ export interface UseAuthOptions {
   };
   login?: {
     validateCredentials: (email: string, password: string) => Promise<AuthUser | null>;
+    // Budget tokens charged per failed attempt (pre-charged, refunded on
+    // success) when abuseProtection's budget is enabled.
+    cost?: { failed?: number };
+    // Optional proof-of-work gate on the login route.
+    pow?: EndpointPowConfig;
+    // Optional CAPTCHA gate on the login route (BETA).
+    captcha?: EndpointCaptchaConfig;
   };
   signup?: {
     createUser: (data: { email: string; password: string; name?: string }) => Promise<AuthUser>;
     validateEmail?: (email: string) => boolean | Promise<boolean>;
     validatePassword?: (password: string) => boolean | Promise<boolean>;
+    // Budget tokens charged per signup attempt.
+    cost?: number;
+    // Optional proof-of-work gate on the signup route.
+    pow?: EndpointPowConfig;
+    // Optional CAPTCHA gate on the signup route (BETA).
+    captcha?: EndpointCaptchaConfig;
   };
   serializeUser?: (user: UserContext) => Record<string, unknown>;
   onLogin?: (user: UserContext, c: Context) => void | Promise<void>;
@@ -107,6 +122,11 @@ export interface UseAuthOptions {
     ttlMs?: number;
     hashTokens?: boolean;
     logoutEverywhere?: boolean;
+    // Budget tokens charged per reset-request, plus optional PoW / CAPTCHA
+    // gates on the /password/forgot route.
+    cost?: number;
+    pow?: EndpointPowConfig;
+    captcha?: EndpointCaptchaConfig;
   };
   passwordPolicy?: PasswordPolicyOptions;
   mfa?: MfaOptions;
@@ -323,6 +343,18 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
 
   if (login?.validateCredentials) {
     router.post("/login", async (c) => {
+      // Gate on the failed-attempt budget (and any login PoW) before checking
+      // credentials: a budget-exhausted client must solve PoW (or is 429'd when
+      // PoW is off) before it can even attempt. The charge is deferred and only
+      // committed when the attempt is an actual failure.
+      const gate = await enforceAbuse(c, {
+        operation: "auth.login",
+        cost: login.cost?.failed ?? 0,
+        endpointPow: login.pow,
+        endpointCaptcha: login.captcha,
+        defer: true,
+      });
+
       const body = (await readJsonBody(c)) as LoginBody & { mfaCode?: string };
       const { email, password, mfaCode } = body;
 
@@ -347,6 +379,7 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
         if (throttle$) {
           await throttle$.recordFailure(email, ip);
         }
+        await gate.settle(); // failed attempt -> charge the failed-cost
         throw new UnauthorizedError("Invalid email or password");
       }
 
@@ -354,6 +387,7 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
         const enrollment = await mfa.getEnrollment(user.id);
         if (enrollment?.enabled) {
           if (!mfaCode) {
+            // Credentials were valid; not a failed attempt -> no charge.
             return c.json({ mfaRequired: true }, 401);
           }
           const ok = await verifyMfaChallenge(enrollment, user.id, mfaCode);
@@ -361,6 +395,7 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
             if (throttle$) {
               await throttle$.recordFailure(email, ip);
             }
+            await gate.settle(); // failed MFA -> charge the failed-cost
             throw new UnauthorizedError("Invalid MFA code");
           }
         }
@@ -381,6 +416,14 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
 
   if (signup?.createUser) {
     router.post("/signup", async (c) => {
+      // Charge (and PoW-gate on overflow) every signup attempt to throttle spam.
+      await enforceAbuse(c, {
+        operation: "auth.signup",
+        cost: signup.cost ?? 0,
+        endpointPow: signup.pow,
+        endpointCaptcha: signup.captcha,
+      });
+
       const { email, password, name } = (await readJsonBody(c)) as LoginBody;
 
       if (!email || !password) {
@@ -486,6 +529,13 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
 
   if (passwordReset) {
     router.post("/password/forgot", async (c) => {
+      await enforceAbuse(c, {
+        operation: "auth.passwordReset.request",
+        cost: passwordReset.cost ?? 0,
+        endpointPow: passwordReset.pow,
+        endpointCaptcha: passwordReset.captcha,
+      });
+
       const { email } = (await readJsonBody(c)) as LoginBody;
       if (!email) {
         throw new ValidationError("Email is required");

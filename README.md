@@ -88,6 +88,8 @@ function TodoList() {
 - **Security Headers** - HSTS, `X-Frame-Options`, MIME-sniffing protection, and more, auto-mounted by `createCovara`; opt-in CSP (so it never blocks your frontend)
 - **Authorization Scopes** - Row-level security with RSQL expressions, enforced across reads, writes, subscriptions, and search
 - **Field-level Read Masking** - `fields.readable` allowlist strips non-readable columns from every response and subscription event (cannot be bypassed via `?select=`)
+- **Abuse Protection** - A cost-weighted **token-bucket budget** with **proof of work as the overflow valve** via `abuseProtection({ budget, pow })`: within budget, requests are served and debited; over budget, the server issues a stateless, request-bound, one-time-use **428 challenge** that the **client library solves and retries transparently** (solving pays the overdraft). Difficulty is programmatically controllable via a trust hook; an endpoint can also *always* require PoW. Disable PoW for a hard 429 instead. KV-backed with in-memory fallback; works alongside the conventional `rateLimit`. See [docs](https://kahveciderin.github.io/covara/docs/tooling/abuse-protection)
+- **CAPTCHA** *(beta)* - Turnstile / hCaptcha / reCAPTCHA / custom providers as a per-endpoint gate (signup/login/…) or an alternative budget-overflow valve. The plain client surfaces a typed challenge; the React `<CovaraCaptcha/>` component renders the provider widget and retries transparently.
 
 ### File Storage
 - **Storage Adapters** - Local disk, S3, Cloudflare R2 (native binding or S3-compat), and in-memory behind one `StorageAdapter` interface

@@ -8,6 +8,14 @@ import {
 } from "drizzle-orm";
 import { z } from "zod";
 import type { Context as HonoContext } from "hono";
+import type {
+  EndpointCaptchaConfig,
+  EndpointPowConfig,
+  OverflowMechanism,
+  ResourceCaptchaConfig,
+  ResourceCostConfig,
+  ResourcePowConfig,
+} from "@/abuse/config";
 
  
 export type DrizzleDatabase = any;
@@ -157,6 +165,14 @@ export interface ProcedureDefinition<TInput = unknown, TOutput = unknown> {
   output?: z.ZodSchema<TOutput>;
   writeEffects?: WriteEffect[];
   handler: (ctx: ProcedureContext, input: TInput) => Promise<TOutput>;
+  /** Token-bucket cost charged when abuseProtection budget is enabled. */
+  cost?: number;
+  /** Optional proof-of-work gate for this procedure. */
+  pow?: EndpointPowConfig;
+  /** Optional CAPTCHA gate for this procedure (BETA). */
+  captcha?: EndpointCaptchaConfig;
+  /** Override the budget-overflow mechanism for this procedure. */
+  overflow?: OverflowMechanism;
 }
 
 export interface LifecycleHooks<TConfig extends TableConfig = TableConfig> {
@@ -385,6 +401,18 @@ export interface ResourceConfig<
   // configured.
   cursorSigningSecret?: string | null;
   rateLimit?: RateLimitConfig;
+  // Inline per-operation token-bucket costs (charged when abuseProtection's
+  // budget is enabled). Preferred over `rateLimit` for cost-weighted limiting.
+  cost?: ResourceCostConfig;
+  // Optional proof-of-work gate. `true` gates create/update/delete at the
+  // default difficulty; an object can override difficulty/trust-hook and the
+  // set of gated operations.
+  pow?: ResourcePowConfig;
+  // Optional CAPTCHA gate (BETA). `true` gates create/update/delete; an object
+  // can supply an action / risk hook / the set of gated operations.
+  captcha?: ResourceCaptchaConfig;
+  // Override the budget-overflow mechanism for this resource ("pow" | "captcha").
+  overflow?: OverflowMechanism;
   auth?: ScopeConfig;
   procedures?: Record<string, ProcedureDefinition>;
   hooks?: LifecycleHooks<TConfig>;

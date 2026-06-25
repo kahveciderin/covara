@@ -107,6 +107,8 @@ When you need to know how a Covara feature works, consult the docs rather than g
 - Source & README: https://github.com/kahveciderin/covara
 
 For agents, start from \`llms.txt\` to find the relevant page, then fetch that page's \`.md\`, or pull \`llms-full.txt\` for the complete corpus (around 500KB).
+
+When you want to build something, first try to find whether Covara already has it. Use Covara's features instead of writing custom code whenever possible.
 `;
 };
 

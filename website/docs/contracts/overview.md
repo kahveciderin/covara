@@ -20,6 +20,7 @@ This folder contains the formal contracts (guarantees and non-guarantees) for th
 - [search.md](./search.md) - Search endpoint and auto-indexing guarantees
 - [storage.md](./storage.md) - File upload and storage adapter guarantees
 - [track-mutations.md](./track-mutations.md) - Mutation tracking and changelog recording guarantees
+- [abuse-protection.md](./abuse-protection.md) - Token-bucket budget and proof-of-work guarantees
 
 ## How to Read These Contracts
 

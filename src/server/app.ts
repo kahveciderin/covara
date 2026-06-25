@@ -24,6 +24,11 @@ import { onShutdown } from "@/server/lifecycle";
 import { closeAllHandlers } from "@/resource/subscription";
 import { installLiveSupport, type LiveSupport, type PageComponent } from "@/htmx/server";
 import type { InternalSchemaBundle } from "@/db/internal-schema";
+import {
+  setGlobalAbuseProtection,
+  type AbuseProtectionConfig,
+  type AbuseProtectionInput,
+} from "@/abuse/config";
 
 let sseDrainHookRegistered = false;
 
@@ -52,6 +57,10 @@ export interface CovaraOptions {
   // rewire pre-built session/api-key stores — construct those with the matching
   // resolver yourself before createCovara.
   internalSchema?: InternalSchemaBundle;
+  // Token-bucket budget + proof-of-work abuse protection. Build with
+  // `abuseProtection({ budget, pow })`. Per-operation costs and PoW opt-ins live
+  // on the individual resources / procedures / auth routes.
+  abuseProtection?: AbuseProtectionConfig | AbuseProtectionInput;
 }
 
 export class CovaraApp extends Hono {
@@ -70,6 +79,10 @@ export class CovaraApp extends Hono {
     super();
     this.resourceBasePath = normalizeBasePath(options.basePath ?? "/api");
     this.internalSchema = options.internalSchema;
+
+    if (options.abuseProtection) {
+      setGlobalAbuseProtection(options.abuseProtection);
+    }
 
     this.onError(errorHandler);
     this.notFound(notFoundHandler);

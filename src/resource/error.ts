@@ -9,6 +9,8 @@ export const ERROR_TYPES = {
   NOT_FOUND: `${ERROR_TYPE_BASE}/not-found`,
   VALIDATION_ERROR: `${ERROR_TYPE_BASE}/validation-error`,
   RATE_LIMIT_EXCEEDED: `${ERROR_TYPE_BASE}/rate-limit-exceeded`,
+  PROOF_OF_WORK_REQUIRED: `${ERROR_TYPE_BASE}/proof-of-work-required`,
+  CAPTCHA_REQUIRED: `${ERROR_TYPE_BASE}/captcha-required`,
   FILTER_PARSE_ERROR: `${ERROR_TYPE_BASE}/filter-parse-error`,
   UNAUTHORIZED: `${ERROR_TYPE_BASE}/unauthorized`,
   FORBIDDEN: `${ERROR_TYPE_BASE}/forbidden`,
@@ -75,6 +77,18 @@ export class ResourceError extends HTTPException {
     if (this instanceof RateLimitError) {
       headers["Retry-After"] = String(Math.ceil(this.retryAfter / 1000));
     }
+    if (this instanceof PowRequiredError) {
+      headers["Covara-Challenge-Type"] = "pow";
+      headers["Covara-PoW-Challenge"] = this.challenge;
+      headers["Covara-PoW-Difficulty"] = String(this.difficulty);
+      headers["Covara-PoW-Algorithm"] = this.algorithm;
+    }
+    if (this instanceof CaptchaRequiredError) {
+      headers["Covara-Challenge-Type"] = "captcha";
+      headers["Covara-Captcha-Provider"] = this.provider;
+      if (this.siteKey) headers["Covara-Captcha-Sitekey"] = this.siteKey;
+      if (this.action) headers["Covara-Captcha-Action"] = this.action;
+    }
     return new Response(JSON.stringify(problem), {
       status: this.statusCode,
       headers,
@@ -106,6 +120,30 @@ export class RateLimitError extends ResourceError {
     super(message, 429, "RATE_LIMIT_EXCEEDED", { retryAfter });
     this.retryAfter = retryAfter;
     this.name = "RateLimitError";
+  }
+}
+
+export class PowRequiredError extends ResourceError {
+  constructor(
+    public challenge: string,
+    public difficulty: number,
+    public algorithm: string = "sha256",
+    message = "Proof of work required"
+  ) {
+    super(message, 428, "PROOF_OF_WORK_REQUIRED", { difficulty, algorithm });
+    this.name = "PowRequiredError";
+  }
+}
+
+export class CaptchaRequiredError extends ResourceError {
+  constructor(
+    public provider: string,
+    public siteKey?: string,
+    public action?: string,
+    message = "CAPTCHA required"
+  ) {
+    super(message, 428, "CAPTCHA_REQUIRED", { provider, siteKey, action });
+    this.name = "CaptchaRequiredError";
   }
 }
 

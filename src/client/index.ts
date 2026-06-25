@@ -16,6 +16,10 @@ import { createBillingClient } from "./billing";
 
 export { getClient, setGlobalClient, getAuthErrorHandler } from "./globals";
 export type { CovaraClient } from "./types";
+export { solvePowChallenge } from "./pow";
+export type { PowClientConfig } from "./pow";
+export { loadCaptchaWidget } from "./captcha";
+export type { CaptchaChallenge, CaptchaSolver } from "./captcha";
 
 export interface SimplifiedClientConfig {
   baseUrl: string;
@@ -30,6 +34,13 @@ export interface SimplifiedClientConfig {
   jwt?: Omit<JWTClientConfig, "baseUrl">;
   /** Opt into automatic ISO date-string -> Date conversion (see TransportConfig.parseDates). */
   parseDates?: boolean | DateFieldRegistry;
+  /** Transparent proof-of-work challenge solving (enabled by default). */
+  pow?: { enabled?: boolean; maxAttempts?: number };
+  /** CAPTCHA challenge handling (BETA). In React, prefer `<CovaraCaptcha/>`. */
+  captcha?: {
+    solve?: (challenge: { provider: string; siteKey?: string; action?: string }) => Promise<string | null>;
+    maxAttempts?: number;
+  };
   /** Configure the typed billing client (mounted server-side, default `/api/billing`). */
   billing?: { basePath?: string };
   /** Social login routes (mounted server-side, default `/api/auth/social`). */
@@ -48,6 +59,8 @@ export const createClient = (config: SimplifiedClientConfig): CovaraClient => {
     credentials: config.credentials,
     timeout: config.timeout,
     parseDates: config.parseDates,
+    pow: config.pow,
+    captcha: config.captcha,
     refreshAuth: async () => {
       if (jwtClient?.isAuthenticated()) {
         const tokens = await jwtClient.refresh();

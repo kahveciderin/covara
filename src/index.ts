@@ -26,6 +26,8 @@ export {
   UnauthorizedError,
   ForbiddenError,
   RateLimitError,
+  PowRequiredError,
+  CaptchaRequiredError,
   BatchLimitError,
   ConflictError,
   SearchError,
@@ -191,6 +193,59 @@ export type {
   AuthMiddlewareOptions,
   SessionStore,
 } from "./auth/types";
+
+// Abuse protection (token-bucket budget + proof-of-work)
+export {
+  abuseProtection,
+  setGlobalAbuseProtection,
+  getGlobalAbuseProtection,
+  hasGlobalAbuseProtection,
+  clearGlobalAbuseProtection,
+  isBudgetEnabled,
+  isPowEnabled,
+  DEFAULT_POW_DIFFICULTY,
+  DEFAULT_POW_TTL_MS,
+} from "./abuse/config";
+export type {
+  AbuseProtectionInput,
+  AbuseProtectionConfig,
+  BudgetConfig,
+  BudgetClassConfig,
+  PowConfig,
+  PowDifficultyContext,
+  EndpointPowConfig,
+  ResourcePowConfig,
+  ResourceCostConfig,
+  AbuseOperation,
+  CaptchaConfig,
+  CaptchaContext,
+  EndpointCaptchaConfig,
+  ResourceCaptchaConfig,
+  OverflowMechanism,
+} from "./abuse/config";
+export {
+  turnstile,
+  hcaptcha,
+  recaptcha,
+  customCaptcha,
+} from "./abuse/captcha";
+export type { CaptchaProvider, CaptchaVerifyContext } from "./abuse/captcha";
+export { createAbuseMiddleware } from "./abuse/middleware";
+export { enforceAbuse } from "./abuse/enforce";
+export type { EnforceAbuseOptions, AbuseGateResult } from "./abuse/enforce";
+export {
+  issueChallenge,
+  verifySolution,
+  computeFingerprint,
+  consumeNonce,
+  resolvePowSecret,
+} from "./pow/server";
+export {
+  solveChallenge,
+  sha256Hex,
+  leadingZeroBits,
+} from "./pow/core";
+export type { PowAlgorithm, ChallengePayload } from "./pow/core";
 
 // Middleware
 export { createRateLimiter } from "./middleware/rateLimit";
