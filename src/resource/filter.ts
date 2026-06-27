@@ -1,4 +1,4 @@
-import { getTableColumns, InferSelectModel } from "drizzle-orm";
+import { getTableColumns, getTableName, InferSelectModel } from "drizzle-orm";
 import {
   and,
   eq,
@@ -12,7 +12,15 @@ import {
   TableConfig,
 } from "drizzle-orm";
 import { CustomOperator } from "./types";
-import { FilterParseError } from "./error";
+import { FilterParseError, RelationPathNotInMemoryError } from "./error";
+import {
+  getResourceRelations,
+  RegisteredRelation,
+} from "./relation-registry";
+
+// Hard cap on relation hops in a single path (e.g. a.b.c = 2 hops). Bounds the
+// nested-EXISTS depth and query cost regardless of the configured filter depth.
+const MAX_RELATION_PATH_HOPS = 5;
 
 export interface FilterConfig {
   maxLength?: number;
@@ -196,6 +204,10 @@ export interface CompiledFilterExpression {
   print(): string;
   convert(): SQLWrapper;
   execute(object: Record<string, unknown>): boolean;
+  // True when any term is a relation path (e.g. `org.members.userId`). Such a
+  // term converts to a correlated subquery and cannot be executed in memory, so
+  // callers that match against plain rows must branch on this.
+  requiresJoin(): boolean;
 }
 
 export const createResourceFilter = <TConfig extends TableConfig>(
@@ -552,6 +564,7 @@ export const createResourceFilter = <TConfig extends TableConfig>(
     abstract print(): string;
     abstract convert(): SQLWrapper;
     abstract execute(object: SchemaType): boolean;
+    abstract requiresJoin(): boolean;
   }
 
   class EmptyFilterExpression extends FilterExpression {
@@ -565,6 +578,10 @@ export const createResourceFilter = <TConfig extends TableConfig>(
 
     execute(_object: SchemaType): boolean {
       return true;
+    }
+
+    requiresJoin(): boolean {
+      return false;
     }
   }
 
@@ -702,6 +719,111 @@ export const createResourceFilter = <TConfig extends TableConfig>(
     }
   }
 
+  // Builds the SQL for a single `field op value` comparison on a relation target
+  // table, reusing the same operator definitions as top-level comparisons.
+  const relationLeafSql = (
+    targetTable: Table<TableConfig>,
+    leafName: string,
+    operator: string,
+    value: FilterValue
+  ): SQLWrapper => {
+    const opDef = allOperators.find((op) => op.op === operator);
+    if (!opDef) {
+      throw new FilterParseError(`Unknown operator: ${operator}`);
+    }
+    const cols = getTableColumns(targetTable);
+    if (!(leafName in cols)) {
+      throw new FilterParseError(
+        `Unknown column '${leafName}' on relation target '${getTableName(targetTable)}'`
+      );
+    }
+    const lhs = (targetTable as unknown as Record<string, unknown>)[
+      leafName
+    ] as SQLWrapper;
+    const rhs = value.convert();
+    const rawRhs = value.execute({} as SchemaType);
+    return opDef.convert(lhs, rhs, rawRhs);
+  };
+
+  // Wraps `inner` in a correlated EXISTS that joins `outerTable` to the relation
+  // target. The correlation column on the target is matched against the column on
+  // the outer (enclosing) table, mirroring how the relation loader joins rows.
+  const relationExists = (
+    rel: RegisteredRelation,
+    outerTable: Table<TableConfig>,
+    inner: SQLWrapper
+  ): SQLWrapper => {
+    const targetTable = rel.schema;
+    if (rel.type === "manyToMany") {
+      if (!rel.through) {
+        throw new FilterParseError(
+          "manyToMany relation path requires through configuration"
+        );
+      }
+      const pk = Object.values(getTableColumns(outerTable)).find(
+        (col) => (col as { primary?: boolean }).primary
+      );
+      if (!pk) {
+        throw new FilterParseError(
+          `manyToMany relation path requires a single-column primary key on '${getTableName(outerTable)}'`
+        );
+      }
+      return sql`EXISTS (SELECT 1 FROM ${targetTable} INNER JOIN ${rel.through.schema} ON ${rel.through.targetKey} = ${rel.references} WHERE ${rel.through.sourceKey} = ${pk as SQLWrapper} AND (${inner}))`;
+    }
+    const tSide = rel.type === "belongsTo" ? rel.references : rel.foreignKey;
+    const oSide = rel.type === "belongsTo" ? rel.foreignKey : rel.references;
+    return sql`EXISTS (SELECT 1 FROM ${targetTable} WHERE ${tSide} = ${oSide} AND (${inner}))`;
+  };
+
+  // Converts a dotted relation path (`org.members.userId`) into nested correlated
+  // EXISTS subqueries. Each hop is resolved against the resolved relations of the
+  // current table (explicit + auto-discovered). Repeated tables along the path are
+  // rejected to avoid ambiguous self-joins.
+  const buildRelationPathSql = (
+    field: string,
+    operator: string,
+    value: FilterValue
+  ): SQLWrapper => {
+    const segments = field.split(".");
+    if (segments.length > MAX_RELATION_PATH_HOPS + 1) {
+      throw new FilterParseError(
+        `Relation path too deep (max ${MAX_RELATION_PATH_HOPS} relations): ${field}`
+      );
+    }
+
+    const recurse = (
+      segs: string[],
+      outerTable: Table<TableConfig>,
+      visited: Set<string>
+    ): SQLWrapper => {
+      const relName = segs[0]!;
+      const rest = segs.slice(1);
+      const rels = getResourceRelations(getTableName(outerTable));
+      const rel = rels?.[relName];
+      if (!rel) {
+        throw new FilterParseError(
+          `Unknown relation '${relName}' on '${getTableName(outerTable)}'`
+        );
+      }
+      const targetName = getTableName(rel.schema);
+      if (visited.has(targetName)) {
+        throw new FilterParseError(
+          `Cyclic relation path through '${targetName}'`
+        );
+      }
+
+      const inner =
+        rest.length === 1
+          ? relationLeafSql(rel.schema, rest[0]!, operator, value)
+          : recurse(rest, rel.schema, new Set(visited).add(targetName));
+
+      return relationExists(rel, outerTable, inner);
+    };
+
+    const source = schema as Table<TableConfig>;
+    return recurse(segments, source, new Set([getTableName(source)]));
+  };
+
   class OperationFilterExpression extends FilterExpression {
     constructor(
       private field: string,
@@ -716,6 +838,10 @@ export const createResourceFilter = <TConfig extends TableConfig>(
     }
 
     convert(): SQLWrapper {
+      if (this.field.includes(".")) {
+        return buildRelationPathSql(this.field, this.operator, this.value);
+      }
+
       const opDef = allOperators.find((op) => op.op === this.operator);
       if (!opDef) {
         throw new FilterParseError(`Unknown operator: ${this.operator}`);
@@ -729,6 +855,10 @@ export const createResourceFilter = <TConfig extends TableConfig>(
     }
 
     execute(object: SchemaType): boolean {
+      if (this.field.includes(".")) {
+        throw new RelationPathNotInMemoryError(this.field);
+      }
+
       const opDef = allOperators.find((op) => op.op === this.operator);
       if (!opDef) {
         throw new FilterParseError(`Unknown operator: ${this.operator}`);
@@ -737,6 +867,10 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       const lhs = new ColumnFilterValue(this.field).execute(object);
       const rhs = this.value.execute(object);
       return opDef.execute(lhs, rhs);
+    }
+
+    requiresJoin(): boolean {
+      return this.field.includes(".");
     }
   }
 
@@ -762,6 +896,10 @@ export const createResourceFilter = <TConfig extends TableConfig>(
         }
       }
       return true;
+    }
+
+    requiresJoin(): boolean {
+      return this.expressions.some((expr) => expr.requiresJoin());
     }
 
     addExpression(expr: FilterExpression) {
@@ -791,6 +929,10 @@ export const createResourceFilter = <TConfig extends TableConfig>(
         }
       }
       return false;
+    }
+
+    requiresJoin(): boolean {
+      return this.expressions.some((expr) => expr.requiresJoin());
     }
 
     addExpression(expr: FilterExpression) {
@@ -823,9 +965,20 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       throw new FilterParseError("Invalid identifier start");
     }
 
+    // Identifiers may be dotted relation paths (`org.members.userId`). A dot is
+    // only consumed when followed by another identifier segment, so a trailing
+    // dot stays in `remaining` and surfaces as a parse error downstream.
     let i = 1;
-    while (i < expression.length && isAlNum(expression[i] ?? "")) {
-      i++;
+    while (i < expression.length) {
+      if (isAlNum(expression[i] ?? "")) {
+        i++;
+        continue;
+      }
+      if (expression[i] === "." && isAlpha(expression[i + 1] ?? "")) {
+        i++;
+        continue;
+      }
+      break;
     }
     const identifier = expression.slice(0, i);
     const remaining = expression.slice(i);

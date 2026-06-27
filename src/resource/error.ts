@@ -259,6 +259,21 @@ export class SearchError extends ResourceError {
   }
 }
 
+// Thrown when a relation-path (join) filter term is evaluated in memory against a
+// single row. A join needs columns from another table the row does not carry, so
+// it can only be resolved as SQL. Callers that evaluate filters in memory
+// (subscription matching, search post-filter, checkObjectAccess) catch this and
+// fall back to a DB-backed decision or deny — they must never treat it as "match".
+// Deliberately NOT a FilterParseError so those callers can distinguish it.
+export class RelationPathNotInMemoryError extends Error {
+  constructor(field: string) {
+    super(
+      `Relation-path filter '${field}' cannot be evaluated in memory; it must be resolved as SQL`
+    );
+    this.name = "RelationPathNotInMemoryError";
+  }
+}
+
 export const formatZodError = (error: ZodError): FieldError[] => {
   return error.issues.map((issue) => ({
     field: issue.path.join("."),

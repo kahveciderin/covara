@@ -244,6 +244,10 @@ GET /api/users?filter=permissions=jsoncontains="write"
 
 To restrict which columns may be filtered, set [`fields.filterable`](./fields.md). A filter referencing a non-allowed column returns a `400 FilterParseError`.
 
+## Relation paths are scope-only
+
+A dotted field like `organization.members.userId` is a **relation path** that traverses a declared relation as a join. These are allowed only in trusted [authorization scopes](../auth/scopes.md#relation-path-scopes-joins) — a relation path in a user-supplied `?filter=` returns `400`, so a client cannot join into other tables to infer their contents.
+
 ## Related
 
 - [Fields](./fields.md) — `filterable`/`sortable` allowlists

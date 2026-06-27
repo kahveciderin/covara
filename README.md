@@ -297,7 +297,8 @@ app.resource("/posts", postsTable, {
   // Optimistic locking (ETag / If-Match)
   etag: { versionField: "version" },
 
-  // Authorization scopes (row-level security via RSQL)
+  // Authorization scopes (row-level security via RSQL). Scopes can traverse a
+  // declared relation as a join, e.g. rsql`organization.members.userId==${user.id}`
   auth: {
     public: { read: true },
     update: async (user) => rsql`authorId==${user.id}`,

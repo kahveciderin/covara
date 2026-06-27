@@ -72,6 +72,7 @@ export {
 // Procedures
 export {
   defineProcedure,
+  procedureBuilder,
   executeProcedure,
   createTimestampHooks,
   composeHooks,

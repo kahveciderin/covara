@@ -31,7 +31,7 @@ const createMockWriter = () => {
 };
 
 const passthroughFilter = {
-  compile: () => ({ execute: () => true }),
+  compile: () => ({ execute: () => true, requiresJoin: () => false }),
   convert: (expr: string) => expr,
   execute: () => true,
   clearCache: () => {},

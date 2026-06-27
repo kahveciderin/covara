@@ -94,6 +94,48 @@ auth: {
 
 Interpolated values are escaped, so user IDs and other dynamic values are injected safely.
 
+## Relation-path scopes (joins)
+
+A scope can authorize across tables by traversing a **declared relation** as a dotted path. The classic case: a `machines` row is readable only by members of its organization, where membership lives in a separate `organization_members` table.
+
+```typescript
+// machines -> organization (belongsTo); organizations -> members (hasMany)
+useResource(machines, {
+  id: machines.id,
+  db,
+  relations: {
+    organization: {
+      resource: "organizations", schema: organizations, type: "belongsTo",
+      foreignKey: machines.organizationId, references: organizations.id,
+    },
+  },
+  auth: {
+    read: async (user) => rsql`organization.members.userId==${user.id}`,
+  },
+});
+```
+
+The path `organization.members.userId` converts to a correlated subquery — no membership list is materialized in the scope, so it never goes stale and has no size cap:
+
+```sql
+WHERE EXISTS (SELECT 1 FROM organizations o
+  WHERE o.id = machines.organization_id
+  AND EXISTS (SELECT 1 FROM organization_members m
+    WHERE m.organization_id = o.id AND m.user_id = ?))
+```
+
+Each segment is resolved against the resource's [relations](../core/relations.md) — explicit ones, **and** those [auto-discovered](../core/relations.md) from foreign keys. With `autoRelations: true` and FK `references()` in your schema, no relation config is needed at all; the auto-discovered `hasMany` back-reference is named after the table, so the path reads `organization.organization_members.userId`. Declare an explicit `members` relation if you want the friendlier name.
+
+Supported relation kinds: `belongsTo`, `hasOne`, `hasMany`, and `manyToMany` (via its through table). Paths are capped at 5 hops and may not revisit a table (no ambiguous self-joins).
+
+:::warning Relation paths are scope-only
+A relation path is only allowed in a **trusted, developer-authored scope**. A relation path in an untrusted user-supplied `?filter=` is rejected with `400` — otherwise a client could join into other tables (e.g. probe who belongs to which organization). This holds for auto-discovered relations too: a user filter can never traverse them.
+:::
+
+### Subscriptions with relation-path scopes
+
+A join can't be evaluated against a single changelog row in memory, so a relation-path `subscribe` scope is enforced **eventually-consistently**: the periodic scope recheck (`sse.scopeRecheckMs`, default 30s) re-runs the join as SQL and emits `added`/`removed` as membership changes. Initial `existing` events and the read path are always exact and immediate; only mid-subscription membership changes wait for the next recheck. Because the recheck is the only enforcement path, a relation-path `subscribe` scope requires `sse.scopeRecheckMs > 0` — configuring `0` is rejected at subscribe time.
+
 ## How enforcement works
 
 Every resource endpoint routes through the [secure query builder](./secure-queries.md), which resolves the scope for the operation and combines it with the request filter before touching the database. Subscriptions resolve the `subscribe` scope at connect and match it in-memory against the changelog, so the live stream never leaks rows outside scope. See the [auth contract](../contracts/auth.md) for the guarantee.

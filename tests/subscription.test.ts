@@ -78,6 +78,7 @@ const createMockFilter = () => ({
       }
       return true;
     },
+    requiresJoin: () => false,
   }),
   convert: (expr: string) => expr,
   execute: (expr: string, obj: Record<string, unknown>) => {
@@ -1226,6 +1227,7 @@ describe("Subscription System (No KV - In-Memory Fallback)", () => {
         }
         return true;
       },
+      requiresJoin: () => false,
     }),
     convert: (expr: string) => expr,
     execute: (expr: string, obj: Record<string, unknown>) => true,

@@ -6,6 +6,7 @@ import {
   count,
   getTableName,
   SQL,
+  AnyColumn,
   and,
   eq,
   isNull,
@@ -70,7 +71,7 @@ import {
   DrizzleTransaction,
   UserContext,
 } from "./types";
-import { createSearchHandler } from "./search";
+import { createSearchHandler, SearchHandlerOptions } from "./search";
 import { hasGlobalSearch, getGlobalSearch } from "@/search";
 import { hasGlobalKV } from "@/kv";
 import { enqueueSearchOp, startSearchOutboxDrainer } from "./search-outbox";
@@ -78,6 +79,7 @@ import {
   NotFoundError,
   ValidationError,
   BatchLimitError,
+  FilterParseError,
   formatZodError,
 } from "./error";
 import { createScopeResolver, combineScopes, Operation } from "@/auth/scope";
@@ -86,10 +88,12 @@ import { isAdminBypassRequest } from "@/server/admin-bypass";
 import { createRateLimiter } from "@/middleware/rateLimit";
 import { createAbuseMiddleware, resourceHasAbuseConfig } from "@/abuse/middleware";
 import {
+  discoverRelations,
   parseInclude,
   RelationLoader,
   RelationsConfig,
 } from "./relations";
+import { registerResourceRelations } from "./relation-registry";
 import { registerResourceSchema, setResourceMountPath } from "@/ui/schema-registry";
 import { getUser } from "@/server/context";
 import { getClientIP, readJsonBody } from "@/server/request";
@@ -135,6 +139,23 @@ export const useResource = <TConfig extends TableConfig>(
   resourceRegistry.set(resourceName, {
     schema: schema as Table<TableConfig>,
     config: { relations: config.relations as RelationsConfig | undefined },
+  });
+
+  // Resolved relations (explicit over auto-discovered) for relation-path filter
+  // scopes. Always discovers from foreign keys — independent of `autoRelations`,
+  // which only governs eager relation loading — so a trusted scope can traverse
+  // declared FKs with zero config. Resolved lazily (and memoized) on first use so
+  // the full resource registry is populated. User filters can never reach these:
+  // relation paths in `?filter=` are rejected before conversion.
+  let resolvedRelationsMemo: RelationsConfig | undefined;
+  registerResourceRelations(resourceName, () => {
+    if (!resolvedRelationsMemo) {
+      resolvedRelationsMemo = {
+        ...discoverRelations(schema as Table<TableConfig>, resourceRegistry),
+        ...((config.relations ?? {}) as RelationsConfig),
+      };
+    }
+    return resolvedRelationsMemo;
   });
 
   // Default capabilities: all enabled unless explicitly disabled
@@ -218,6 +239,21 @@ export const useResource = <TConfig extends TableConfig>(
   });
 
   const filterer = createResourceFilter(schema, config.customOperators ?? {});
+
+  // Untrusted user `?filter=` input may not traverse relations: a relation path
+  // would let a client join into other tables (e.g. probe organization
+  // membership). Auth scopes are trusted and converted directly, so they may.
+  const rejectRelationPathFilter = (filterQuery: string): void => {
+    if (
+      filterQuery &&
+      filterQuery.trim() !== "" &&
+      filterer.compile(filterQuery).requiresJoin()
+    ) {
+      throw new FilterParseError(
+        "Relation paths are not allowed in filter queries"
+      );
+    }
+  };
 
   // Resource cursor signing secret overrides the global one; an explicit `null`
   // opts this resource out even when a global secret is set. `undefined` (unset)
@@ -438,6 +474,9 @@ export const useResource = <TConfig extends TableConfig>(
     const scope = await resolveScope(c, operation);
 
     const filterQuery = additionalFilter ?? c.req.query("filter") ?? "";
+    // The scope (developer-authored) may traverse relation paths; the user filter
+    // may not — reject a join in user input so a client can't probe other tables.
+    rejectRelationPathFilter(filterQuery);
     const combinedFilter = combineScopes(scope, filterQuery);
 
     let base: SQL<unknown> | undefined;
@@ -773,6 +812,27 @@ export const useResource = <TConfig extends TableConfig>(
     const includeQuery = c.req.query("include");
     const handlerId = uuidv4();
 
+    // Untrusted: a subscriber's own filter may not traverse relations (same rule
+    // as the read path) — reject before opening the stream.
+    if (filterQuery.trim() !== "" && filterer.compile(filterQuery).requiresJoin()) {
+      throw new FilterParseError(
+        "Relation paths are not allowed in filter queries"
+      );
+    }
+
+    // A relation-path (join) scope can only be enforced live via the periodic
+    // scope recheck (it can't be matched against rows in memory). If the recheck
+    // is disabled the subscription would never reconcile, so fail fast instead of
+    // silently serving an empty/stale stream.
+    const scopeStr = scope.toString();
+    const scopeNeedsJoin =
+      scopeStr !== "*" && scopeStr !== "" && filterer.compile(scopeStr).requiresJoin();
+    if (scopeNeedsJoin && !(config.auth && sseConfig.scopeRecheckMs > 0)) {
+      throw new FilterParseError(
+        "Relation-path subscribe scopes require sse.scopeRecheckMs > 0"
+      );
+    }
+
     const lastEventId = c.req.header("last-event-id");
     const resumeFromQuery = c.req.query("resumeFrom");
     const resumeFrom = lastEventId
@@ -867,13 +927,19 @@ export const useResource = <TConfig extends TableConfig>(
         const freshScope = await resolveScope(c, "subscribe");
         const freshStr =
           freshScope.toString() !== "*" ? freshScope.toString() : undefined;
-        if (freshStr === currentScopeStr) return;
+        // A join scope's string is stable even as the underlying membership
+        // changes, so the string-equality short-circuit would never re-query it.
+        // Force a re-query each tick for join scopes; the DB sees the new rows.
+        const mustAlwaysRescan =
+          !!freshStr && filterer.compile(freshStr).requiresJoin();
+        if (freshStr === currentScopeStr && !mustAlwaysRescan) return;
         currentScopeStr = freshStr;
 
         const combinedFilter = combineScopes(freshScope, filterQuery);
-        const baseFilter = combinedFilter && combinedFilter !== "*"
-          ? (filterer.convert(combinedFilter) as SQL<unknown>)
-          : undefined;
+        const baseFilter =
+          combinedFilter && combinedFilter !== "*"
+            ? (filterer.convert(combinedFilter) as SQL<unknown>)
+            : undefined;
         const matchFilter = excludeSoftDeleted(baseFilter);
         const items = await db.select().from(schema).where(matchFilter);
 
@@ -1274,7 +1340,22 @@ export const useResource = <TConfig extends TableConfig>(
       {
         scopeResolver,
         getUser,
-        filterer: filterer as { execute: (expr: string, obj: unknown) => boolean },
+        filterer: filterer as unknown as SearchHandlerOptions["filterer"],
+        // Runs a join scope as SQL to find which search-hit ids the user may read.
+        enforceScopeIds: async (scopeExpr: string, ids: string[]) => {
+          if (ids.length === 0) return new Set<string>();
+          const idCol = schema[idColumnName as keyof typeof schema] as AnyColumn;
+          const rows = (await db
+            .select({ id: idCol })
+            .from(schema)
+            .where(
+              and(
+                filterer.convert(scopeExpr) as SQL<unknown>,
+                inArray(idCol, ids as never[])
+              )
+            )) as Array<{ id: unknown }>;
+          return new Set(rows.map((row) => String(row.id)));
+        },
         maskItem: readableSet || computedFields ? (item) => maskReadable(item) : undefined,
       }
     );

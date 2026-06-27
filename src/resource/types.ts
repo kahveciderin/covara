@@ -152,19 +152,26 @@ export type WriteEffect =
   | { type: "update"; resource: string; ids?: string[] }
   | { type: "delete"; resource: string; ids?: string[] };
 
-export interface ProcedureContext<TConfig extends TableConfig = TableConfig> {
-  db: unknown;
+export interface ProcedureContext<
+  TConfig extends TableConfig = TableConfig,
+  TDb extends DrizzleDatabase = DrizzleDatabase,
+> {
+  db: TDb;
   schema: Table<TConfig>;
   user: UserContext | null;
   req: Request | null;
   context: HonoContext | null;
 }
 
-export interface ProcedureDefinition<TInput = unknown, TOutput = unknown> {
+export interface ProcedureDefinition<
+  TInput = unknown,
+  TOutput = unknown,
+  TDb extends DrizzleDatabase = DrizzleDatabase,
+> {
   input?: z.ZodSchema<TInput>;
   output?: z.ZodSchema<TOutput>;
   writeEffects?: WriteEffect[];
-  handler: (ctx: ProcedureContext, input: TInput) => Promise<TOutput>;
+  handler: (ctx: ProcedureContext<TableConfig, TDb>, input: TInput) => Promise<TOutput>;
   /** Token-bucket cost charged when abuseProtection budget is enabled. */
   cost?: number;
   /** Optional proof-of-work gate for this procedure. */
@@ -414,7 +421,7 @@ export interface ResourceConfig<
   // Override the budget-overflow mechanism for this resource ("pow" | "captcha").
   overflow?: OverflowMechanism;
   auth?: ScopeConfig;
-  procedures?: Record<string, ProcedureDefinition>;
+  procedures?: Record<string, ProcedureDefinition<any, any>>;
   hooks?: LifecycleHooks<TConfig>;
   customOperators?: Record<string, CustomOperator>;
   sse?: SSEConfig;

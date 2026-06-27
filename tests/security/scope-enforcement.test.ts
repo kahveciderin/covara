@@ -117,6 +117,7 @@ describe("Scope Enforcement", () => {
           convert: () => ({ expression: expr }),
           execute: () => true,
           print: () => expr,
+          requiresJoin: () => false,
         })),
       };
       clearAdminAuditLog();

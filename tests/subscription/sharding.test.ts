@@ -71,6 +71,7 @@ const createMockFilter = () =>
         if (match) return obj.userId === match[1];
         return true;
       },
+      requiresJoin: () => false,
     }),
     convert: (expr: string) => expr,
     execute: () => true,

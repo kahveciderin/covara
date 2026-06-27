@@ -9,6 +9,7 @@ import {
 } from "drizzle-orm";
 import { Operation, ScopeResolver, combineScopes } from "@/auth/scope";
 import { Filter } from "./filter";
+import { FilterParseError } from "./error";
 import {
   DrizzleDatabase,
   DrizzleTransaction,
@@ -117,6 +118,21 @@ export const createSecureQueryBuilder = <TConfig extends TableConfig>(
     );
   };
 
+  // User-supplied filters are untrusted: a relation path (join) is rejected so a
+  // caller can't traverse into other tables. Auth scopes are trusted, so a join
+  // in the resolved scope is allowed.
+  const rejectRelationPathFilter = (filterQuery: string): void => {
+    if (
+      filterQuery &&
+      filterQuery.trim() !== "" &&
+      filterer.compile(filterQuery).requiresJoin()
+    ) {
+      throw new FilterParseError(
+        "Relation paths are not allowed in filter queries"
+      );
+    }
+  };
+
   const buildFilter = async (
     operation: Operation,
     additionalFilter?: string
@@ -124,6 +140,7 @@ export const createSecureQueryBuilder = <TConfig extends TableConfig>(
     if (isAdmin || bypassReason) {
       logAdminAccess(bypassReason || "Admin query");
       const filterQuery = additionalFilter ?? "";
+      rejectRelationPathFilter(filterQuery);
       if (!filterQuery || filterQuery.trim() === "") {
         return undefined;
       }
@@ -132,6 +149,7 @@ export const createSecureQueryBuilder = <TConfig extends TableConfig>(
 
     const scope = await scopeResolver.resolve(operation, ctx.user);
     const filterQuery = additionalFilter ?? "";
+    rejectRelationPathFilter(filterQuery);
     const combinedFilter = combineScopes(scope, filterQuery);
 
     if (combinedFilter === "" || combinedFilter === "*") {

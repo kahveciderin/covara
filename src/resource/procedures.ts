@@ -8,6 +8,7 @@ import {
   LifecycleHooks,
   WriteEffect,
   UserContext,
+  DrizzleDatabase,
 } from "./types";
 import { ValidationError, ResourceError } from "./error";
 
@@ -146,9 +147,20 @@ export const executeAfterDelete = async <TConfig extends TableConfig>(
   await hooks.onAfterDelete(ctx, deleted);
 };
 
-export const defineProcedure = <TInput, TOutput>(
-  definition: ProcedureDefinition<TInput, TOutput>
-): ProcedureDefinition<TInput, TOutput> => definition;
+export const defineProcedure = <
+  TInput,
+  TOutput,
+  TDb extends DrizzleDatabase = DrizzleDatabase,
+>(
+  definition: ProcedureDefinition<TInput, TOutput, TDb>
+): ProcedureDefinition<TInput, TOutput, TDb> => definition;
+
+export const procedureBuilder =
+  <TDb extends DrizzleDatabase>() =>
+  <TInput, TOutput>(
+    definition: ProcedureDefinition<TInput, TOutput, TDb>
+  ): ProcedureDefinition<TInput, TOutput, TDb> =>
+    definition;
 
 export const checkWritePermissions = (
   procedure: ProcedureDefinition,

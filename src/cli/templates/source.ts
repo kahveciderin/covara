@@ -66,7 +66,7 @@ const app = createCovara({ cors: true, adminUI: true }).resource(todos, {
   db,
   id: todos.id,
   // Fully public so the starter works end-to-end. Lock this down with auth
-  // scopes before deploying: https://github.com/kahveciderin/covara#auth
+  // scopes before deploying: https://kahveciderin.github.io/covara/auth/overview 
   auth: scopePatterns.fullyPublic(),
 });
 
@@ -91,7 +91,7 @@ const app = createCovara({ cors: true, adminUI: true }).resource(todos, {
   db,
   id: todos.id,
   // Fully public so the starter works end-to-end. Lock this down with auth
-  // scopes before deploying: https://github.com/kahveciderin/covara#auth
+  // scopes before deploying: https://kahveciderin.github.io/covara/auth/overview
   auth: scopePatterns.fullyPublic(),
 });
 
@@ -141,7 +141,7 @@ const app = createCovara({ cors: true, adminUI: true }).resource(todos, {
   db,
   id: todos.id,
   // Fully public so the starter works end-to-end. Lock this down with auth
-  // scopes before deploying: https://github.com/kahveciderin/covara#auth
+  // scopes before deploying: https://kahveciderin.github.io/covara/auth/overview
   auth: scopePatterns.fullyPublic(),
 });
 
@@ -213,7 +213,7 @@ const buildApp = (env: Env): CovaraApp => {
     db,
     id: todos.id,
     // Fully public so the starter works end-to-end. Lock this down with auth
-    // scopes before deploying: https://github.com/kahveciderin/covara#auth
+    // scopes before deploying: https://kahveciderin.github.io/covara/auth/overview
     auth: scopePatterns.fullyPublic(),
   });
 };
@@ -258,7 +258,7 @@ const buildApp = (env: Env): CovaraApp => {
     db,
     id: todos.id,
     // Fully public so the starter works end-to-end. Lock this down with auth
-    // scopes before deploying: https://github.com/kahveciderin/covara#auth
+    // scopes before deploying: https://kahveciderin.github.io/covara/auth/overview
     auth: scopePatterns.fullyPublic(),
   });
 };

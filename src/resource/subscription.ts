@@ -806,6 +806,11 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
 
     const compiled = getCompiledFilter(subscription, filterFactory);
 
+    // Relation-path (join) scopes can't be matched against a single row in
+    // memory. Live matching is skipped; the periodic scope recheck (which runs
+    // the join as SQL) reconciles additions/removals for these subscriptions.
+    if (compiled.requiresJoin()) continue;
+
     for (const item of items) {
       const matches = compiled.execute(item);
       if (!matches) continue;
@@ -882,6 +887,10 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
     }
 
     const compiled = getCompiledFilter(subscription, filterFactory);
+
+    // See pushInserts: join scopes reconcile via the periodic scope recheck, not
+    // live in-memory matching.
+    if (compiled.requiresJoin()) continue;
 
     for (const item of items) {
       const id = String(item[idColumn]);
@@ -1241,6 +1250,14 @@ export const sendCatchupEvents = async <T extends Record<string, unknown>>(
   if (entries.length === 0) return "replayed";
 
   const compiled = getCompiledFilter(subscription, filterFactory);
+
+  // A join scope can't be replayed against changelog rows in memory. Rather than
+  // risk leaking or dropping events, ask the client to refetch — the fresh query
+  // runs the join as SQL and the scope recheck keeps it current thereafter.
+  if (compiled.requiresJoin()) {
+    await sendInvalidateEvent(subscriptionId, "Catchup unavailable for relation-scoped subscription - please refetch");
+    return "invalidate";
+  }
 
   const emit = async (
     type: "added" | "changed" | "removed",

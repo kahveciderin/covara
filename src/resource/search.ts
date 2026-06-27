@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { getGlobalSearch, hasGlobalSearch, SearchConfig } from "@/search";
-import { ValidationError, SearchError } from "./error";
+import { ValidationError, SearchError, FilterParseError } from "./error";
 import { ScopeResolver } from "@/auth/scope";
 import { UserContext } from "./types";
 
@@ -218,7 +218,12 @@ export interface SearchHandlerOptions {
   getUser: (c: Context) => UserContext | null;
   filterer: {
     execute: (expr: string, obj: unknown) => boolean;
+    compile?: (expr: string) => { requiresJoin(): boolean };
   };
+  // Resolves which of `ids` the user may read under a relation-path (join) scope,
+  // by running the scope as SQL against the DB. Required to enforce join scopes on
+  // search hits, which can't be matched in memory.
+  enforceScopeIds?: (scopeExpr: string, ids: string[]) => Promise<Set<string>>;
   maskItem?: (item: Record<string, unknown>) => Record<string, unknown>;
 }
 
@@ -285,17 +290,50 @@ export const createSearchHandler = (
       const userFilter = c.req.query("filter");
 
       if (options && authScope && authScope !== "*") {
-        let combinedFilter: string;
-        if (!userFilter || userFilter.trim() === "") {
-          combinedFilter = authScope;
-        } else {
-          combinedFilter = `(${authScope});(${userFilter})`;
+        // Untrusted user filters may not traverse relations (parity with the
+        // read path) — reject before combining with the scope.
+        if (
+          userFilter &&
+          userFilter.trim() !== "" &&
+          options.filterer.compile?.(userFilter)?.requiresJoin()
+        ) {
+          throw new FilterParseError(
+            "Relation paths are not allowed in filter queries"
+          );
         }
 
-        if (combinedFilter) {
-          items = items.filter((item) =>
-            options.filterer.execute(combinedFilter, item)
+        const scopeNeedsDb =
+          options.filterer.compile?.(authScope)?.requiresJoin() ?? false;
+
+        if (scopeNeedsDb) {
+          // A join scope can't be evaluated against a search hit in memory.
+          // Intersect the hit ids with the rows the scope actually permits (run
+          // as SQL), then apply the (join-free) user filter in memory.
+          const hitIds = items.map((item) =>
+            String((item as Record<string, unknown>).id)
           );
+          const allowed = options.enforceScopeIds
+            ? await options.enforceScopeIds(authScope, hitIds)
+            : new Set<string>();
+          items = items.filter((item) =>
+            allowed.has(String((item as Record<string, unknown>).id))
+          );
+          if (userFilter && userFilter.trim() !== "") {
+            items = items.filter((item) =>
+              options.filterer.execute(userFilter, item)
+            );
+          }
+        } else {
+          const combinedFilter =
+            !userFilter || userFilter.trim() === ""
+              ? authScope
+              : `(${authScope});(${userFilter})`;
+
+          if (combinedFilter) {
+            items = items.filter((item) =>
+              options.filterer.execute(combinedFilter, item)
+            );
+          }
         }
       } else if (userFilter) {
         const filter = parseSimpleFilter(userFilter);
