@@ -45,6 +45,15 @@
 - **Mutation coverage**: Inserts, updates, deletes, and raw-SQL/external invalidations all (potentially) trigger recompute. Cross-process mutations reach watchers via the `covara:aggregate` KV channel; double-delivery to the originating process is harmless (it collapses in the debounce).
 - **Scope**: The read scope and `filter` are resolved once at connect and reused for every recompute for the life of the connection.
 
+### Connection Multiplexing (`GET /__covara/stream`)
+- **Invisible + default-on**: All live subscriptions on a client share one SSE stream; the client `createEventSource` returns an `EventSource`-shaped channel of that stream and the subscription managers are unchanged. Disable server-side with `createCovara({ multiplex: false })` or client-side with `multiplex: false`.
+- **Per-channel semantics preserved**: Each channel is a full subscription — its auth scope, `filter`, `include`, `resumeFrom`/catchup, scope-recheck, and per-user/IP limits are resolved and enforced exactly as for a standalone `GET /subscribe`. The shared stream changes only the transport, never what a subscriber may see.
+- **Framing + demux**: Server events are framed `event: mux` / `data: { c: <channelId>, n: <connected|message|aggregate|error>, d: <payload> }` and demultiplexed on the client back into the per-subscription events. A frame is only ever delivered to the channel whose id it carries.
+- **Same-principal control**: The stream is bound to the authenticated user at open; a control `subscribe`/`unsubscribe` from a different user is rejected (`403`). The connection id is an unguessable server-minted uuid delivered only on the owning stream.
+- **Reuses the fan-out engine**: Each channel registers its own handler id against the shared writer, so mutation push, cross-instance KV pub/sub, filter/scope matching, and backpressure are the existing machinery — no separate delivery path.
+- **Graceful fallback**: When the stream can't be used — endpoint absent (`404`), no `fetch`/`EventSource`, or a control `POST` reaching a process without the stream (`409 stream_not_found`, e.g. multi-isolate) — the affected subscription transparently opens its own `GET /subscribe` connection. Correctness is identical; only connection sharing is lost.
+- ❌ **Not promised**: Single-connection multiplexing across processes. The control `POST` must reach the process holding the stream; it does on Node/`startServer` (single process) but not necessarily on multi-isolate deployments, which fall back per the above.
+
 ## Non-Guarantees
 
 ### Ordering (What We Don't Promise)

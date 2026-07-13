@@ -73,6 +73,10 @@ interface RelationConfig {
 }
 ```
 
+:::note Renamed columns work
+Columns whose DB name differs from their JS property (e.g. `createdBy: text("created_by")`) are handled correctly — the loader resolves the property key from the schema, so `belongsTo`/`hasMany`/`manyToMany` load as expected regardless of naming. If a relation loads `null`/`[]` unexpectedly, the most common cause is projecting the foreign-key column away with `?select=`; the loader logs a one-time warning naming the missing FK property so it doesn't fail silently.
+:::
+
 ## Auto-discovery
 
 Set `autoRelations: true` to derive relations from your Drizzle foreign keys instead of declaring them by hand:

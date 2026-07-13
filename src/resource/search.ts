@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { getGlobalSearch, hasGlobalSearch, SearchConfig } from "@/search";
 import { ValidationError, SearchError, FilterParseError } from "./error";
 import { ScopeResolver } from "@/auth/scope";
+import { DENY_ALL_FILTER } from "./filter";
 import { UserContext } from "./types";
 
 const ISO_DATE_REGEX =
@@ -249,7 +250,9 @@ export const createSearchHandler = (
     if (options) {
       const user = options.getUser(c);
       const scope = await options.scopeResolver.resolve("read", user);
-      authScope = scope.toString();
+      // An empty scope is an explicit deny: mark it so search fails closed
+      // (no hits) instead of skipping enforcement on a falsy "" string.
+      authScope = scope.isEmpty() ? DENY_ALL_FILTER : scope.toString();
     }
 
     const indexName = config.indexName ?? tableName;
@@ -289,7 +292,9 @@ export const createSearchHandler = (
       let items = result.hits.map((hit) => hit.source);
       const userFilter = c.req.query("filter");
 
-      if (options && authScope && authScope !== "*") {
+      if (options && authScope === DENY_ALL_FILTER) {
+        items = [];
+      } else if (options && authScope && authScope !== "*") {
         // Untrusted user filters may not traverse relations (parity with the
         // read path) — reject before combining with the scope.
         if (

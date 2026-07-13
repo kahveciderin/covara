@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import { SSEWriter } from "@/server/sse";
-import { Filter, CompiledFilterExpression } from "./filter";
+import { Filter, CompiledFilterExpression, DENY_ALL_FILTER } from "./filter";
 import { changelog } from "./changelog";
 import {
   Subscription,
@@ -604,7 +604,11 @@ const getCompiledFilter = (
 
   if (!compiled) {
     let filterExpr = subscription.filter;
-    if (subscription.scopeFilter) {
+    // An empty scope is an explicit deny: it must match no rows regardless of
+    // the subscriber's own filter, so the deny sentinel wins over everything.
+    if (subscription.scopeFilter === DENY_ALL_FILTER) {
+      filterExpr = DENY_ALL_FILTER;
+    } else if (subscription.scopeFilter) {
       filterExpr = filterExpr
         ? `(${filterExpr});(${subscription.scopeFilter})`
         : subscription.scopeFilter;

@@ -111,6 +111,21 @@ export const getResourceSchema = (name: string): SchemaRegistryEntry | null => {
   return getRegistryEntry(name);
 };
 
+// Resolve a client-supplied resource path (e.g. "/api/todos") to its registered
+// resource name. Prefers an exact mount-path match (the reliable case), then
+// falls back to the name/tail resolution used elsewhere. Used by the multiplex
+// endpoint to route a subscribe control message to the right resource.
+export const getResourceNameByPath = (path: string): string | null => {
+  const normalized = path.replace(/\/+$/, "") || "/";
+  for (const entry of schemaRegistry.values()) {
+    if (entry.mountPath && entry.mountPath.replace(/\/+$/, "") === normalized) {
+      return entry.name;
+    }
+  }
+  const entry = getRegistryEntry(path);
+  return entry ? entry.name : null;
+};
+
 export const getResourceScopeResolver = (name: string): ScopeResolver | null => {
   const entry = getRegistryEntry(name);
   if (!entry) return null;

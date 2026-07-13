@@ -25,6 +25,7 @@ const { items, hasMore, nextCursor } = await todos.list({
   select: ["id", "title"],
   include: "category,tags",
   totalCount: true,
+  withDeleted: true,       // include soft-deleted rows (also on get())
 });
 
 const todo = await todos.get("todo-123", { select: ["id", "title"] });

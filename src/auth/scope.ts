@@ -1,6 +1,7 @@
 import { ScopeConfig, ScopeFunction, CompiledScope, UserContext } from "@/resource/types";
 import { allScope } from "./rsql";
 import { UnauthorizedError, ForbiddenError } from "@/resource/error";
+import { DENY_ALL_FILTER } from "@/resource/filter";
 
 export type Operation = "read" | "create" | "update" | "delete" | "subscribe";
 
@@ -91,12 +92,18 @@ export const combineScopes = (
   userScope: CompiledScope,
   additionalFilter?: string
 ): string => {
-  if (!additionalFilter || additionalFilter.trim() === "") {
-    return userScope.toString();
+  // An empty scope is an explicit deny. It must fail closed on every path,
+  // including reads: returning "" here would drop the WHERE clause (every row),
+  // and returning the caller's `additionalFilter` would run the user's filter
+  // with no scope at all. Emit the deny sentinel so the filterer produces
+  // `1 = 0` / an in-memory `false` and no rows leak. Writes already reject an
+  // empty scope earlier via `ScopeResolver.requirePermission`.
+  if (userScope.isEmpty()) {
+    return DENY_ALL_FILTER;
   }
 
-  if (userScope.isEmpty()) {
-    return additionalFilter;
+  if (!additionalFilter || additionalFilter.trim() === "") {
+    return userScope.toString();
   }
 
   const scopeStr = userScope.toString();
@@ -105,6 +112,20 @@ export const combineScopes = (
   }
 
   return `(${scopeStr});(${additionalFilter})`;
+};
+
+// The scope string stored on a subscription for live in-memory matching.
+// Mirrors `combineScopes`' fail-closed contract: an empty scope becomes the deny
+// sentinel (match nothing), a `*` scope becomes undefined (no restriction), and
+// any concrete scope is stored verbatim.
+export const scopeToStoredFilter = (
+  scope: CompiledScope
+): string | undefined => {
+  if (scope.isEmpty()) {
+    return DENY_ALL_FILTER;
+  }
+  const str = scope.toString();
+  return str === "*" ? undefined : str;
 };
 
 export const checkObjectAccess = async (

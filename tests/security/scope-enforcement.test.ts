@@ -5,9 +5,9 @@ import {
   getAdminAuditLog,
   clearAdminAuditLog,
 } from "@/resource/secure-query";
-import { createScopeResolver, combineScopes } from "@/auth/scope";
+import { createScopeResolver, combineScopes, scopeToStoredFilter } from "@/auth/scope";
 import { eq, allScope, emptyScope } from "@/auth/rsql";
-import { createResourceFilter } from "@/resource/filter";
+import { createResourceFilter, DENY_ALL_FILTER } from "@/resource/filter";
 import { UserContext } from "@/resource/types";
 import { UnauthorizedError, ForbiddenError } from "@/resource/error";
 
@@ -559,10 +559,86 @@ describe("Scope Enforcement", () => {
       expect(combined).toBe('status=="active"');
     });
 
-    it("should handle empty scope", () => {
+    it("should fail closed on an empty scope, ignoring the user filter", () => {
       const empty = emptyScope();
       const combined = combineScopes(empty, 'status=="active"');
-      expect(combined).toBe('status=="active"');
+      // An empty scope is an explicit deny. It must NOT degrade to the caller's
+      // own filter (which would run with no scope) — it must deny everything.
+      expect(combined).toBe(DENY_ALL_FILTER);
+      expect(combined).not.toContain("status");
+    });
+
+    it("should fail closed on an empty scope with no user filter", () => {
+      // Previously returned "" here, producing no WHERE clause = every row.
+      expect(combineScopes(emptyScope(), "")).toBe(DENY_ALL_FILTER);
+      expect(combineScopes(emptyScope(), undefined)).toBe(DENY_ALL_FILTER);
+    });
+  });
+
+  describe("Empty scope fails closed on reads (regression)", () => {
+    let mockSchema: any;
+    let mockDb: ReturnType<typeof createMockDb>;
+    let mockFilterer: any;
+
+    beforeEach(() => {
+      mockSchema = createMockSchema();
+      mockDb = createMockDb();
+      mockFilterer = {
+        convert: vi.fn((expr: string) => ({ expression: expr })),
+        execute: vi.fn(() => true),
+        compile: vi.fn((expr: string) => ({
+          convert: () => ({ expression: expr }),
+          execute: () => true,
+          print: () => expr,
+          requiresJoin: () => false,
+        })),
+      };
+    });
+
+    it("passes the deny sentinel (not the user filter) to the query builder", async () => {
+      const scopeResolver = createScopeResolver(
+        { read: async () => emptyScope() },
+        "secrets"
+      );
+      const user = createMockUser("user-123");
+      const builder = createSecureQueryBuilder(
+        mockSchema,
+        mockDb,
+        scopeResolver,
+        mockFilterer,
+        { user }
+      );
+
+      await builder.select('id=="secret-row"');
+
+      expect(mockFilterer.convert).toHaveBeenCalledWith(DENY_ALL_FILTER);
+      const call = mockFilterer.convert.mock.calls[0][0];
+      expect(call).not.toContain("secret-row");
+    });
+
+    it("queries the deny sentinel even when the denied user supplies no filter", async () => {
+      const scopeResolver = createScopeResolver(
+        { read: async () => emptyScope() },
+        "secrets"
+      );
+      const user = createMockUser("user-123");
+      const builder = createSecureQueryBuilder(
+        mockSchema,
+        mockDb,
+        scopeResolver,
+        mockFilterer,
+        { user }
+      );
+
+      await builder.select();
+
+      expect(mockFilterer.convert).toHaveBeenCalledWith(DENY_ALL_FILTER);
+    });
+
+    it("maps an empty scope to the deny sentinel for stored subscription filters", () => {
+      expect(scopeToStoredFilter(emptyScope())).toBe(DENY_ALL_FILTER);
+      expect(scopeToStoredFilter(allScope())).toBeUndefined();
+      expect(scopeToStoredFilter(eq("userId", "u1"))).toBe('userId=="u1"');
     });
   });
 

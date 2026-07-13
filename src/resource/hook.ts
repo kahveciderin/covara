@@ -35,6 +35,7 @@ import {
   registerResourceMask,
   registerAggregateWatcher,
   takeRenderer,
+  type EventRenderer,
 } from "./subscription";
 import {
   createPagination,
@@ -81,8 +82,14 @@ import {
   BatchLimitError,
   FilterParseError,
   formatZodError,
+  type FieldError,
 } from "./error";
-import { createScopeResolver, combineScopes, Operation } from "@/auth/scope";
+import {
+  createScopeResolver,
+  combineScopes,
+  scopeToStoredFilter,
+  Operation,
+} from "@/auth/scope";
 import { allScope } from "@/auth/rsql";
 import { isAdminBypassRequest } from "@/server/admin-bypass";
 import { createRateLimiter } from "@/middleware/rateLimit";
@@ -97,7 +104,13 @@ import { registerResourceRelations } from "./relation-registry";
 import { registerResourceSchema, setResourceMountPath } from "@/ui/schema-registry";
 import { getUser } from "@/server/context";
 import { getClientIP, readJsonBody } from "@/server/request";
-import { createSSEStream } from "@/server/sse";
+import { createSSEStream, type SSEWriter } from "@/server/sse";
+import {
+  registerSubscribeDispatcher,
+  type SubscriptionSink,
+  type SubscribeHandle,
+  type MuxSubscribeParams,
+} from "./mux-registry";
 import { getLogger } from "@/server/logger";
 import { setETagHeader, validateIfMatch, handleConditionalGet, generateETag } from "./etag";
 import { PreconditionFailedError } from "./error";
@@ -285,12 +298,39 @@ export const useResource = <TConfig extends TableConfig>(
   const insertSchema = config.strictInput ? (insertSchemaBase as any).strict() : insertSchemaBase;
   const strictUpdateSchema = config.strictInput ? (updateSchema as any).strict() : updateSchema;
 
+  // Input validation runs BEFORE lifecycle hooks, so a required (NOT NULL,
+  // no-default) column filled in by onBeforeCreate fails validation up front
+  // unless it's listed in `generatedFields`. A bare "expected X, received
+  // undefined" points at the field but not the cause, so add the fix as a hint.
+  const generatedFieldSet = new Set(config.generatedFields ?? []);
+  const formatInsertError = (error: ZodError): FieldError[] =>
+    formatZodError(error).map((fieldError, index) => {
+      const issue = error.issues[index];
+      const isMissingRequired =
+        issue?.code === "invalid_type" && /received undefined/.test(issue.message);
+      if (
+        isMissingRequired &&
+        fieldError.field &&
+        !generatedFieldSet.has(fieldError.field)
+      ) {
+        return {
+          ...fieldError,
+          message:
+            `${fieldError.message}. If "${fieldError.field}" is set by a ` +
+            `lifecycle hook (e.g. onBeforeCreate), add it to \`generatedFields\` ` +
+            `— input validation runs before hooks, so a hook-filled required ` +
+            `column must be declared there.`,
+        };
+      }
+      return fieldError;
+    });
+
   const parseInsert = (data: unknown) => {
     try {
       return insertSchema.parse(data) as InferInsertModel<Table<TConfig>>;
     } catch (error) {
       if (error instanceof ZodError) {
-        throw new ValidationError("Validation failed", formatZodError(error));
+        throw new ValidationError("Validation failed", { errors: formatInsertError(error) });
       }
       throw error;
     }
@@ -303,7 +343,7 @@ export const useResource = <TConfig extends TableConfig>(
       };
     } catch (error) {
       if (error instanceof ZodError) {
-        throw new ValidationError("Validation failed", formatZodError(error));
+        throw new ValidationError("Validation failed", { errors: formatInsertError(error) });
       }
       throw error;
     }
@@ -311,10 +351,12 @@ export const useResource = <TConfig extends TableConfig>(
 
   const parseUpdate = (data: unknown) => {
     try {
-      return strictUpdateSchema.parse(data) as Partial<InferSelectModel<Table<TConfig>>>;
+      return strictUpdateSchema.parse(data) as Partial<
+        InferSelectModel<Table<TConfig>>
+      >;
     } catch (error) {
       if (error instanceof ZodError) {
-        throw new ValidationError("Validation failed", formatZodError(error));
+        throw new ValidationError("Validation failed", { errors: formatZodError(error) });
       }
       throw error;
     }
@@ -440,8 +482,17 @@ export const useResource = <TConfig extends TableConfig>(
   const softDeleteColumn = softDeleteConfig
     ? (getTableColumns(schema) as Record<string, any>)[softDeleteConfig.field]
     : undefined;
-  const softDeleteValue = (): unknown =>
-    softDeleteConfig?.deletedValue ? softDeleteConfig.deletedValue() : new Date().toISOString();
+  const softDeleteValue = (): unknown => {
+    if (softDeleteConfig?.deletedValue) return softDeleteConfig.deletedValue();
+    // Match the marker to the column's storage type: date/timestamp columns
+    // (drizzle dataType "date") expect a Date instance — passing an ISO string
+    // would blow up in the driver (value.getTime is not a function) — while text
+    // columns get an ISO 8601 string.
+    if ((softDeleteColumn as { dataType?: string } | undefined)?.dataType === "date") {
+      return new Date();
+    }
+    return new Date().toISOString();
+  };
 
   const excludeSoftDeleted = (base: SQL<unknown> | undefined): SQL<unknown> | undefined => {
     if (!softDeleteColumn) return base;
@@ -805,21 +856,80 @@ export const useResource = <TConfig extends TableConfig>(
   const userSubscriptionCounts = new Map<string, number>();
   const ipSubscriptionCounts = new Map<string, number>();
 
-  router.get("/subscribe", async (c) => {
-    const user = getUser(c);
-    const scope = await resolveScope(c, "subscribe");
-    const filterQuery = c.req.query("filter") ?? "";
-    const includeQuery = c.req.query("include");
-    const handlerId = uuidv4();
+  type ResolvedScope = Awaited<ReturnType<typeof resolveScope>>;
 
+  // Reserve one per-user/per-IP subscription slot. Returns a release() to give it
+  // back, or a limit error. Shared by the standalone /subscribe route and the
+  // multiplex dispatcher so both count against the same per-resource limits.
+  const reserveSubscriptionSlot = (
+    userId: string,
+    clientIP: string
+  ):
+    | { ok: true; release: () => void }
+    | { ok: false; status: 429; detail: string } => {
+    const userCount = userSubscriptionCounts.get(userId) ?? 0;
+    if (userCount >= sseConfig.maxSubscriptionsPerUser) {
+      return {
+        ok: false,
+        status: 429,
+        detail: `Maximum ${sseConfig.maxSubscriptionsPerUser} subscriptions per user`,
+      };
+    }
+    const ipCount = ipSubscriptionCounts.get(clientIP) ?? 0;
+    if (ipCount >= sseConfig.maxSubscriptionsPerIP) {
+      return {
+        ok: false,
+        status: 429,
+        detail: `Maximum ${sseConfig.maxSubscriptionsPerIP} subscriptions per IP`,
+      };
+    }
+    userSubscriptionCounts.set(userId, userCount + 1);
+    ipSubscriptionCounts.set(clientIP, ipCount + 1);
+    let released = false;
+    return {
+      ok: true,
+      release: () => {
+        if (released) return;
+        released = true;
+        userSubscriptionCounts.set(
+          userId,
+          Math.max(0, (userSubscriptionCounts.get(userId) ?? 1) - 1)
+        );
+        ipSubscriptionCounts.set(
+          clientIP,
+          Math.max(0, (ipSubscriptionCounts.get(clientIP) ?? 1) - 1)
+        );
+      },
+    };
+  };
+
+  // Raw sink: native SSE event names, one subscription per physical stream. Used
+  // by the standalone /subscribe + /aggregate/subscribe routes; byte-compatible
+  // with the pre-multiplex output.
+  const rawSink = (writer: SSEWriter, renderer?: EventRenderer): SubscriptionSink => ({
+    writer,
+    renderer,
+    writeConnected: (seq) =>
+      writer.write(`id: ${seq}\nevent: connected\ndata: ${JSON.stringify({ seq })}\n\n`),
+    writeError: (message) =>
+      writer.write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`),
+    writeAggregate: (data, seq) =>
+      writer.write(`id: ${seq}\nevent: aggregate\ndata: ${JSON.stringify({ data, seq })}\n\n`),
+  });
+
+  // Validate a subscribe request up front (before any stream side-effects) and
+  // return the resolved scope. Throws FilterParseError on a relation-path filter
+  // or an unenforceable join scope.
+  const validateResourceSubscribe = async (
+    c: Context,
+    filterQuery: string
+  ): Promise<ResolvedScope> => {
+    const scope = await resolveScope(c, "subscribe");
     // Untrusted: a subscriber's own filter may not traverse relations (same rule
     // as the read path) — reject before opening the stream.
     if (filterQuery.trim() !== "" && filterer.compile(filterQuery).requiresJoin()) {
-      throw new FilterParseError(
-        "Relation paths are not allowed in filter queries"
-      );
+      throw new FilterParseError("Relation paths are not allowed in filter queries");
     }
-
     // A relation-path (join) scope can only be enforced live via the periodic
     // scope recheck (it can't be matched against rows in memory). If the recheck
     // is disabled the subscription would never reconcile, so fail fast instead of
@@ -832,82 +942,43 @@ export const useResource = <TConfig extends TableConfig>(
         "Relation-path subscribe scopes require sse.scopeRecheckMs > 0"
       );
     }
+    return scope;
+  };
 
-    const lastEventId = c.req.header("last-event-id");
-    const resumeFromQuery = c.req.query("resumeFrom");
-    const resumeFrom = lastEventId
-      ? parseInt(lastEventId, 10)
-      : resumeFromQuery
-        ? parseInt(resumeFromQuery, 10)
-        : undefined;
+  // Start a resource (row-level) subscription against a sink. The caller owns the
+  // physical stream, the heartbeat, and the limit slot; this owns handler
+  // registration, the subscription record, the scope-recheck timer, and the
+  // initial data (catchup/existing) — returning a handle to tear that down.
+  // On an initial-data failure it writes a framed error and cleans up its own
+  // channel, then rethrows so the caller can decide the stream-level action.
+  const startResourceSubscription = async (
+    c: Context,
+    sink: SubscriptionSink,
+    params: MuxSubscribeParams,
+    scope: ResolvedScope
+  ): Promise<SubscribeHandle> => {
+    const user = getUser(c);
+    const filterQuery = params.filter ?? "";
+    const includeQuery = params.include;
+    const resumeFrom = params.resumeFrom;
+    const skipExisting = params.skipExisting ?? false;
+    const knownIds = params.knownIds ?? [];
+    const handlerId = uuidv4();
+    const writer = sink.writer;
 
-    const skipExisting = c.req.query("skipExisting") === "true";
-    const knownIdsParam = c.req.query("knownIds");
-    const knownIds = knownIdsParam ? knownIdsParam.split(",").filter(id => id.length > 0) : [];
-
-    const userId = user?.id ?? "anonymous";
-    const clientIP = getClientIP(c);
-
-    const userCount = userSubscriptionCounts.get(userId) ?? 0;
-    if (userCount >= sseConfig.maxSubscriptionsPerUser) {
-      return c.json(
-        {
-          type: "/__covara/problems/rate-limit-exceeded",
-          title: "Too many subscriptions",
-          status: 429,
-          detail: `Maximum ${sseConfig.maxSubscriptionsPerUser} subscriptions per user`,
-        },
-        429
-      );
-    }
-
-    const ipCount = ipSubscriptionCounts.get(clientIP) ?? 0;
-    if (ipCount >= sseConfig.maxSubscriptionsPerIP) {
-      return c.json(
-        {
-          type: "/__covara/problems/rate-limit-exceeded",
-          title: "Too many subscriptions",
-          status: 429,
-          detail: `Maximum ${sseConfig.maxSubscriptionsPerIP} subscriptions per IP`,
-        },
-        429
-      );
-    }
-
-    const { writer, response } = createSSEStream({
-      signal: c.req.raw.signal,
-      maxQueueBytes: sseConfig.maxQueueBytes,
-    });
-
-    userSubscriptionCounts.set(userId, userCount + 1);
-    ipSubscriptionCounts.set(clientIP, ipCount + 1);
-
-    // covara/htmx: a one-shot token lets the htmx layer inject an HTML renderer
-    // so this stream emits server-rendered fragments instead of JSON, reusing
-    // all of this handler's scope/resume/heartbeat logic unchanged.
-    const cvRendererToken = c.req.query("__cvRenderer");
-    const cvRenderer = cvRendererToken ? takeRenderer(cvRendererToken) : undefined;
-    registerHandler(handlerId, writer, sseConfig.onBackpressure, cvRenderer);
+    registerHandler(handlerId, writer, sseConfig.onBackpressure, sink.renderer);
     activeClients++;
     startEventPolling();
 
     const currentSeq = await changelog.getCurrentSequence();
-    writer.write(`id: ${currentSeq}\nevent: connected\ndata: ${JSON.stringify({ seq: currentSeq })}\n\n`);
-
-    const heartbeat = setInterval(() => {
-      if (writer.closed) {
-        clearInterval(heartbeat);
-        return;
-      }
-      writer.write(`: ping ${Date.now()}\n\n`);
-    }, sseConfig.heartbeatMs);
+    sink.writeConnected(currentSeq);
 
     const subscriptionId = await createSubscription({
       resource: resourceName,
       filter: filterQuery,
       handlerId,
       authId: user?.id ?? null,
-      scopeFilter: scope.toString() !== "*" ? scope.toString() : undefined,
+      scopeFilter: scopeToStoredFilter(scope),
       authExpiresAt: user?.sessionExpiresAt,
       include: includeQuery,
       // Captured so included relations in pushed events are scope-filtered for
@@ -920,13 +991,12 @@ export const useResource = <TConfig extends TableConfig>(
     // reconnect. The scope is otherwise frozen at connect time. Only enabled when
     // the resource has an auth scope configured; the DB scan runs only when the
     // resolved scope string actually changes.
-    let currentScopeStr = scope.toString() !== "*" ? scope.toString() : undefined;
+    let currentScopeStr = scopeToStoredFilter(scope);
     const recheckScope = async () => {
       if (writer.closed) return;
       try {
         const freshScope = await resolveScope(c, "subscribe");
-        const freshStr =
-          freshScope.toString() !== "*" ? freshScope.toString() : undefined;
+        const freshStr = scopeToStoredFilter(freshScope);
         // A join scope's string is stable even as the underlying membership
         // changes, so the string-equality short-circuit would never re-query it.
         // Force a re-query each tick for join scopes; the DB sees the new rows.
@@ -967,31 +1037,18 @@ export const useResource = <TConfig extends TableConfig>(
           }, sseConfig.scopeRecheckMs)
         : null;
 
-    const cleanup = async () => {
-      clearInterval(heartbeat);
-      if (scopeRecheck) clearInterval(scopeRecheck);
-      activeClients--;
-
-      userSubscriptionCounts.set(
-        userId,
-        Math.max(0, (userSubscriptionCounts.get(userId) ?? 1) - 1)
-      );
-      ipSubscriptionCounts.set(
-        clientIP,
-        Math.max(0, (ipSubscriptionCounts.get(clientIP) ?? 1) - 1)
-      );
-
-      if (activeClients === 0) {
-        stopEventPolling();
-      }
-
-      await unregisterHandler(handlerId);
-      await removeSubscription(subscriptionId);
+    let closed = false;
+    const handle: SubscribeHandle = {
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        if (scopeRecheck) clearInterval(scopeRecheck);
+        activeClients--;
+        if (activeClients === 0) stopEventPolling();
+        await unregisterHandler(handlerId);
+        await removeSubscription(subscriptionId);
+      },
     };
-
-    writer.onClose(() => {
-      void cleanup();
-    });
 
     try {
       if (resumeFrom !== undefined) {
@@ -1053,7 +1110,92 @@ export const useResource = <TConfig extends TableConfig>(
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
-      writer.write(`event: error\ndata: ${JSON.stringify({ error: errorMessage })}\n\n`);
+      sink.writeError(errorMessage);
+      await handle.close();
+      throw error;
+    }
+
+    return handle;
+  };
+
+  router.get("/subscribe", async (c) => {
+    const user = getUser(c);
+    const filterQuery = c.req.query("filter") ?? "";
+    // Validate before any stream side-effects so a bad filter/scope becomes a
+    // 400 problem+json rather than a stream carrying an error event.
+    const scope = await validateResourceSubscribe(c, filterQuery);
+
+    const userId = user?.id ?? "anonymous";
+    const clientIP = getClientIP(c);
+    const slot = reserveSubscriptionSlot(userId, clientIP);
+    if (!slot.ok) {
+      return c.json(
+        {
+          type: "/__covara/problems/rate-limit-exceeded",
+          title: "Too many subscriptions",
+          status: 429,
+          detail: slot.detail,
+        },
+        429
+      );
+    }
+
+    const { writer, response } = createSSEStream({
+      signal: c.req.raw.signal,
+      maxQueueBytes: sseConfig.maxQueueBytes,
+    });
+
+    // covara/htmx: a one-shot token lets the htmx layer inject an HTML renderer
+    // so this stream emits server-rendered fragments instead of JSON, reusing
+    // all of this handler's scope/resume/heartbeat logic unchanged.
+    const cvRendererToken = c.req.query("__cvRenderer");
+    const cvRenderer = cvRendererToken ? takeRenderer(cvRendererToken) : undefined;
+    const sink = rawSink(writer, cvRenderer);
+
+    const heartbeat = setInterval(() => {
+      if (writer.closed) {
+        clearInterval(heartbeat);
+        return;
+      }
+      writer.write(`: ping ${Date.now()}\n\n`);
+    }, sseConfig.heartbeatMs);
+
+    const lastEventId = c.req.header("last-event-id");
+    const resumeFromQuery = c.req.query("resumeFrom");
+    const resumeFrom = lastEventId
+      ? parseInt(lastEventId, 10)
+      : resumeFromQuery
+        ? parseInt(resumeFromQuery, 10)
+        : undefined;
+    const knownIdsParam = c.req.query("knownIds");
+    const knownIds = knownIdsParam
+      ? knownIdsParam.split(",").filter((id) => id.length > 0)
+      : [];
+
+    let handle: SubscribeHandle | null = null;
+    writer.onClose(() => {
+      clearInterval(heartbeat);
+      slot.release();
+      if (handle) void handle.close();
+    });
+
+    try {
+      handle = await startResourceSubscription(
+        c,
+        sink,
+        {
+          filter: filterQuery,
+          include: c.req.query("include"),
+          resumeFrom,
+          skipExisting: c.req.query("skipExisting") === "true",
+          knownIds,
+        },
+        scope
+      );
+    } catch {
+      // startResourceSubscription already wrote the framed error and cleaned up
+      // its channel; tear down the stream and return it (parity with prior
+      // behavior — an init error is delivered as an SSE error event, not a 500).
       writer.close();
       return response;
     }
@@ -1111,21 +1253,44 @@ export const useResource = <TConfig extends TableConfig>(
   // Live aggregations: stream the aggregate result, then recompute and re-emit
   // whenever the resource is mutated (debounced). Recompute-on-change keeps the
   // result exact for any grouping/having combination without per-row tracking.
-  router.get("/aggregate/subscribe", async (c) => {
-    const user = getUser(c);
-    const filter = await applyFilters(c, "read");
-    const params = parseAggregationParams(c.req.query() as Record<string, unknown>);
-    const handlerId = uuidv4();
-
+  interface PreparedAggregate {
+    filterSql: SQL<unknown> | undefined;
+    aggParams: ReturnType<typeof parseAggregationParams>;
     // In-memory matcher mirroring the aggregate's read scope + filter. Used to
     // skip recompute when a mutated row can't be in this subscription's scope
-    // (e.g. another user's row), so a per-user aggregate doesn't recompute on
-    // every other user's mutation. Falls back to recompute when the mutation
-    // carries no row data or the aggregate is unscoped (matcher null).
+    // (e.g. another user's row). Null = recompute on every mutation.
+    matcher: ReturnType<typeof filterer.compile> | null;
+  }
+
+  // Resolve the aggregate's read filter, parse its params, and build its scope
+  // matcher — all before any stream side-effects, so a relation-path filter or
+  // scope error surfaces as a 400 rather than an error event on the stream.
+  const prepareAggregate = async (
+    c: Context,
+    params: MuxSubscribeParams
+  ): Promise<PreparedAggregate> => {
+    const filterSql = await applyFilters(c, "read", params.filter);
+    const aggParams = parseAggregationParams(
+      (params.aggregateQuery ?? {}) as Record<string, unknown>
+    );
     const readScope = await resolveScope(c, "read");
-    const matcherFilter = combineScopes(readScope, c.req.query("filter") ?? "");
+    const matcherFilter = combineScopes(readScope, params.filter ?? "");
     const matcher =
       matcherFilter && matcherFilter !== "*" ? filterer.compile(matcherFilter) : null;
+    return { filterSql, aggParams, matcher };
+  };
+
+  // Start a live aggregate subscription against a sink. The caller owns the
+  // physical stream, heartbeat, and limit slot; this owns handler registration,
+  // the aggregate watcher, and the recompute/debounce loop.
+  const startAggregateSubscription = async (
+    sink: SubscriptionSink,
+    prepared: PreparedAggregate
+  ): Promise<SubscribeHandle> => {
+    const { filterSql, aggParams, matcher } = prepared;
+    const handlerId = uuidv4();
+    const writer = sink.writer;
+
     const affectsAggregate = (changed?: Record<string, unknown>[]): boolean => {
       if (!changed || !matcher) return true;
       return changed.some((obj) => {
@@ -1137,43 +1302,6 @@ export const useResource = <TConfig extends TableConfig>(
       });
     };
 
-    const userId = user?.id ?? "anonymous";
-    const clientIP = getClientIP(c);
-
-    const userCount = userSubscriptionCounts.get(userId) ?? 0;
-    if (userCount >= sseConfig.maxSubscriptionsPerUser) {
-      return c.json(
-        {
-          type: "/__covara/problems/rate-limit-exceeded",
-          title: "Too many subscriptions",
-          status: 429,
-          detail: `Maximum ${sseConfig.maxSubscriptionsPerUser} subscriptions per user`,
-        },
-        429
-      );
-    }
-
-    const ipCount = ipSubscriptionCounts.get(clientIP) ?? 0;
-    if (ipCount >= sseConfig.maxSubscriptionsPerIP) {
-      return c.json(
-        {
-          type: "/__covara/problems/rate-limit-exceeded",
-          title: "Too many subscriptions",
-          status: 429,
-          detail: `Maximum ${sseConfig.maxSubscriptionsPerIP} subscriptions per IP`,
-        },
-        429
-      );
-    }
-
-    const { writer, response } = createSSEStream({
-      signal: c.req.raw.signal,
-      maxQueueBytes: sseConfig.maxQueueBytes,
-    });
-
-    userSubscriptionCounts.set(userId, userCount + 1);
-    ipSubscriptionCounts.set(clientIP, ipCount + 1);
-
     registerHandler(handlerId, writer, sseConfig.onBackpressure);
     activeClients++;
     startEventPolling();
@@ -1182,17 +1310,17 @@ export const useResource = <TConfig extends TableConfig>(
     const emit = async () => {
       if (writer.closed) return;
       try {
-        const data = await runAggregate(filter, params);
+        const data = await runAggregate(filterSql, aggParams);
         const seq = await changelog.getCurrentSequence();
         // Order-independent compare so a reordered-but-identical result (GROUP
         // BY has no stable ORDER BY) isn't resent.
         const fingerprint = canonicalizeAggregation(data);
         if (fingerprint === lastFingerprint) return;
         lastFingerprint = fingerprint;
-        writer.write(`id: ${seq}\nevent: aggregate\ndata: ${JSON.stringify({ data, seq })}\n\n`);
+        sink.writeAggregate(data, seq);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
-        writer.write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`);
+        sink.writeError(message);
       }
     };
 
@@ -1210,6 +1338,59 @@ export const useResource = <TConfig extends TableConfig>(
       if (affectsAggregate(changed)) scheduleRecompute();
     });
 
+    let closed = false;
+    const handle: SubscribeHandle = {
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        if (recomputeTimer) {
+          clearTimeout(recomputeTimer);
+          recomputeTimer = null;
+        }
+        unwatch();
+        activeClients--;
+        if (activeClients === 0) stopEventPolling();
+        await unregisterHandler(handlerId);
+      },
+    };
+
+    const currentSeq = await changelog.getCurrentSequence();
+    sink.writeConnected(currentSeq);
+    await emit();
+
+    return handle;
+  };
+
+  router.get("/aggregate/subscribe", async (c) => {
+    const user = getUser(c);
+    const muxParams: MuxSubscribeParams = {
+      filter: c.req.query("filter"),
+      aggregateQuery: c.req.query() as Record<string, unknown>,
+    };
+    // Prepare before any stream side-effects (throws relation-path/scope → 400).
+    const prepared = await prepareAggregate(c, muxParams);
+
+    const userId = user?.id ?? "anonymous";
+    const clientIP = getClientIP(c);
+    const slot = reserveSubscriptionSlot(userId, clientIP);
+    if (!slot.ok) {
+      return c.json(
+        {
+          type: "/__covara/problems/rate-limit-exceeded",
+          title: "Too many subscriptions",
+          status: 429,
+          detail: slot.detail,
+        },
+        429
+      );
+    }
+
+    const { writer, response } = createSSEStream({
+      signal: c.req.raw.signal,
+      maxQueueBytes: sseConfig.maxQueueBytes,
+    });
+    const sink = rawSink(writer);
+
     const heartbeat = setInterval(() => {
       if (writer.closed) {
         clearInterval(heartbeat);
@@ -1218,35 +1399,93 @@ export const useResource = <TConfig extends TableConfig>(
       writer.write(`: ping ${Date.now()}\n\n`);
     }, sseConfig.heartbeatMs);
 
-    const cleanup = () => {
+    let handle: SubscribeHandle | null = null;
+    writer.onClose(() => {
       clearInterval(heartbeat);
-      if (recomputeTimer) {
-        clearTimeout(recomputeTimer);
-        recomputeTimer = null;
-      }
-      unwatch();
-      activeClients--;
-      userSubscriptionCounts.set(
-        userId,
-        Math.max(0, (userSubscriptionCounts.get(userId) ?? 1) - 1)
-      );
-      ipSubscriptionCounts.set(
-        clientIP,
-        Math.max(0, (ipSubscriptionCounts.get(clientIP) ?? 1) - 1)
-      );
-      if (activeClients === 0) {
-        stopEventPolling();
-      }
-      void unregisterHandler(handlerId);
-    };
+      slot.release();
+      if (handle) void handle.close();
+    });
 
-    writer.onClose(cleanup);
-
-    const currentSeq = await changelog.getCurrentSequence();
-    writer.write(`id: ${currentSeq}\nevent: connected\ndata: ${JSON.stringify({ seq: currentSeq })}\n\n`);
-    await emit();
+    handle = await startAggregateSubscription(sink, prepared);
 
     return response;
+  });
+
+  // Expose this resource's subscription machinery to the central multiplex
+  // endpoint so many channels can share one physical SSE stream. Reuses the exact
+  // same cores (scope, limits, catchup, scope-recheck, aggregate loop) as the
+  // standalone routes — only the sink (framing) and stream ownership differ.
+  registerSubscribeDispatcher(resourceName, async ({ c, sink, kind, params }) => {
+    const user = getUser(c);
+    const userId = user?.id ?? "anonymous";
+    const clientIP = getClientIP(c);
+
+    if (kind === "aggregate") {
+      let prepared: PreparedAggregate;
+      try {
+        prepared = await prepareAggregate(c, params);
+      } catch (error) {
+        return {
+          ok: false,
+          status: 400,
+          detail: error instanceof Error ? error.message : "Invalid aggregate subscription",
+        };
+      }
+      const slot = reserveSubscriptionSlot(userId, clientIP);
+      if (!slot.ok) return { ok: false, status: slot.status, detail: slot.detail };
+      try {
+        const handle = await startAggregateSubscription(sink, prepared);
+        return {
+          ok: true,
+          handle: {
+            close: async () => {
+              await handle.close();
+              slot.release();
+            },
+          },
+        };
+      } catch (error) {
+        slot.release();
+        return {
+          ok: false,
+          status: 500,
+          detail: error instanceof Error ? error.message : "Failed to start subscription",
+        };
+      }
+    }
+
+    let scope: ResolvedScope;
+    try {
+      scope = await validateResourceSubscribe(c, params.filter ?? "");
+    } catch (error) {
+      return {
+        ok: false,
+        status: 400,
+        detail: error instanceof Error ? error.message : "Invalid subscription",
+      };
+    }
+    const slot = reserveSubscriptionSlot(userId, clientIP);
+    if (!slot.ok) return { ok: false, status: slot.status, detail: slot.detail };
+    try {
+      const handle = await startResourceSubscription(c, sink, params, scope);
+      return {
+        ok: true,
+        handle: {
+          close: async () => {
+            await handle.close();
+            slot.release();
+          },
+        },
+      };
+    } catch (error) {
+      // The core already wrote a framed error and tore down its channel.
+      slot.release();
+      return {
+        ok: false,
+        status: 500,
+        detail: error instanceof Error ? error.message : "Failed to start subscription",
+      };
+    }
   });
 
   router.get("/count", async (c) => {

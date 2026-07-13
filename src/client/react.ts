@@ -602,13 +602,91 @@ export interface UseAuthResult<TUser = unknown> {
  * // API key auth
  * const { user, isAuthenticated } = useAuth<User>({ strategy: 'apiKey', apiKey: 'my-api-key' });
  */
+type AuthStatus = "loading" | "authenticated" | "unauthenticated";
+
+interface SharedAuthState {
+  user: unknown;
+  status: AuthStatus;
+  accessToken: string | null;
+}
+
+// Auth state is shared across every useAuth() with the same identity key, so a
+// login/logout in one component instantly propagates to all others. Without this
+// each hook kept its own useState and a second useAuth() could hang on "loading"
+// after the first authenticated.
+class SharedAuthStore {
+  state: SharedAuthState = { user: null, status: "loading", accessToken: null };
+  // Bearer token captured from login/signup (jwtSession); shared so every
+  // instance's requests carry it.
+  sessionToken: string | null = null;
+  private listeners = new Set<() => void>();
+
+  getSnapshot = (): SharedAuthState => this.state;
+
+  subscribe = (cb: () => void): (() => void) => {
+    this.listeners.add(cb);
+    return () => {
+      this.listeners.delete(cb);
+    };
+  };
+
+  setState(partial: Partial<SharedAuthState>): void {
+    const next = { ...this.state, ...partial };
+    if (
+      next.user === this.state.user &&
+      next.status === this.state.status &&
+      next.accessToken === this.state.accessToken
+    ) {
+      return;
+    }
+    this.state = next;
+    this.listeners.forEach((l) => l());
+  }
+}
+
+const authStores = new Map<string, SharedAuthStore>();
+
+// Exported for tests: same key returns the same shared store so every useAuth()
+// with that identity observes one state.
+export const getAuthStore = (key: string): SharedAuthStore => {
+  let store = authStores.get(key);
+  if (!store) {
+    store = new SharedAuthStore();
+    authStores.set(key, store);
+  }
+  return store;
+};
+
 export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthResult<TUser> {
-  const [user, setUser] = useState<TUser | null>(null);
-  const [status, setStatus] = useState<"loading" | "authenticated" | "unauthenticated">("loading");
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  // Bearer token captured from login/signup when the server uses a JWT session
-  // strategy. Held in a ref so the immediately-following checkAuth() sees it.
-  const sessionTokenRef = useRef<string | null>(null);
+  const baseUrlForKey =
+    options.baseUrl ?? (typeof window !== "undefined" ? window.location.origin : "");
+  // Session-based strategies (cookie/jwt/auto) share one store per baseUrl +
+  // checkUrl so cookie↔jwt auto-detection doesn't split them; explicit bearer /
+  // apiKey identities get their own store keyed by the credential.
+  const storeKey = useMemo(() => {
+    if (options.token) return `bearer:${baseUrlForKey}:${options.token}`;
+    if (options.apiKey) return `apiKey:${baseUrlForKey}:${options.apiKey}`;
+    return `session:${baseUrlForKey}:${options.checkUrl ?? "/api/auth/me"}`;
+  }, [baseUrlForKey, options.token, options.apiKey, options.checkUrl]);
+
+  const store = useMemo(() => getAuthStore(storeKey), [storeKey]);
+  const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const user = snapshot.user as TUser | null;
+  const status = snapshot.status;
+  const accessToken = snapshot.accessToken;
+
+  const setUser = useCallback(
+    (u: TUser | null) => store.setState({ user: u }),
+    [store]
+  );
+  const setStatus = useCallback(
+    (s: AuthStatus) => store.setState({ status: s }),
+    [store]
+  );
+  const setAccessToken = useCallback(
+    (t: string | null) => store.setState({ accessToken: t }),
+    [store]
+  );
 
   const client = useMemo(() => {
     try {
@@ -643,8 +721,8 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
     const headers: Record<string, string> = {};
 
     // A JWT captured from login/signup (jwtSession) authenticates every request.
-    if (sessionTokenRef.current) {
-      headers["Authorization"] = `Bearer ${sessionTokenRef.current}`;
+    if (store.sessionToken) {
+      headers["Authorization"] = `Bearer ${store.sessionToken}`;
     }
 
     switch (effectiveStrategy) {
@@ -672,7 +750,7 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
     }
 
     return headers;
-  }, [effectiveStrategy, client, options.token, options.apiKey]);
+  }, [effectiveStrategy, client, options.token, options.apiKey, store, setAccessToken]);
 
   const checkAuth = useCallback(async () => {
     const authHeaders = getAuthHeaders();
@@ -724,12 +802,12 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
       // Ignore logout errors
     }
 
-    sessionTokenRef.current = null;
+    store.sessionToken = null;
     client?.clearAuthToken?.();
     setUser(null);
     setStatus("unauthenticated");
     setAccessToken(null);
-  }, [baseUrl, options.logoutUrl, effectiveStrategy, getAuthHeaders, client]);
+  }, [baseUrl, options.logoutUrl, effectiveStrategy, getAuthHeaders, client, store, setUser, setStatus, setAccessToken]);
 
   const authBase = options.authBasePath ?? "/api/auth";
 
@@ -758,12 +836,12 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
     (body: unknown) => {
       const token = (body as { accessToken?: string } | null)?.accessToken;
       if (token) {
-        sessionTokenRef.current = token;
+        store.sessionToken = token;
         setAccessToken(token);
         client?.setAuthToken?.(token); // share with the client's transport
       }
     },
-    [client]
+    [client, store, setAccessToken]
   );
 
   const login = useCallback(

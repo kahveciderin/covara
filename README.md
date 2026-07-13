@@ -51,7 +51,7 @@ function TodoList() {
 
 ### Core API
 - **Automatic REST API** - Full CRUD endpoints from your Drizzle schema
-- **Real-time Subscriptions** - SSE with changelog-based updates, sequence numbers, and seamless reconnection
+- **Real-time Subscriptions** - SSE with changelog-based updates, sequence numbers, and seamless reconnection — all live subscriptions share **one multiplexed connection** by default (invisible, with automatic fallback), so many live hooks don't exhaust the browser's connection cap
 - **Relations & Joins** - `belongsTo`, `hasOne`, `hasMany`, `manyToMany` with efficient batch loading, optional foreign-key **auto-discovery** (`autoRelations`), and **scope-enforced includes** (a relation never reveals rows the user couldn't read directly)
 - **RSQL Filtering** - Comprehensive query language (30+ operators) plus custom operators
 - **Cursor Pagination** - Keyset pagination with multi-field ordering

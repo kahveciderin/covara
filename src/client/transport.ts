@@ -6,6 +6,7 @@ import {
 } from "./types";
 import { reviveDates } from "./dates";
 import { solvePowChallenge } from "./pow";
+import { SharedSSEConnection } from "./shared-sse";
 import type { CaptchaSolver } from "./captcha";
 import type { PowAlgorithm } from "@/pow/core";
 
@@ -287,11 +288,38 @@ export class FetchTransport implements Transport {
 
   /**
    * Create an EventSource for server-sent events.
-   * Note: EventSource is not available in React Native by default.
-   * For React Native, use a polyfill like 'react-native-sse' or
-   * configure a custom EventSource via setEventSourceConstructor().
+   *
+   * When multiplexing is enabled (default), this returns a channel of a single
+   * shared SSE stream so many subscriptions don't each consume a browser
+   * connection. The returned object is EventSource-shaped; callers can't tell the
+   * difference. If the server lacks the multiplex endpoint the channel falls back
+   * to a real per-subscription EventSource transparently.
+   *
+   * Note: EventSource is not available in React Native by default. For React
+   * Native, use a polyfill like 'react-native-sse' or configure a custom
+   * EventSource via setEventSourceConstructor().
    */
   createEventSource(path: string, params?: Record<string, string>): EventSource {
+    if (this.config.multiplex === false) {
+      return this.createNativeEventSource(path, params);
+    }
+    if (!this.sharedSSE) {
+      this.sharedSSE = new SharedSSEConnection({
+        buildUrl: (p) => this.buildUrl(p),
+        getHeaders: () => ({ ...this.headers }),
+        credentials: this.config.credentials,
+        createNativeEventSource: (p, prms) => this.createNativeEventSource(p, prms),
+      });
+    }
+    return this.sharedSSE.openChannel(path, params) as unknown as EventSource;
+  }
+
+  private sharedSSE?: SharedSSEConnection;
+
+  // The real per-subscription EventSource (one browser connection). Used directly
+  // when multiplexing is off, and as the fallback when the shared stream is
+  // unavailable.
+  private createNativeEventSource(path: string, params?: Record<string, string>): EventSource {
     const url = this.buildUrl(path, params);
 
     const EventSourceImpl = this.getEventSourceConstructor();

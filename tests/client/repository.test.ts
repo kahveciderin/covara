@@ -113,6 +113,18 @@ describe("Repository", () => {
       expect(result.totalCount).toBe(100);
     });
 
+    it("should list with withDeleted", async () => {
+      mockRequest.mockResolvedValue({ data: { items: [], hasMore: false, nextCursor: null } });
+
+      await repository.list({ withDeleted: true });
+
+      expect(mockRequest).toHaveBeenCalledWith({
+        method: "GET",
+        path: "/users",
+        params: { withDeleted: true },
+      });
+    });
+
     it("should list with all options combined", async () => {
       mockRequest.mockResolvedValue({ data: { items: [], hasMore: false, nextCursor: null } });
 

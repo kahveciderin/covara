@@ -100,6 +100,10 @@ npx covara studio               # open Drizzle Studio for the active profile
 
 Named profiles let you switch between local, staging, and remote databases (libsql/Turso URL + token, or a Postgres URL). Profiles live in `.covara/config.json`; the active one (or `DATABASE_URL`/`DB_FILE_NAME`) is used by every schema/data command, and an explicit `--profile <name>` or `--url <url>` overrides it.
 
+:::note The CLI resolves the database connection itself
+Schema and data commands (`push`, `data`, `export`, `import`, …) need a database connection resolved from a profile, `DATABASE_URL`/`DB_FILE_NAME` (read from your `.env`), or `--url`. This resolution is the CLI's own — it does **not** run your app's `createEnv`, so a default you set there (e.g. `DB_FILE_NAME` defaulting to `dev.db`) does not help the CLI. If none is set the command errors instead of guessing; set a profile with `covara db use <name>` or export `DATABASE_URL`/`DB_FILE_NAME`.
+:::
+
 ```bash
 npx covara db add local --url 'file:./dev.db'
 npx covara db add prod  --url 'libsql://app.turso.io' --token "$TURSO_TOKEN"

@@ -9,6 +9,10 @@ description: Changelog-based real-time subscriptions over SSE — event types, t
 
 Covara delivers real-time updates over **Server-Sent Events (SSE)**, backed by a [changelog](./changelog.md) so delivery is reliable and resumable. Every resource exposes `GET /subscribe`.
 
+:::tip One shared connection
+By default every live subscription on a client shares a **single** SSE stream ([connection multiplexing](./multiplexing.md)) so a page with many live hooks doesn't exhaust the browser's per-host connection cap. It's invisible — the code below is unchanged whether multiplexing is on or off.
+:::
+
 ```mermaid
 sequenceDiagram
   participant C as Client

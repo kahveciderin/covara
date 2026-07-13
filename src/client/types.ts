@@ -111,11 +111,13 @@ export interface ListOptions {
   limit?: number;
   orderBy?: string;
   totalCount?: boolean;
+  withDeleted?: boolean;
 }
 
 export interface GetOptions {
   select?: string[];
   include?: string;
+  withDeleted?: boolean;
 }
 
 export interface AggregateOptions {
@@ -205,6 +207,14 @@ export interface TransportConfig {
   credentials?: RequestCredentials;
   timeout?: number;
   refreshAuth?: () => Promise<string | void>;
+  /**
+   * SSE connection multiplexing. When enabled (default), all live subscriptions
+   * on this client share a single SSE stream instead of one browser connection
+   * each, so the per-host connection cap isn't exhausted. Transparent: if the
+   * server doesn't support it, each subscription falls back to its own stream.
+   * Set false to always use per-subscription connections.
+   */
+  multiplex?: boolean;
   /**
    * Transparent proof-of-work challenge solving. When the server answers a
    * request with 428 + a `Covara-PoW-*` challenge, the transport solves it and
@@ -330,6 +340,12 @@ export interface ClientConfig {
   onError?: (error: Error) => void;
   onAuthError?: () => void;
   onSyncComplete?: () => void;
+  /**
+   * SSE connection multiplexing (default true). Shares one SSE stream across all
+   * live subscriptions instead of opening one browser connection each. Falls back
+   * transparently to per-subscription streams if the server lacks the endpoint.
+   */
+  multiplex?: boolean;
 }
 
 /**
@@ -344,11 +360,13 @@ export interface ListOptionsWithSelect<T, K extends keyof T> {
   limit?: number;
   orderBy?: string;
   totalCount?: boolean;
+  withDeleted?: boolean;
 }
 
 export interface GetOptionsWithSelect<T, K extends keyof T> {
   select: readonly K[];
   include?: string;
+  withDeleted?: boolean;
 }
 
 /**

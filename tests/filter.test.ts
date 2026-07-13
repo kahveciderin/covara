@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
-import { createResourceFilter } from "@/resource/filter";
+import { createResourceFilter, DENY_ALL_FILTER } from "@/resource/filter";
 import { FilterParseError } from "@/resource/error";
 
 const testTable = sqliteTable("test_items", {
@@ -31,6 +31,24 @@ describe("Filter System", () => {
   beforeEach(() => {
     filter = createResourceFilter(testTable);
     filter.clearCache();
+  });
+
+  describe("Deny sentinel (DENY_ALL_FILTER)", () => {
+    it("executes to false for any row", () => {
+      expect(filter.execute(DENY_ALL_FILTER, { id: 1, name: "x" } as any)).toBe(false);
+      expect(filter.execute(DENY_ALL_FILTER, {} as any)).toBe(false);
+    });
+
+    it("converts to a SQL contradiction without throwing", () => {
+      const compiled = filter.compile(DENY_ALL_FILTER);
+      expect(() => compiled.convert()).not.toThrow();
+      expect(compiled.requiresJoin()).toBe(false);
+    });
+
+    it("is not confused with an empty filter (which matches all)", () => {
+      expect(filter.execute("", { id: 1 } as any)).toBe(true);
+      expect(filter.execute(DENY_ALL_FILTER, { id: 1 } as any)).toBe(false);
+    });
   });
 
   describe("Basic Equality Operators", () => {

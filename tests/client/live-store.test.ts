@@ -2342,7 +2342,10 @@ describe("SubscriptionManager onExisting callback", () => {
     globalThis.EventSource = vi.fn(() => mockEventSource) as any;
 
     try {
-      const transport = new FetchTransport({ baseUrl: "http://localhost:3000" });
+      const transport = new FetchTransport({
+        baseUrl: "http://localhost:3000",
+        multiplex: false,
+      });
 
       const manager = new SubscriptionManager({
         transport,

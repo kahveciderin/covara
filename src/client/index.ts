@@ -36,6 +36,12 @@ export interface SimplifiedClientConfig {
   parseDates?: boolean | DateFieldRegistry;
   /** Transparent proof-of-work challenge solving (enabled by default). */
   pow?: { enabled?: boolean; maxAttempts?: number };
+  /**
+   * SSE connection multiplexing (default true). Shares one SSE stream across all
+   * live subscriptions instead of one browser connection each; falls back to
+   * per-subscription streams if the server doesn't support it.
+   */
+  multiplex?: boolean;
   /** CAPTCHA challenge handling (BETA). In React, prefer `<CovaraCaptcha/>`. */
   captcha?: {
     solve?: (challenge: { provider: string; siteKey?: string; action?: string }) => Promise<string | null>;
@@ -61,6 +67,7 @@ export const createClient = (config: SimplifiedClientConfig): CovaraClient => {
     parseDates: config.parseDates,
     pow: config.pow,
     captcha: config.captcha,
+    multiplex: config.multiplex,
     refreshAuth: async () => {
       if (jwtClient?.isAuthenticated()) {
         const tokens = await jwtClient.refresh();

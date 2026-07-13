@@ -69,6 +69,12 @@
 - **No client bypass**: A hidden column cannot be recovered via `?select=` or by subscribing — masking is enforced server-side after projection
 - **Column-only**: Only table columns are stripped; relation keys, computed values, and internal markers (`_etag`, `_optimisticId`) pass through
 
+### Scope Combination (Fail-Closed)
+- **Empty scope denies on every path**: An empty resolved scope (`emptyScope()`, an empty `` rsql`` ``, or `and()`/`or()` that reduces to empty) is an explicit deny. It is enforced identically for reads and writes: `combineScopes` emits an internal deny sentinel that converts to `1 = 0` in SQL and `false` in memory, so `GET /`, `GET /:id`, `/count`, `/aggregate`, `/search`, and live `subscribe` matching all return nothing, and writes return `403`. It never degrades to an absent `WHERE` clause (every row)
+- **User filter cannot widen an empty scope**: A client `?filter=` is AND-ed into a concrete scope but is *dropped* against an empty scope — the deny wins. A denied user cannot probe rows by supplying a targeted filter (e.g. `?filter=id==<secret>`)
+- **Unconfigured ≠ deny**: An operation with no scope function (and not granted by `public`) resolves to `allScope()` for authenticated users, not empty. Deny must be expressed explicitly (return `emptyScope()` or omit the operation)
+- **Subscriptions store the deny sentinel**: The scope frozen onto a subscription (and refreshed by `sse.scopeRecheckMs`) maps an empty scope to the deny sentinel, so live `added`/`changed` events for an empty-scope subscriber match nothing regardless of the subscriber's own filter
+
 ### Relation Scope Enforcement
 - **Included relations respect target scope**: On the read path (`GET /` and `GET /:id` with `?include=`), each included relation AND-s the target resource's `read` scope (resolved for the effective/impersonated user) into its query — a relation cannot return rows the user could not read directly
 - **Deny semantics**: A user denied read on the target resource yields `null` (`belongsTo`/`hasOne`) or an empty array (`hasMany`/`manyToMany`) for that relation; out-of-scope rows are filtered, not just hidden

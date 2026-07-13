@@ -17,6 +17,50 @@ import { DrizzleDatabase, CustomOperator, UserContext } from "./types";
 import { createResourceFilter } from "./filter";
 import { getResourceScopeResolver } from "@/ui/schema-registry";
 
+// Rows returned by drizzle's `db.select()` are keyed by the schema's JS property
+// name, but column metadata (`foreignKey.name`, `references.name`,
+// `config.id.name`) carries the DB column name. When a column is declared with an
+// explicit name (e.g. `text("created_by")` bound to the `createdBy` property)
+// these differ, so indexing a row by the DB name yields `undefined` — which for a
+// belongsTo relation silently resolves to `null`. This maps a DB column name back
+// to the JS property key so row lookups work regardless of column naming.
+const columnKeyCache = new WeakMap<Table<TableConfig>, Map<string, string>>();
+
+const jsKeyForColumnName = (
+  table: Table<TableConfig>,
+  dbColumnName: string
+): string => {
+  let map = columnKeyCache.get(table);
+  if (!map) {
+    map = new Map();
+    for (const [key, column] of Object.entries(getTableColumns(table))) {
+      map.set((column as AnyColumn & { name: string }).name, key);
+    }
+    columnKeyCache.set(table, map);
+  }
+  return map.get(dbColumnName) ?? dbColumnName;
+};
+
+// One-time warning per (table, column) so a projected-away or misconfigured
+// foreign key surfaces instead of silently loading as null.
+const warnedMissingFk = new Set<string>();
+
+const warnMissingForeignKey = (
+  tableName: string,
+  relationName: string,
+  fkKey: string
+): void => {
+  const marker = `${tableName}.${relationName}.${fkKey}`;
+  if (warnedMissingFk.has(marker)) return;
+  warnedMissingFk.add(marker);
+  console.warn(
+    `[covara] belongsTo relation "${relationName}" on "${tableName}" cannot ` +
+      `load: the foreign-key property "${fkKey}" is not present on the row. ` +
+      `Ensure the column is selected (not projected away by ?select=) and that ` +
+      `the relation's foreignKey matches the schema.`
+  );
+};
+
 interface DrizzleForeignKey {
   reference: () => {
     columns: (AnyColumn & { name: string })[];
@@ -280,6 +324,11 @@ export class RelationLoader<TConfig extends TableConfig> {
   private filterCache = new Map<string, ReturnType<typeof createResourceFilter>>();
   private memoRelations?: RelationsConfig;
 
+  // Resolve a source-table DB column name to the JS property key used on rows.
+  private srcKey(dbColumnName: string): string {
+    return jsKeyForColumnName(this.sourceSchema as Table<TableConfig>, dbColumnName);
+  }
+
   // Explicit relations merged over discovered ones (explicit wins). Discovery
   // runs lazily on first use so the resource registry is fully populated, and
   // the result is memoized. With `auto` off this is just the explicit config.
@@ -423,8 +472,9 @@ export class RelationLoader<TConfig extends TableConfig> {
         ctx
       );
 
+      const idKey = this.srcKey(idColumn);
       for (const result of results) {
-        const id = String(result[idColumn]);
+        const id = String(result[idKey]);
         (result as Record<string, unknown>)[include.relation] =
           relatedMap.get(id) ??
           (relation.type === "hasMany" || relation.type === "manyToMany"
@@ -465,9 +515,13 @@ export class RelationLoader<TConfig extends TableConfig> {
 
     switch (relation.type) {
       case "belongsTo": {
-        const fkValue = item[
+        const fkKey = this.srcKey(
           (relation.foreignKey as AnyColumn & { name: string }).name
-        ];
+        );
+        if (!(fkKey in item)) {
+          warnMissingForeignKey(getTableName(this.sourceSchema), include.relation, fkKey);
+        }
+        const fkValue = item[fkKey];
         if (fkValue == null) return null;
         query = query.where(
           this.buildRelationWhere(
@@ -481,7 +535,7 @@ export class RelationLoader<TConfig extends TableConfig> {
       }
       case "hasOne":
       case "hasMany": {
-        const sourceId = item[idColumn];
+        const sourceId = item[this.srcKey(idColumn)];
         query = query.where(
           this.buildRelationWhere(
             targetSchema,
@@ -496,7 +550,7 @@ export class RelationLoader<TConfig extends TableConfig> {
         if (!relation.through) {
           throw new Error("manyToMany relation requires through configuration");
         }
-        const sourceId = item[idColumn];
+        const sourceId = item[this.srcKey(idColumn)];
         query = this.db
           .select(selectColumns)
           .from(targetSchema)
@@ -591,7 +645,8 @@ export class RelationLoader<TConfig extends TableConfig> {
     const sc = await this.scopeCondition(relation, ctx);
     if (sc === "DENY") return result;
 
-    const sourceIds = items.map((item) => item[idColumn]).filter((id) => id != null);
+    const idKey = this.srcKey(idColumn);
+    const sourceIds = items.map((item) => item[idKey]).filter((id) => id != null);
     if (sourceIds.length === 0) return result;
 
     const selectColumns = include.select
@@ -604,14 +659,22 @@ export class RelationLoader<TConfig extends TableConfig> {
 
     switch (relation.type) {
       case "belongsTo": {
-        const fkName = (relation.foreignKey as AnyColumn & { name: string }).name;
+        const fkKey = this.srcKey(
+          (relation.foreignKey as AnyColumn & { name: string }).name
+        );
+        if (items.length > 0 && !(fkKey in items[0])) {
+          warnMissingForeignKey(getTableName(this.sourceSchema), include.relation, fkKey);
+        }
         const fkValues = items
-          .map((item) => item[fkName])
+          .map((item) => item[fkKey])
           .filter((v) => v != null);
 
         if (fkValues.length === 0) return result;
 
-        const refName = (relation.references as AnyColumn & { name: string }).name;
+        const refKey = jsKeyForColumnName(
+          targetSchema,
+          (relation.references as AnyColumn & { name: string }).name
+        );
         const query = this.db
           .select(selectColumns)
           .from(targetSchema)
@@ -628,14 +691,14 @@ export class RelationLoader<TConfig extends TableConfig> {
 
         const targetMap = new Map<string, unknown>();
         for (const targetItem of targetItems as Record<string, unknown>[]) {
-          targetMap.set(String(targetItem[refName]), targetItem);
+          targetMap.set(String(targetItem[refKey]), targetItem);
         }
 
         for (const item of items) {
-          const fkValue = item[fkName];
+          const fkValue = item[fkKey];
           if (fkValue != null) {
             result.set(
-              String(item[idColumn]),
+              String(item[idKey]),
               targetMap.get(String(fkValue)) ?? null
             );
           }
@@ -652,7 +715,7 @@ export class RelationLoader<TConfig extends TableConfig> {
 
         if (perParentLimit != null || include.offset != null) {
           for (const item of items) {
-            const sourceId = item[idColumn];
+            const sourceId = item[idKey];
             if (sourceId == null) continue;
 
             let perQuery = this.db
@@ -727,7 +790,7 @@ export class RelationLoader<TConfig extends TableConfig> {
 
         if (perParentLimit != null || include.offset != null) {
           for (const item of items) {
-            const sourceId = item[idColumn];
+            const sourceId = item[idKey];
             if (sourceId == null) continue;
 
             let perQuery = this.db

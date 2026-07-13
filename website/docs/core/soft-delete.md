@@ -17,7 +17,7 @@ useResource(postsTable, {
   db,
   softDelete: {
     field: postsTable.deletedAt,   // column used as the deletion marker
-    // deletedValue: () => Date.now(), // optional; defaults to current ISO timestamp
+    // deletedValue: () => Date.now(), // optional; override the auto-detected marker
   },
 });
 ```
@@ -38,9 +38,11 @@ GET    /api/posts                    # p1 is hidden
 GET    /api/posts?withDeleted=true   # p1 is included
 ```
 
-## Custom marker values
+## Marker values
 
-Use `deletedValue` for non-timestamp columns. The column counts as "deleted" whenever it is non-null.
+The default marker matches the column's storage type: a **`Date`** for `date`/`timestamp` columns (e.g. `integer(..., { mode: "timestamp" })` or a Postgres `timestamp`) and an **ISO 8601 string** for text columns. This avoids the `value.getTime is not a function` driver error you'd get from handing a timestamp column a string.
+
+Override with `deletedValue` for any other representation. The column counts as "deleted" whenever it is non-null.
 
 ```typescript
 softDelete: { field: postsTable.isDeleted, deletedValue: () => 1 }   // integer flag

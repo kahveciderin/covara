@@ -22,6 +22,15 @@ import {
 // nested-EXISTS depth and query cost regardless of the configured filter depth.
 const MAX_RELATION_PATH_HOPS = 5;
 
+// Sentinel filter that matches no rows. Emitted by `combineScopes` when the
+// resolved auth scope is empty (an explicit deny) so the read path fails closed
+// — converting to `1 = 0` in SQL and `false` in memory — instead of degrading
+// to "no WHERE clause" (which would return every row). Matched by exact string
+// before parsing, so it never reaches the RSQL grammar. A client that happened to
+// send this exact string as a `?filter=` would only deny itself (the sentinel
+// always resolves to "no rows"); it can never widen access.
+export const DENY_ALL_FILTER = "__covara_deny_all_sentinel__";
+
 export interface FilterConfig {
   maxLength?: number;
   maxDepth?: number;
@@ -578,6 +587,24 @@ export const createResourceFilter = <TConfig extends TableConfig>(
 
     execute(_object: SchemaType): boolean {
       return true;
+    }
+
+    requiresJoin(): boolean {
+      return false;
+    }
+  }
+
+  class DenyAllFilterExpression extends FilterExpression {
+    print(): string {
+      return DENY_ALL_FILTER;
+    }
+
+    convert(): SQLWrapper {
+      return sql`1 = 0`;
+    }
+
+    execute(_object: SchemaType): boolean {
+      return false;
     }
 
     requiresJoin(): boolean {
@@ -1533,7 +1560,12 @@ export const createResourceFilter = <TConfig extends TableConfig>(
 
   const filterCache = new Map<string, FilterExpression>();
 
+  const denyAll = new DenyAllFilterExpression();
+
   const getCompiledFilter = (expr: string): FilterExpression => {
+    if (expr === DENY_ALL_FILTER) {
+      return denyAll;
+    }
     let compiled = filterCache.get(expr);
     if (!compiled) {
       compiled = parseFilterExpression(expr);

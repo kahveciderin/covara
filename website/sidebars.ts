@@ -34,6 +34,7 @@ const sidebars: SidebarsConfig = {
       items: [
         "realtime/subscriptions",
         "realtime/aggregate-subscriptions",
+        "realtime/multiplexing",
         "realtime/changelog",
         "realtime/mutation-tracking",
       ],

@@ -19,6 +19,7 @@ import {
 import { listActiveSubscriptions, disconnectSubscription } from "@/resource/subscription";
 import { changelog } from "@/resource/changelog";
 import { createCovaraRouter, type CovaraRouterConfig } from "@/openapi/schema";
+import { createMultiplexRouter, type MultiplexConfig } from "@/server/multiplex";
 import { createSecurityHeaders, type SecurityHeadersOptions } from "@/middleware/securityHeaders";
 import { onShutdown } from "@/server/lifecycle";
 import { closeAllHandlers } from "@/resource/subscription";
@@ -61,6 +62,12 @@ export interface CovaraOptions {
   // `abuseProtection({ budget, pow })`. Per-operation costs and PoW opt-ins live
   // on the individual resources / procedures / auth routes.
   abuseProtection?: AbuseProtectionConfig | AbuseProtectionInput;
+  // SSE connection multiplexing: one shared stream carries many logical
+  // subscriptions so the browser's per-host connection cap isn't exhausted by
+  // many live hooks. On by default and invisible to app code (the client uses it
+  // transparently and falls back to per-subscription streams when unavailable).
+  // Set false to disable the endpoint, or pass tuning options.
+  multiplex?: boolean | MultiplexConfig;
 }
 
 export class CovaraApp extends Hono {
@@ -188,6 +195,20 @@ export class CovaraApp extends Hono {
           options.openapi === true || options.openapi === undefined
             ? {}
             : options.openapi
+        )
+      );
+    }
+
+    // SSE multiplexing endpoint. Mounted after the auth middleware so the shared
+    // stream and its control POSTs see the authenticated user. Fixed, basePath-
+    // independent location so the client can find it without knowing basePath.
+    if (options.multiplex !== false) {
+      this.route(
+        "/__covara/stream",
+        createMultiplexRouter(
+          options.multiplex === true || options.multiplex === undefined
+            ? {}
+            : options.multiplex
         )
       );
     }

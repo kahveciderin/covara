@@ -11,6 +11,17 @@ description: Type-safe env config with Zod validation, automatic public/private 
 
 Under the hood it reads through the runtime-safe primitives `readEnv`, `isProduction`, and `isDebugEnabled` (so it works on Workers too — Covara itself never touches `process.env` directly). Reach for those primitives directly only for a quick one-off read where a full schema is overkill; otherwise prefer `createEnv` for type safety and fail-fast validation.
 
+:::warning Load `.env` yourself when running your own scripts
+`createEnv`/`readEnv` read from `process.env`; they do **not** parse a `.env` file. The `covara` CLI (`covara dev`, schema/data commands) loads `.env` for you, but a standalone script you run with `node`, `tsx`, or `ts-node` — a seed, a one-off migration, a worker — does **not**. Without it those reads fall back to schema defaults, which silently uses the wrong database/secret (a classic cause of "wrong password" / "empty database" bugs in seeds). Load it before anything that reads env:
+
+```typescript
+import "dotenv/config"; // must be the FIRST import
+import { env } from "./env";
+```
+
+Or run the file with `node --env-file=.env script.js` (Node ≥ 20.6). On Cloudflare Workers there is no `.env` at runtime — bindings/vars come from `wrangler.toml` and secrets.
+:::
+
 ## Define a schema
 
 ```typescript

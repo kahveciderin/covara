@@ -320,11 +320,16 @@ describe("FetchTransport", () => {
   });
 
   describe("createEventSource", () => {
+    // multiplex:false exercises the direct per-subscription EventSource path.
     it("should create EventSource with correct url", () => {
+      const nativeTransport = new FetchTransport({
+        baseUrl: "http://localhost:3000",
+        multiplex: false,
+      });
       const mockEventSource = vi.fn();
       global.EventSource = mockEventSource as any;
 
-      transport.createEventSource("/subscribe", { filter: "active==true" });
+      nativeTransport.createEventSource("/subscribe", { filter: "active==true" });
 
       expect(mockEventSource).toHaveBeenCalledWith(
         expect.stringContaining("/subscribe"),
@@ -336,6 +341,7 @@ describe("FetchTransport", () => {
       const transportWithCreds = new FetchTransport({
         baseUrl: "http://localhost:3000",
         credentials: "include",
+        multiplex: false,
       });
 
       const mockEventSource = vi.fn();

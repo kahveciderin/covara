@@ -67,6 +67,7 @@ export class Repository<
     if (options.limit) params.limit = options.limit;
     if (options.orderBy) params.orderBy = options.orderBy;
     if (options.totalCount) params.totalCount = true;
+    if (options.withDeleted) params.withDeleted = true;
 
     const response = await this.transport.request<PaginatedResponse<T>>({
       method: "GET",
@@ -90,6 +91,7 @@ export class Repository<
 
     if (options.select) params.select = options.select.join(",");
     if (options.include) params.include = options.include;
+    if (options.withDeleted) params.withDeleted = "true";
 
     const response = await this.transport.request<T>({
       method: "GET",
