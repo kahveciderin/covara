@@ -158,7 +158,7 @@ app.post("/api/custom-action", async (c) => {
 
 ## Reconnection
 
-The subscription manager reconnects with exponential backoff + jitter, heartbeats to detect dead connections, and cleans up on page unload. On reconnect it resumes from the last sequence; if too many changes occurred (a gap), the server sends `invalidate` and the client refetches.
+The subscription manager reconnects with exponential backoff + jitter, heartbeats to detect dead connections, and cleans up on page unload. It retries **indefinitely** (with capped backoff) rather than giving up after a fixed number of attempts, so a subscription recovers on its own after a transient outage instead of going stale. On reconnect it resumes from the last sequence; if too many changes occurred (a gap), the server sends `invalidate` and the client refetches.
 
 ```typescript
 users.subscribe({ resumeFrom: lastSeq });

@@ -212,3 +212,87 @@ describe("SharedSSEConnection", () => {
     expect(errored).toBe(true);
   });
 });
+
+// A ReadableStream that stays open and rejects its reader when the fetch signal
+// aborts — mirrors how a real fetch body reacts to AbortController.abort().
+const abortableStream = (): { fetchImpl: typeof fetch; pushes: ((s: string) => void)[]; streamFetches: () => number } => {
+  const enc = new TextEncoder();
+  const pushes: ((s: string) => void)[] = [];
+  let count = 0;
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    if (url.endsWith("/__covara/stream")) {
+      count++;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          pushes.push((s) => controller.enqueue(enc.encode(s)));
+          init?.signal?.addEventListener("abort", () => {
+            try {
+              controller.error(new Error("aborted"));
+            } catch {
+              // already closed
+            }
+          });
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }) as unknown as typeof fetch;
+  return { fetchImpl, pushes, streamFetches: () => count };
+};
+
+describe("SharedSSEConnection — retry & stall robustness", () => {
+  it("retries then falls back to native when the stream never becomes ready", async () => {
+    const { fetchImpl, streamFetches } = abortableStream();
+    const nativeCalls: string[] = [];
+    const conn = new SharedSSEConnection({
+      buildUrl: (p) => `http://x${p}`,
+      getHeaders: () => ({}),
+      fetchImpl,
+      connectTimeoutMs: 10,
+      backoff: () => 1,
+      createNativeEventSource: (path) => {
+        nativeCalls.push(path);
+        return fakeEventSource() as unknown as EventSource;
+      },
+    });
+
+    const channel = conn.openChannel("/api/todos/subscribe");
+    channel.addEventListener("message", () => {});
+
+    // Each open hangs (no `ready`) → connect timeout aborts → retry; after
+    // MAX_OPEN_ATTEMPTS the channel falls back to a native EventSource. Never
+    // leaves the channel stuck with no events and no error.
+    await vi.waitFor(() => expect(nativeCalls).toHaveLength(1), { timeout: 2000 });
+    expect(streamFetches()).toBeGreaterThanOrEqual(3);
+  });
+
+  it("detects a stalled (silent) stream and errors the channel so it reconnects", async () => {
+    const { fetchImpl, pushes } = abortableStream();
+    const conn = new SharedSSEConnection({
+      buildUrl: (p) => `http://x${p}`,
+      getHeaders: () => ({}),
+      fetchImpl,
+      stallTimeoutMs: 20,
+      createNativeEventSource: () => fakeEventSource() as unknown as EventSource,
+    });
+
+    const channel = conn.openChannel("/api/todos/subscribe");
+    let errored = false;
+    channel.onerror = () => {
+      errored = true;
+    };
+    channel.addEventListener("message", () => {});
+
+    await tick();
+    pushes[0](ready()); // becomes ready, then goes silent (no heartbeats)
+    await tick();
+
+    // No data past the stall window → the connection is considered dead and the
+    // channel errors, which drives the subscription manager to reconnect.
+    await vi.waitFor(() => expect(errored).toBe(true), { timeout: 2000 });
+  });
+});

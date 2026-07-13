@@ -32,7 +32,10 @@ export class SubscriptionManager<T extends { id: string }> implements Subscripti
   private eventSource: EventSource | null = null;
   private reconnectTimeout: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 10;
+  // Live subscriptions retry indefinitely rather than giving up and going stale;
+  // the exponential backoff is capped (maxReconnectDelay) so the retry rate stays
+  // bounded. Giving up would leave the UI silently stale after a transient outage.
+  private maxReconnectAttempts = Infinity;
   private baseReconnectDelay = 1000;
   private maxReconnectDelay = 30000;
   private rng: () => number;

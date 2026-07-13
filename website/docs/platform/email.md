@@ -17,15 +17,22 @@ import { createResendAdapter, setGlobalEmail } from "covara/email";
 setGlobalEmail(createResendAdapter({ apiKey: env.RESEND_API_KEY }));
 ```
 
-On Cloudflare Workers, use the Email Service binding (no API key, no network egress):
+On Cloudflare Workers, use the Email Service binding (no API key, no network egress). Pass the `EmailMessage` class from the `cloudflare:email` built-in as `messageClass` — production `send_email` requires a real `EmailMessage` instance (a plain object fails with a misleading *"text or html must have content"*):
 
 ```typescript
 import { createCloudflareEmailAdapter, setGlobalEmail } from "covara/email";
+import { EmailMessage } from "cloudflare:email";
 
-setGlobalEmail(createCloudflareEmailAdapter({ binding: env.EMAIL, from: "noreply@acme.com" }));
+setGlobalEmail(
+  createCloudflareEmailAdapter({
+    binding: env.EMAIL,
+    from: "noreply@acme.com",
+    messageClass: EmailMessage,
+  })
+);
 ```
 
-Both adapters are Workers-safe (Resend via `fetch`, Cloudflare via the binding).
+`messageClass` is optional — if omitted, the adapter loads `cloudflare:email` dynamically at send time — but passing it explicitly is recommended (avoids the dynamic import and any bundler edge cases). Both adapters are Workers-safe (Resend via `fetch`, Cloudflare via the binding).
 
 ## Sending
 

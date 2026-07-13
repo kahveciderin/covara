@@ -40,7 +40,9 @@ export class AggregateSubscriptionManager implements AggregateSubscription {
   private eventSource: EventSource | null = null;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 10;
+  // Retry indefinitely with capped backoff rather than going stale (see
+  // SubscriptionManager).
+  private maxReconnectAttempts = Infinity;
   private baseReconnectDelay = 1000;
   private maxReconnectDelay = 30000;
   private rng: () => number;

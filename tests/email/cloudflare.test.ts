@@ -4,6 +4,7 @@ import {
   createCloudflareEmailAdapter,
   CloudflareEmailBinding,
   CloudflareEmailMessage,
+  CloudflareEmailMessageConstructor,
 } from "@/email/cloudflare";
 import { EmailMessage } from "@/email/types";
 
@@ -87,6 +88,59 @@ describe("buildMimeMessage", () => {
     expect(body).toContain('Content-Type: text/html; charset="utf-8"');
   });
 
+  it("includes RFC-5322 Date and Message-ID headers", () => {
+    const mime = buildMimeMessage({
+      from: "sender@example.com",
+      to: "c@d.com",
+      subject: "s",
+      text: "hi",
+      html: "<p>hi</p>",
+    });
+
+    const headerBlock = mime.split("\r\n\r\n")[0];
+    // Both are RFC 5322 §3.6 mandatory; production Cloudflare send_email rejects
+    // a message without them.
+    expect(headerBlock).toMatch(
+      /^Date: \w{3}, \d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2} \+0000$/m
+    );
+    expect(headerBlock).toMatch(/^Message-ID: <.+@example\.com>$/m);
+  });
+
+  it("does not duplicate a caller-supplied Date or Message-ID", () => {
+    const mime = buildMimeMessage({
+      from: "s@example.com",
+      to: "c@d.com",
+      subject: "s",
+      text: "hi",
+      headers: {
+        Date: "Mon, 01 Jan 2024 00:00:00 +0000",
+        "Message-ID": "<custom@id>",
+      },
+    });
+
+    const headerBlock = mime.split("\r\n\r\n")[0];
+    expect(headerBlock.match(/^Date:/gim) ?? []).toHaveLength(1);
+    expect(headerBlock.match(/^Message-ID:/gim) ?? []).toHaveLength(1);
+    expect(headerBlock).toContain("Date: Mon, 01 Jan 2024 00:00:00 +0000");
+    expect(headerBlock).toContain("Message-ID: <custom@id>");
+  });
+
+  it("normalizes bare-LF body content to CRLF", () => {
+    const mime = buildMimeMessage({
+      from: "s@example.com",
+      to: "c@d.com",
+      subject: "s",
+      text: "line1\nline2\nline3",
+      html: "<p>a</p>\n<p>b</p>",
+    });
+
+    const body = mime.slice(mime.indexOf("\r\n\r\n") + 4);
+    // No bare LF anywhere in the body (every \n is preceded by \r).
+    expect(/[^\r]\n/.test(body)).toBe(false);
+    expect(body).toContain("line1\r\nline2\r\nline3");
+    expect(body).toContain("<p>a</p>\r\n<p>b</p>");
+  });
+
   it("includes cc and reply-to and custom headers", () => {
     const mime = buildMimeMessage({
       from: "a@b.com",
@@ -142,6 +196,47 @@ describe("Cloudflare Email Adapter", () => {
     expect(sent[0].to).toBe("to@example.com");
     expect(sent[0].raw).toContain("Subject: Hi");
     expect(sent[0].raw).toContain("<p>x</p>");
+  });
+
+  it("sends a real EmailMessage instance built from messageClass (not a plain object)", async () => {
+    // Production workerd needs a cloudflare:email EmailMessage instance; a plain
+    // { from, to, raw } object fails with the misleading "text or html must have
+    // content". The adapter must construct via the provided class.
+    class FakeEmailMessage {
+      constructor(
+        public readonly from: string,
+        public readonly to: string,
+        public readonly raw: string
+      ) {}
+    }
+    const sent: unknown[] = [];
+    const binding: CloudflareEmailBinding = {
+      send: async (m) => {
+        sent.push(m);
+      },
+    };
+    const adapter = createCloudflareEmailAdapter({
+      binding,
+      messageClass: FakeEmailMessage as unknown as CloudflareEmailMessageConstructor,
+    });
+
+    await adapter.send({
+      from: "a@b.com",
+      to: ["x@y.com", "z@y.com"],
+      subject: "s",
+      text: "t",
+      html: "<p>t</p>",
+    });
+
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toBeInstanceOf(FakeEmailMessage);
+    expect(sent[1]).toBeInstanceOf(FakeEmailMessage);
+    const first = sent[0] as FakeEmailMessage;
+    expect(first.from).toBe("a@b.com");
+    expect(first.to).toBe("x@y.com");
+    expect(first.raw).toContain("Subject: s");
+    expect(first.raw).toContain("Message-ID:");
+    expect((sent[1] as FakeEmailMessage).to).toBe("z@y.com");
   });
 
   it("applies the default from when message omits it", async () => {

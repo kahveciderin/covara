@@ -12,6 +12,15 @@
 
 const STREAM_PATH = "/__covara/stream";
 const MAX_OPEN_ATTEMPTS = 3;
+// If `ready` doesn't arrive within this window, the open is treated as failed
+// (retry, then fall back) — prevents a slow/hung stream from leaving channels
+// stuck with no events and no error forever.
+const DEFAULT_CONNECT_TIMEOUT_MS = 10000;
+// If no bytes (event OR heartbeat) arrive for this long after connecting, the
+// stream is considered dead and reconnected — catches half-open connections
+// where `reader.read()` never resolves or rejects. Must exceed the server
+// heartbeat (default 20s).
+const DEFAULT_STALL_TIMEOUT_MS = 50000;
 
 export interface SharedSSEDeps {
   // Build an absolute URL for a path relative to the transport base.
@@ -23,6 +32,10 @@ export interface SharedSSEDeps {
   createNativeEventSource: (path: string, params?: Record<string, string>) => EventSource;
   // Injectable for tests / non-browser runtimes.
   fetchImpl?: typeof fetch;
+  // Override timeouts / backoff (mainly for tests).
+  connectTimeoutMs?: number;
+  stallTimeoutMs?: number;
+  backoff?: (attempt: number) => number;
 }
 
 type ProxyListener = (event: { data: string }) => void;
@@ -153,8 +166,47 @@ export class SharedSSEConnection {
   private attempts = 0;
   private counter = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private stallTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(readonly deps: SharedSSEDeps) {}
+
+  private get connectTimeoutMs(): number {
+    return this.deps.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+  }
+
+  private get stallTimeoutMs(): number {
+    return this.deps.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS;
+  }
+
+  private clearConnectTimer(): void {
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
+  }
+
+  private clearStallTimer(): void {
+    if (this.stallTimer) {
+      clearTimeout(this.stallTimer);
+      this.stallTimer = null;
+    }
+  }
+
+  // Reset on every received chunk; fires only if the stream goes silent past the
+  // heartbeat window (a dead/half-open connection). Aborting makes pump() exit
+  // and reconnect.
+  private armStallTimer(): void {
+    this.clearStallTimer();
+    this.stallTimer = setTimeout(() => {
+      this.stallTimer = null;
+      try {
+        this.abort?.abort();
+      } catch {
+        // ignore
+      }
+    }, this.stallTimeoutMs);
+  }
 
   private get fetchImpl(): typeof fetch | undefined {
     return this.deps.fetchImpl ?? (typeof fetch !== "undefined" ? fetch : undefined);
@@ -228,6 +280,18 @@ export class SharedSSEConnection {
       return;
     }
     this.state = "connecting";
+    // Bound the open→ready window: abort if the server is slow/hung so the fetch
+    // (or pump) rejects and we retry/fall back instead of hanging forever.
+    this.clearConnectTimer();
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = null;
+      if (this.state !== "connecting") return;
+      try {
+        this.abort?.abort();
+      } catch {
+        // ignore
+      }
+    }, this.connectTimeoutMs);
     void this.openStream();
   }
 
@@ -264,17 +328,22 @@ export class SharedSSEConnection {
       return;
     }
 
-    this.attempts = 0;
+    // Attempts reset only once the stream actually becomes ready (in handleFrame),
+    // not merely on a 200 — a server that accepts the connection but never sends
+    // `ready` must still count toward the fallback threshold, not retry forever.
     void this.pump(res.body.getReader());
   }
 
   private async pump(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
     const decoder = new TextDecoder();
     let buffer = "";
+    this.armStallTimer();
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        // Any byte (event or heartbeat) proves the stream is alive.
+        this.armStallTimer();
         buffer += decoder.decode(value, { stream: true });
         let idx: number;
         while ((idx = buffer.indexOf("\n\n")) !== -1) {
@@ -286,7 +355,14 @@ export class SharedSSEConnection {
     } catch {
       // read error — treated as a drop below
     }
-    this.onStreamDropped();
+    this.clearStallTimer();
+    // If we never reached "ready", this was a failed open (retry/fall back);
+    // otherwise an established stream dropped (managers reconnect).
+    if (this.state === "ready") {
+      this.onStreamDropped();
+    } else {
+      this.onOpenFailure();
+    }
   }
 
   private handleFrame(frame: string): void {
@@ -310,6 +386,7 @@ export class SharedSSEConnection {
       this.cid = cid;
       this.state = "ready";
       this.attempts = 0;
+      this.clearConnectTimer();
       for (const channel of this.channels.values()) {
         if (!channel.serverSubscribed && !channel.closedByUser) {
           void this.sendSubscribe(channel);
@@ -368,6 +445,8 @@ export class SharedSSEConnection {
   }
 
   private markUnavailable(): void {
+    this.clearConnectTimer();
+    this.clearStallTimer();
     this.state = "unavailable";
     this.cid = null;
     this.abort = null;
@@ -377,6 +456,8 @@ export class SharedSSEConnection {
   // Failure while the stream was never ready: retry a few times, then give up and
   // fall the whole client back to per-subscription connections.
   private onOpenFailure(): void {
+    this.clearConnectTimer();
+    this.clearStallTimer();
     this.state = "idle";
     this.cid = null;
     this.abort = null;
@@ -387,7 +468,7 @@ export class SharedSSEConnection {
     }
     setTimeout(() => {
       if (this.channels.size > 0) this.ensureStream();
-    }, backoff(this.attempts));
+    }, (this.deps.backoff ?? backoff)(this.attempts));
   }
 
   // The established stream dropped. Notify every channel so its manager reconnects
@@ -395,6 +476,8 @@ export class SharedSSEConnection {
   // stale proxies stop receiving frames. The next openChannel reopens the stream.
   private onStreamDropped(): void {
     if (this.state === "unavailable") return;
+    this.clearConnectTimer();
+    this.clearStallTimer();
     const channels = Array.from(this.channels.values());
     this.channels.clear();
     this.state = "idle";
@@ -414,6 +497,8 @@ export class SharedSSEConnection {
   }
 
   private teardownStream(): void {
+    this.clearConnectTimer();
+    this.clearStallTimer();
     if (this.abort) {
       try {
         this.abort.abort();

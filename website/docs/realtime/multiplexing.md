@@ -62,6 +62,12 @@ That last case is the multi-isolate caveat: true single-connection multiplexing 
 
 The shared stream owns reconnection. If it drops, every channel's manager reconnects and re-subscribes with its current `resumeFrom`, so the [changelog](./changelog.md) redelivers anything missed — the same reliable, resumable delivery as a single subscription. A slow shared consumer triggers the standard backpressure policy, which resets the stream; the client reconnects and every channel catches up.
 
+The shared connection is defensive against stuck streams so it never leaves the UI silently stale:
+
+- **Connect timeout** — if the stream doesn't become ready within ~10s it's aborted and retried; after a few failures the affected subscriptions transparently fall back to their own per-subscription connections.
+- **Stall watchdog** — every event and heartbeat resets a liveness timer; if the stream goes silent past the heartbeat window (~50s) it's treated as dead and reconnected, catching half-open connections a plain read would never notice.
+- **Indefinite retry** — subscriptions reconnect with capped exponential backoff and jitter and keep trying (rather than giving up after a fixed count), so they recover on their own once the server or network comes back.
+
 ## Related
 
 - [Subscriptions](./subscriptions.md) · [Aggregate subscriptions](./aggregate-subscriptions.md) · [Changelog](./changelog.md)
