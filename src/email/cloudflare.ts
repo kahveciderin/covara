@@ -77,7 +77,13 @@ const attachmentPart = (
   ].join(CRLF);
 };
 
-const alternativeBody = (message: EmailMessage): string => {
+// Build the multipart/alternative body, returning the `Content-Type` header
+// separately from the body. The caller must place `contentType` in the header
+// block (before the blank line that ends the headers) when this is the top-level
+// content, or use it as the part header inside a multipart/mixed wrapper.
+const alternativeBody = (
+  message: EmailMessage
+): { contentType: string; body: string } => {
   const altBound = boundary("alt");
   const parts: string[] = [];
 
@@ -107,11 +113,10 @@ const alternativeBody = (message: EmailMessage): string => {
 
   parts.push(`--${altBound}--`);
 
-  return [
-    `Content-Type: multipart/alternative; boundary="${altBound}"`,
-    "",
-    parts.join(CRLF + CRLF),
-  ].join(CRLF);
+  return {
+    contentType: `Content-Type: multipart/alternative; boundary="${altBound}"`,
+    body: parts.join(CRLF + CRLF),
+  };
 };
 
 export const buildMimeMessage = (message: EmailMessage): string => {
@@ -136,9 +141,13 @@ export const buildMimeMessage = (message: EmailMessage): string => {
   }
 
   const hasAttachments = (message.attachments?.length ?? 0) > 0;
-  const body = alternativeBody(message);
+  const { contentType, body } = alternativeBody(message);
 
   if (!hasAttachments) {
+    // The multipart/alternative Content-Type must live in the header block
+    // (before the blank line), not in the body — otherwise the message goes out
+    // with no Content-Type and no parseable boundary.
+    headers.push(contentType);
     return [headers.join(CRLF), "", body].join(CRLF);
   }
 
@@ -149,9 +158,11 @@ export const buildMimeMessage = (message: EmailMessage): string => {
 
   headers.push(`Content-Type: multipart/mixed; boundary="${mixedBound}"`);
 
+  // Inside the mixed wrapper, the alternative Content-Type is the part header for
+  // this segment (blank line separates it from the alternative parts).
   const segments = [
     `--${mixedBound}`,
-    body,
+    [contentType, "", body].join(CRLF),
     ...attachmentParts,
     `--${mixedBound}--`,
   ];

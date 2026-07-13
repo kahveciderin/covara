@@ -46,6 +46,47 @@ describe("buildMimeMessage", () => {
     expect(mime).toContain("\r\n");
   });
 
+  it("puts the multipart/alternative Content-Type in the header block, not the body", () => {
+    const mime = buildMimeMessage({
+      from: "a@b.com",
+      to: "c@d.com",
+      subject: "s",
+      html: "<p>Hi</p>",
+      text: "Hi",
+    });
+
+    // Everything before the first blank line is the header block; anything after
+    // is the body. The multipart Content-Type MUST be a header, or the message
+    // ships with no Content-Type and no parseable boundary.
+    const headerBlock = mime.split("\r\n\r\n")[0];
+    expect(headerBlock).toContain('Content-Type: multipart/alternative; boundary="');
+    expect(headerBlock).toContain("MIME-Version: 1.0");
+    // The body starts with the alternative boundary, not a stray Content-Type.
+    const body = mime.slice(headerBlock.length + 4);
+    expect(body.startsWith("--")).toBe(true);
+    expect(body).not.toContain("multipart/alternative");
+  });
+
+  it("puts the multipart/mixed Content-Type in the header block (with attachments)", () => {
+    const mime = buildMimeMessage({
+      from: "a@b.com",
+      to: "c@d.com",
+      subject: "s",
+      text: "body",
+      html: "<p>body</p>",
+      attachments: [
+        { filename: "hi.txt", content: new Uint8Array([72, 105]), contentType: "text/plain" },
+      ],
+    });
+
+    const headerBlock = mime.split("\r\n\r\n")[0];
+    expect(headerBlock).toContain('Content-Type: multipart/mixed; boundary="');
+    // The alternative part still carries its own Content-Type inside the mixed body.
+    const body = mime.slice(headerBlock.length + 4);
+    expect(body).toContain('Content-Type: multipart/alternative; boundary="');
+    expect(body).toContain('Content-Type: text/html; charset="utf-8"');
+  });
+
   it("includes cc and reply-to and custom headers", () => {
     const mime = buildMimeMessage({
       from: "a@b.com",
