@@ -424,9 +424,14 @@ export class SharedSSEConnection {
     if (res.ok) return;
     channel.serverSubscribed = false;
     if (res.status === 409) {
-      // Stream not found on this process (e.g. it just dropped) — reset so the
-      // managers reconnect and re-establish the stream.
-      this.onStreamDropped();
+      // The control POST reached a process that doesn't hold this stream. On a
+      // multi-isolate deployment (e.g. Cloudflare Workers) the control channel
+      // can't be guaranteed to hit the stream's isolate, so multiplexing isn't
+      // viable here — retrying just loops forever (new stream on another isolate
+      // → another 409 → nothing ever delivered). Fall back (stickily) to
+      // per-subscription connections, which always work. On a single process
+      // this never happens (the stream is always local).
+      this.markUnavailable();
     } else {
       // 404 unknown resource / other: this channel can't be multiplexed here.
       channel.toFallback();

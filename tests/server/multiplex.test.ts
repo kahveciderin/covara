@@ -6,6 +6,7 @@ import { useResource } from "@/resource/hook";
 import { createMultiplexRouter } from "@/server/multiplex";
 import { setResourceMountPath, clearSchemaRegistry } from "@/ui/schema-registry";
 import { clearSubscribeDispatchers } from "@/resource/mux-registry";
+import { setGlobalKV, clearGlobalKV, type KVAdapter } from "@/kv";
 import { createTestApp, post, SSECollector, flushAsync } from "../helpers/hono";
 
 const muxItems = sqliteTable("mux_items", {
@@ -57,6 +58,26 @@ describe("SSE multiplex endpoint", () => {
     const { cid } = await openStream();
     expect(typeof cid).toBe("string");
     expect(cid.length).toBeGreaterThan(0);
+  });
+
+  it("flushes ready immediately even when the changelog KV read hangs", async () => {
+    // Regression: the handler used to `await changelog.getCurrentSequence()`
+    // (a KV/DO read) before writing the first byte. On Workers a slow store read
+    // there left the stream stuck at 0 bytes — no channel ever subscribed and
+    // nothing updated. `ready` must flush without depending on the store.
+    const hangingKV = {
+      get: () => new Promise<string | null>(() => {}), // never resolves
+    } as unknown as KVAdapter;
+    setGlobalKV(hangingKV);
+    try {
+      const { collector } = await SSECollector.connect(app, "/__covara/stream");
+      collectors.push(collector);
+      const ready = await collector.next();
+      expect(ready?.event).toBe("ready");
+      expect(ready!.data.cid).toBeTruthy();
+    } finally {
+      clearGlobalKV();
+    }
   });
 
   it("delivers framed events for a subscribed channel", async () => {

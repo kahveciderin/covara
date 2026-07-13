@@ -203,7 +203,16 @@ export const createAdminUI = (config: AdminUIConfig = {}): Hono => {
   ].join("; ");
   router.use("*", async (c, next) => {
     await next();
-    c.header("Content-Security-Policy", ADMIN_CSP);
+    // CSP only matters for the admin UI's HTML pages. Do NOT touch other
+    // responses under this prefix — in particular, setting a header after
+    // next() on a streaming SSE response (the multiplex `/__covara/stream`
+    // endpoint shares this prefix) forces the response to be re-wrapped and, on
+    // some runtimes (Cloudflare Workers), prevents it from flushing — hanging
+    // the stream at zero bytes so no subscription ever delivers.
+    const contentType = c.res.headers.get("content-type") ?? "";
+    if (contentType.includes("text/html")) {
+      c.header("Content-Security-Policy", ADMIN_CSP);
+    }
   });
 
   // Gate the entire admin surface (UI pages, partials, and JSON APIs) behind

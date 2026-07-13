@@ -270,6 +270,50 @@ describe("SharedSSEConnection — retry & stall robustness", () => {
     expect(streamFetches()).toBeGreaterThanOrEqual(3);
   });
 
+  it("falls back to native (no infinite loop) when a control POST returns 409", async () => {
+    // Multi-isolate (Workers): the stream opens fine but the subscribe control
+    // POST hits a different isolate → 409 stream_not_found. This must fall back to
+    // per-subscription connections, not retry forever (which delivered nothing).
+    const stream = makeStream();
+    let subscribeCalls = 0;
+    const nativeCalls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      if (url.endsWith("/__covara/stream")) return stream.response;
+      if (url.includes("/subscribe")) {
+        subscribeCalls++;
+        return new Response(JSON.stringify({ code: "stream_not_found" }), { status: 409 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const conn = new SharedSSEConnection({
+      buildUrl: (p) => `http://x${p}`,
+      getHeaders: () => ({}),
+      fetchImpl,
+      createNativeEventSource: (path) => {
+        nativeCalls.push(path);
+        return fakeEventSource() as unknown as EventSource;
+      },
+    });
+
+    const channel = conn.openChannel("/api/todos/subscribe");
+    channel.addEventListener("message", () => {});
+
+    await tick();
+    stream.push(ready());
+    await tick();
+
+    // Fell back to a native per-subscription connection after a single 409.
+    await vi.waitFor(() => expect(nativeCalls).toHaveLength(1), { timeout: 1000 });
+    expect(subscribeCalls).toBe(1);
+
+    // A second channel opened afterwards also goes straight to native (sticky).
+    const channel2 = conn.openChannel("/api/notes/subscribe");
+    channel2.addEventListener("message", () => {});
+    await vi.waitFor(() => expect(nativeCalls).toHaveLength(2), { timeout: 1000 });
+    expect(subscribeCalls).toBe(1);
+  });
+
   it("detects a stalled (silent) stream and errors the channel so it reconnects", async () => {
     const { fetchImpl, pushes } = abortableStream();
     const conn = new SharedSSEConnection({

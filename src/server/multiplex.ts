@@ -3,7 +3,6 @@ import { v4 as uuidv4 } from "uuid";
 import { createSSEStream, type SSEWriter } from "@/server/sse";
 import { getUser } from "@/server/context";
 import { readJsonBody } from "@/server/request";
-import { changelog } from "@/resource/changelog";
 import { getResourceNameByPath } from "@/ui/schema-registry";
 import {
   getSubscribeDispatcher,
@@ -93,8 +92,11 @@ export const createMultiplexRouter = (config: MultiplexConfig = {}): Hono => {
     const connection: MuxConnection = { writer, userId, channels: new Map() };
     muxConnections.set(cid, connection);
 
-    const seq = await changelog.getCurrentSequence();
-    writer.write(`event: ready\ndata: ${JSON.stringify({ cid, seq })}\n\n`);
+    // Flush `ready` immediately — the client only needs the connection id to
+    // start subscribing. Do NOT block the first byte on a KV/DO read (e.g.
+    // changelog sequence): on Workers a slow store read here would leave the
+    // stream hung at 0 bytes, so no channel ever subscribes and nothing updates.
+    writer.write(`event: ready\ndata: ${JSON.stringify({ cid })}\n\n`);
 
     const heartbeat = setInterval(() => {
       if (writer.closed) {

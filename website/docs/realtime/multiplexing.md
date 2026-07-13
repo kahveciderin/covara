@@ -56,7 +56,9 @@ Multiplexing degrades gracefully. If the shared stream can't be used, **each sub
 - the runtime has no `fetch`/`EventSource`;
 - a control `POST` can't reach the process holding the stream.
 
-That last case is the multi-isolate caveat: true single-connection multiplexing requires the control `POST` to land on the **same process** as the stream. On Node / `startServer` (a single process) that always holds. On multi-isolate deployments (e.g. Cloudflare Workers) a control `POST` may hit a different isolate; the server answers `409 stream_not_found` and that channel falls back to a per-subscription stream — correct, just not shared. (Edge deployments typically serve over HTTP/2 to the client anyway, which multiplexes connections at the transport layer.)
+That last case is the multi-isolate caveat: true single-connection multiplexing requires the control `POST` to land on the **same process** as the stream. On Node / `startServer` (a single process) that always holds. On multi-isolate deployments (e.g. Cloudflare Workers) a control `POST` may hit a different isolate; the server answers `409 stream_not_found`, and on the **first** such response the client stops trying to multiplex for that connection and switches — stickily — to per-subscription `GET /subscribe` connections for all its subscriptions. It does **not** keep reopening the shared stream (which would loop forever and deliver nothing), so realtime stays reliable, just not connection-shared. (Edge deployments typically serve over HTTP/2 to the client anyway, which multiplexes connections at the transport layer, so little is lost.)
+
+The shared stream endpoint also flushes its `ready` frame immediately, without waiting on any store read — so a slow KV/Durable Object can't leave the stream hung at zero bytes.
 
 ## Reconnection
 

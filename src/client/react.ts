@@ -223,17 +223,23 @@ export function useLiveList<
     };
   }, [repo, optionsKey, enabled, client, cachePath]);
 
+  // These MUST re-key on the same deps as the query-swap effect above. The effect
+  // (declared first, so it runs first on commit) points liveQueryRef at the new
+  // query when an option like `filter` changes; giving `subscribe` a new identity
+  // then makes useSyncExternalStore re-subscribe against that new query. With
+  // stable ([]) callbacks the listener stays bound to the destroyed old query and
+  // the list silently freezes on stale/empty data.
   const subscribe = useCallback((listener: () => void) => {
     if (!liveQueryRef.current) return () => {};
     return liveQueryRef.current.subscribe(listener);
-  }, []);
+  }, [optionsKey, enabled, cachePath, client]);
 
   const getSnapshot = useCallback((): LiveQueryState<T> => {
     if (!liveQueryRef.current) {
       return EMPTY_STATE as LiveQueryState<T>;
     }
     return liveQueryRef.current.getSnapshot();
-  }, []);
+  }, [optionsKey, enabled, cachePath, client]);
 
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
