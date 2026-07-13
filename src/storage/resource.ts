@@ -18,7 +18,7 @@ import {
 import { createResourceFilter } from "@/resource/filter";
 import { validateUpload, type UploadValidationOptions } from "./validation";
 import type { ResourceConfig, LifecycleHooks, ProcedureContext } from "@/resource/types";
-import { normalizeResourceConfig, type ResourceConfigInput } from "@/resource/column-ref";
+import { normalizeResourceConfig, columnPropertyKey, type ResourceConfigInput } from "@/resource/column-ref";
 import { useResource } from "@/resource/hook";
 import { createScopeResolver } from "@/auth/scope";
 import { executeBeforeCreate, executeAfterCreate } from "@/resource/procedures";
@@ -121,9 +121,12 @@ export const useFileResource = <TConfig extends TableConfig>(
   table: Table<TConfig> & FileTableSchema,
   rawConfig: FileResourceConfig<TConfig>
 ): Hono => {
-  // Normalize column-reference fields (Drizzle columns -> names) before reading
+  // Normalize column-reference fields to JS property keys before reading
   // generatedFields/fields here and before passing through to useResource.
-  const config = normalizeResourceConfig(rawConfig) as NormalizedFileResourceConfig<TConfig>;
+  const config = normalizeResourceConfig(
+    rawConfig,
+    table as unknown as Table<TConfig>
+  ) as NormalizedFileResourceConfig<TConfig>;
   const storage =
     config.storage ?? (hasGlobalStorage() ? getGlobalStorage() : null);
   if (!storage) {
@@ -144,7 +147,8 @@ export const useFileResource = <TConfig extends TableConfig>(
   } = config;
 
   const resourceName = getTableName(table);
-  const idColumnName = (idColumn as DrizzleColumn & { name: string }).name;
+  // Property key (not DB name) since it indexes rows returned by drizzle.
+  const idColumnName = columnPropertyKey(table as unknown as Table<TConfig>, idColumn as DrizzleColumn);
   const hasUserId = "userId" in getTableColumns(table);
   const filterer = createResourceFilter(table, config.customOperators ?? {});
   const scopeResolver = createScopeResolver(config.auth, resourceName);

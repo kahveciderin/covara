@@ -15,6 +15,7 @@ import {
   ZRangeOptions,
   ScanOptions,
   ScanResult,
+  ScopedSubscription,
 } from "./types";
 
 interface StoredValue {
@@ -595,6 +596,31 @@ export class MemoryKVStore implements KVAdapter {
 
   async punsubscribe(pattern: string): Promise<void> {
     this.patternSubscriptions.delete(pattern);
+  }
+
+  async subscribeScoped(
+    channels: string[],
+    callback: (message: string, channel: string) => void
+  ): Promise<ScopedSubscription> {
+    for (const channel of channels) {
+      if (!this.subscriptions.has(channel)) {
+        this.subscriptions.set(channel, new Set());
+      }
+      this.subscriptions.get(channel)!.add(callback);
+    }
+    let closed = false;
+    return {
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        for (const channel of channels) {
+          const set = this.subscriptions.get(channel);
+          if (!set) continue;
+          set.delete(callback);
+          if (set.size === 0) this.subscriptions.delete(channel);
+        }
+      },
+    };
   }
 
   // Transactions

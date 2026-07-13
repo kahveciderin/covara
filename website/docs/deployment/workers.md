@@ -84,15 +84,17 @@ See the full [database matrix](./databases.md).
 The in-memory KV is per-isolate, and Cloudflare runs many isolates — without a shared KV, a mutation handled by one isolate never reaches [SSE subscribers](../realtime/subscriptions.md) on another, and rate limits/sessions aren't shared. Use the [Durable Object KV](./durable-object-kv.md):
 
 ```typescript
-import { createCovara, createDurableObjectKV, setGlobalKV, initializeEventSubscription, type CovaraApp } from "covara";
+import { createCovara, createDurableObjectKV, setGlobalKV, type CovaraApp } from "covara";
 export { CovaraKVDurableObject } from "covara";
 
 interface Env { DB: D1Database; COVARA_KV: DurableObjectNamespace }
 
 let app: CovaraApp | undefined;
 const buildApp = (env: Env): CovaraApp => {
+  // Safe to memoize: createDurableObjectKV derives a fresh DO stub per operation
+  // (Workers requires request-scoped I/O), and subscription fan-out is set up
+  // lazily per live SSE stream — no eager cross-request socket.
   setGlobalKV(createDurableObjectKV(env.COVARA_KV));
-  void initializeEventSubscription();
   return createCovara().resource(/* ... */);
 };
 
@@ -124,7 +126,11 @@ import { initializeKV } from "covara/kv";
 await initializeKV({ type: "redis", redis: { url: env.REDIS_URL } });
 ```
 
-`initializeKV` calls `initializeEventSubscription()` for any distributed store, so a mutation on one instance reaches subscribers on another, and rate limits, sessions, and the task queue are shared. The explicit `void initializeEventSubscription()` is only needed when you use `setGlobalKV(...)` directly. The in-memory KV is per-process and must not be used when state spans instances.
+`initializeKV` sets the global KV so a mutation on one instance reaches subscribers on another, and rate limits, sessions, and the task queue are shared. Cross-process subscription fan-out is established **lazily and per SSE stream** — each live stream opens its own subscribe connection to the distributed KV and closes it when it ends, so a process doing only KV ops never opens one. The in-memory KV is per-process and must not be used when state spans instances.
+
+:::note Workers I/O safety
+On Cloudflare Workers, request-scoped I/O objects must not be reused across requests. Covara handles this end-to-end: the Durable Object KV derives a fresh stub per operation, and each live SSE stream owns its **own** fan-out subscribe socket bound to its request context — so closing one stream never orphans another's, and a memoized `app` (`app ??= buildApp(env)`) is correct even under many concurrent subscriptions per isolate. `initializeEventSubscription()` still exists for back-compat but is no longer needed; fan-out self-establishes per subscription.
+:::
 
 ## Cost: SSE subscriptions on Workers
 

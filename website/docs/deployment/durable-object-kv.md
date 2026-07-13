@@ -20,7 +20,7 @@ The **Durable Object KV** gives you shared, strongly-consistent state on Workers
 ```typescript
 // src/worker.ts
 import {
-  createCovara, createDurableObjectKV, setGlobalKV, initializeEventSubscription,
+  createCovara, createDurableObjectKV, setGlobalKV,
   type CovaraApp, type DurableObjectNamespaceLike,
 } from "covara";
 
@@ -30,8 +30,10 @@ interface Env { DB: D1Database; COVARA_KV: DurableObjectNamespaceLike }
 
 let app: CovaraApp | undefined;
 const buildApp = (env: Env): CovaraApp => {
+  // Memoizing the app is safe: the store derives a fresh DO stub per operation
+  // (Workers requires request-scoped I/O), and cross-isolate subscription
+  // fan-out is set up lazily per live SSE stream.
   setGlobalKV(createDurableObjectKV(env.COVARA_KV));
-  void initializeEventSubscription(); // cross-isolate subscription fan-out
   return createCovara().resource(/* ... */);
 };
 
@@ -59,7 +61,8 @@ You re-export `CovaraKVDurableObject` from your worker so wrangler can bind it. 
 
 - **Strong consistency.** All KV operations (strings, hashes, sets, lists, sorted sets, TTLs, transactions) run inside a single, single-threaded Durable Object — operations are strongly consistent, and a `multi()` batch is atomic with respect to other requests.
 - **No 128 KB cap.** Collections are stored **one entry per member** in Durable Object storage, so they aren't limited by the 128 KB single-value cap.
-- **Hibernatable WebSocket pub/sub.** Each isolate holds one WebSocket to the Durable Object for its subscriptions; idle connections don't accrue Durable Object duration charges, and they reconnect automatically with backoff.
+- **Request-scoped stubs.** Every operation derives a fresh Durable Object stub from the (stable) namespace binding rather than caching one. Workers forbids reusing a request-scoped I/O object across requests, so a cached stub would make every request after the first fail with `Cannot perform I/O on behalf of a different request` — deriving per operation avoids that while keeping the KV store itself memoizable.
+- **Per-stream hibernatable WebSocket pub/sub.** Each live SSE stream opens its **own** dedicated subscribe WebSocket to the Durable Object, bound to that request's context (not module state) — so closing one stream never affects another's fan-out. The socket opens only while a stream is live and closes when it ends; idle connections don't accrue Durable Object duration charges, and each reconnects automatically with backoff. A process doing only KV ops never opens one.
 - **Zero Cloudflare imports.** It uses structural types, so the implementation is Node-testable.
 
 ## Factory forms

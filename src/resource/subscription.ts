@@ -14,6 +14,7 @@ import {
   UserContext,
 } from "./types";
 import { getGlobalKV, hasGlobalKV, KVAdapter } from "../kv";
+import type { ScopedSubscription } from "../kv/types";
 
 // Local process state (cannot be shared across processes)
 // HTTP handlers must stay in memory on the process that owns the connection
@@ -511,6 +512,17 @@ export const registerHandler = (
   if (renderer) {
     localHandlerRenderers.set(handlerId, renderer);
   }
+  // Establish cross-process fan-out lazily, in this SSE request's live context
+  // (Workers-safe). When the KV supports scoped subscriptions, this handler gets
+  // its OWN dedicated socket bound to its request — so closing another stream
+  // can never orphan it; otherwise a single shared socket is ref-counted (Node,
+  // which has no per-request I/O constraint). Fire-and-forget: delivery begins
+  // once subscribed; anything in-flight is redelivered via changelog catchup.
+  if (supportsScopedSubscriptions(getKV())) {
+    openHandlerFanout(handlerId);
+  } else {
+    void ensureEventSubscription();
+  }
 };
 
 export const unregisterHandler = async (handlerId: string): Promise<void> => {
@@ -518,6 +530,16 @@ export const unregisterHandler = async (handlerId: string): Promise<void> => {
   localHandlerIds.delete(handlerId);
   localHandlerPolicies.delete(handlerId);
   localHandlerRenderers.delete(handlerId);
+
+  // Tear down this handler's fan-out. With per-handler scoped sockets, close only
+  // this handler's socket (others keep their own live sockets — the bulletproof
+  // case: closing one SSE stream never affects another). With the shared socket,
+  // release it once no local handlers remain.
+  if (localHandlerFanout.has(handlerId)) {
+    void closeHandlerFanout(handlerId);
+  } else if (localHandlerIds.size === 0) {
+    void releaseEventSubscription();
+  }
 
   // Handlers are process-local, so their subscriptions were created here and
   // are tracked locally — disconnect cleanup is O(own subscriptions), no scan.
@@ -676,44 +698,143 @@ const broadcastEvent = async (event: BroadcastEvent): Promise<void> => {
   await kv.publish(EVENTS_CHANNEL, JSON.stringify(event));
 };
 
-let eventSubscriptionInitialized = false;
+const handleBroadcastMessage = async (message: string): Promise<void> => {
+  try {
+    const broadcast: BroadcastEvent = JSON.parse(message);
+    const subscription = await getSubscription(broadcast.subscriptionId);
+    if (!subscription) return;
 
-// Initialize cross-process event fan-out for this process. Idempotent: safe to
-// call multiple times (only the first call subscribes). Auto-invoked by
-// initializeKV() so multi-instance deployments receive each other's events
-// without the developer remembering a manual wiring step.
-export const initializeEventSubscription = async (): Promise<void> => {
+    // Only process if this handler is local
+    if (localHandlerIds.has(subscription.handlerId)) {
+      sendEvent(subscription.handlerId, broadcast.event);
+    }
+  } catch {
+    // Ignore malformed messages
+  }
+};
+
+const handleAggregateMessage = (message: string): void => {
+  try {
+    const { resource } = JSON.parse(message) as { resource?: string };
+    if (typeof resource === "string") {
+      notifyLocalAggregateWatchers(resource);
+    }
+  } catch {
+    // Ignore malformed messages
+  }
+};
+
+let eventSubscriptionActive = false;
+let eventSubscriptionInflight: Promise<void> | null = null;
+
+// Open the cross-process fan-out subscription, but ONLY while this process holds
+// at least one local SSE handler. This is called from `registerHandler`, i.e.
+// from inside an SSE request's live streaming context — which matters on
+// Cloudflare Workers, where the client→Durable-Object subscribe WebSocket is
+// request-scoped and must not be opened eagerly at startup (that socket, bound to
+// request 1, is what caused the OutgoingFactory errors on every later mutation's
+// fan-out). Idempotent; retried on failure.
+const ensureEventSubscription = async (): Promise<void> => {
+  if (eventSubscriptionActive) return;
+  if (localHandlerIds.size === 0) return;
   const kv = getKV();
   if (!kv) return;
-  if (eventSubscriptionInitialized) return;
-  eventSubscriptionInitialized = true;
+  if (eventSubscriptionInflight) return eventSubscriptionInflight;
 
-  await kv.subscribe(EVENTS_CHANNEL, async (message: string) => {
+  eventSubscriptionActive = true;
+  eventSubscriptionInflight = (async () => {
     try {
-      const broadcast: BroadcastEvent = JSON.parse(message);
-      const subscription = await getSubscription(broadcast.subscriptionId);
-      if (!subscription) return;
-
-      // Only process if this handler is local
-      if (localHandlerIds.has(subscription.handlerId)) {
-        sendEvent(subscription.handlerId, broadcast.event);
-      }
-    } catch {
-      // Ignore malformed messages
+      await kv.subscribe(EVENTS_CHANNEL, handleBroadcastMessage);
+      await kv.subscribe(AGGREGATE_CHANNEL, handleAggregateMessage);
+    } catch (error) {
+      eventSubscriptionActive = false; // allow a later handler to retry
+      throw error;
+    } finally {
+      eventSubscriptionInflight = null;
     }
-  });
+  })();
+  return eventSubscriptionInflight;
+};
 
-  // Fan out cross-process mutation signals to local aggregate watchers.
-  await kv.subscribe(AGGREGATE_CHANNEL, (message: string) => {
-    try {
-      const { resource } = JSON.parse(message) as { resource?: string };
-      if (typeof resource === "string") {
-        notifyLocalAggregateWatchers(resource);
-      }
-    } catch {
-      // Ignore malformed messages
+// Tear down the fan-out subscription once no local handlers remain, releasing the
+// request-scoped subscribe socket instead of holding it across requests.
+const releaseEventSubscription = async (): Promise<void> => {
+  if (!eventSubscriptionActive) return;
+  if (localHandlerIds.size > 0) return;
+  eventSubscriptionActive = false;
+  const kv = getKV();
+  if (!kv) return;
+  try {
+    await kv.unsubscribe(EVENTS_CHANNEL);
+    await kv.unsubscribe(AGGREGATE_CHANNEL);
+  } catch {
+    // best effort — the socket may already be gone
+  }
+};
+
+// Deliver a broadcast to ONE specific local handler (used by the per-handler
+// scoped fan-out path, where every handler's dedicated socket sees every
+// broadcast but must act only on its own).
+const deliverBroadcastToHandler = async (
+  message: string,
+  handlerId: string
+): Promise<void> => {
+  try {
+    const broadcast: BroadcastEvent = JSON.parse(message);
+    if (!localHandlerIds.has(handlerId)) return;
+    const subscription = await getSubscription(broadcast.subscriptionId);
+    if (subscription && subscription.handlerId === handlerId) {
+      sendEvent(handlerId, broadcast.event);
     }
-  });
+  } catch {
+    // Ignore malformed messages
+  }
+};
+
+// Per-handler dedicated fan-out sockets (Workers path). Each SSE handler owns its
+// own subscribe connection, opened in its request's live context, so closing one
+// stream never orphans another's socket. Keyed by handlerId; the value is the
+// in-flight open so unregister can await + close even if it races the open.
+const localHandlerFanout = new Map<string, Promise<ScopedSubscription | null>>();
+
+const supportsScopedSubscriptions = (
+  kv: KVAdapter | null
+): kv is KVAdapter & { subscribeScoped: NonNullable<KVAdapter["subscribeScoped"]> } =>
+  !!kv && typeof kv.subscribeScoped === "function";
+
+const openHandlerFanout = (handlerId: string): void => {
+  const kv = getKV();
+  if (!supportsScopedSubscriptions(kv)) return;
+  if (localHandlerFanout.has(handlerId)) return;
+  const promise = kv
+    .subscribeScoped([EVENTS_CHANNEL, AGGREGATE_CHANNEL], (message, channel) => {
+      if (channel === AGGREGATE_CHANNEL) {
+        handleAggregateMessage(message);
+      } else {
+        void deliverBroadcastToHandler(message, handlerId);
+      }
+    })
+    .catch(() => null);
+  localHandlerFanout.set(handlerId, promise);
+};
+
+const closeHandlerFanout = async (handlerId: string): Promise<void> => {
+  const promise = localHandlerFanout.get(handlerId);
+  if (!promise) return;
+  localHandlerFanout.delete(handlerId);
+  const sub = await promise;
+  if (sub) {
+    await sub.close();
+  }
+};
+
+// Public entry point (auto-invoked by initializeKV and the Workers template).
+// Lazy by design: it no longer opens a socket at startup — the fan-out
+// subscription is established on demand when the first SSE handler registers, so
+// a process doing only KV ops (sessions/changelog/rate limits) never opens a
+// cross-request socket. Kept for back-compat.
+export const initializeEventSubscription = async (): Promise<void> => {
+  await ensureEventSubscription();
 };
 
 export const sendExistingItems = async <T extends Record<string, unknown>>(
@@ -1488,7 +1609,12 @@ export const clearAllSubscriptions = async (): Promise<void> => {
   localSeqCounters.clear();
   localSubsByResource.clear();
   localEventTimestamps.clear();
-  eventSubscriptionInitialized = false;
+  eventSubscriptionActive = false;
+  eventSubscriptionInflight = null;
+  for (const promise of localHandlerFanout.values()) {
+    void promise.then((sub) => sub?.close()).catch(() => {});
+  }
+  localHandlerFanout.clear();
 
   const kv = getKV();
   if (!kv) return;

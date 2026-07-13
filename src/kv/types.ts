@@ -82,11 +82,28 @@ export interface KVAdapter {
   unsubscribe(channel: string): Promise<void>;
   punsubscribe(pattern: string): Promise<void>;
 
+  // Optional: open a DEDICATED subscription connection for `channels`, isolated
+  // from the shared subscribe()/unsubscribe() pool, returning a handle that
+  // closes only that connection. Required on runtimes where a subscribe
+  // connection is request-scoped (Cloudflare Workers): each live SSE stream must
+  // own its own fan-out connection bound to its own request context, so closing
+  // one stream never orphans another's. Adapters that omit this share a single
+  // connection via subscribe()/unsubscribe() — fine on Node (no per-request I/O
+  // constraint). The callback receives (message, channel) for every channel.
+  subscribeScoped?(
+    channels: string[],
+    callback: (message: string, channel: string) => void
+  ): Promise<ScopedSubscription>;
+
   // Transactions (for atomic operations)
   multi(): KVTransaction;
 
   // Lua scripting (for complex atomic operations)
   eval(script: string, keys: string[], args: string[]): Promise<unknown>;
+}
+
+export interface ScopedSubscription {
+  close(): Promise<void>;
 }
 
 export interface KVTransaction {

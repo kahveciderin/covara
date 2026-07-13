@@ -25,6 +25,7 @@ import {
   KVTransaction,
   ScanOptions,
   ScanResult,
+  ScopedSubscription,
   SetOptions,
   ZRangeOptions,
 } from "./types";
@@ -847,8 +848,17 @@ export class CovaraKVDurableObject {
 const defaultReconnectDelay = (attempt: number): number =>
   Math.min(250 * 2 ** attempt, 5000);
 
+// A Durable Object stub is a request-scoped I/O object on Cloudflare Workers:
+// creating it in one request and calling `.fetch()` in a later request throws
+// "Cannot perform I/O on behalf of a different request" (OutgoingFactory). The
+// stub must therefore be derived fresh in the context of each operation. The
+// store holds a resolver (over the stable namespace binding) rather than a
+// cached stub. A raw stub is still accepted for back-compat but should not be
+// cached across requests on Workers.
+export type DurableObjectStubResolver = () => DurableObjectStubLike;
+
 export class DurableObjectKVStore implements KVAdapter {
-  private stub: DurableObjectStubLike;
+  private getStub: DurableObjectStubResolver;
   private prefix: string;
   private connected = false;
   private channelCallbacks = new Map<string, Set<SubscriptionCallback>>();
@@ -859,10 +869,10 @@ export class DurableObjectKVStore implements KVAdapter {
   private reconnectDelay: (attempt: number) => number;
 
   constructor(
-    stub: DurableObjectStubLike,
+    stub: DurableObjectStubLike | DurableObjectStubResolver,
     options?: { prefix?: string; reconnectDelay?: (attempt: number) => number }
   ) {
-    this.stub = stub;
+    this.getStub = typeof stub === "function" ? stub : () => stub;
     this.prefix = options?.prefix ?? "";
     this.reconnectDelay = options?.reconnectDelay ?? defaultReconnectDelay;
   }
@@ -879,7 +889,7 @@ export class DurableObjectKVStore implements KVAdapter {
     commands: BatchCommand[],
     stopOnError = false
   ): Promise<unknown[]> {
-    const response = await this.stub.fetch("https://covara-kv/batch", {
+    const response = await this.getStub().fetch("https://covara-kv/batch", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ commands, stopOnError }),
@@ -1095,6 +1105,86 @@ export class DurableObjectKVStore implements KVAdapter {
     return (await this.call("publish", channel, message)) as number;
   }
 
+  // Dedicated subscribe connection for these channels, isolated from the shared
+  // socket. Each call opens its own WebSocket in the CURRENT request's context —
+  // essential on Workers, where a subscribe socket is request-scoped: an SSE
+  // stream owns its own fan-out socket for its lifetime, so closing one stream
+  // never orphans another's. Reconnects within its own lifetime; close() tears
+  // only this connection down.
+  async subscribeScoped(
+    channels: string[],
+    callback: SubscriptionCallback
+  ): Promise<ScopedSubscription> {
+    let closed = false;
+    let socket: WebSocketLike | null = null;
+    let attempts = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearTimer = () => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (closed || reconnectTimer) return;
+      const delay = this.reconnectDelay(attempts);
+      attempts += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        void open().catch(() => scheduleReconnect());
+      }, delay);
+    };
+
+    const open = async (): Promise<void> => {
+      if (closed) return;
+      const params = new URLSearchParams();
+      params.set("channels", channels.map(encodeURIComponent).join(","));
+      const response = await this.getStub().fetch(
+        `https://covara-kv/subscribe?${params.toString()}`,
+        { headers: { Upgrade: "websocket" } }
+      );
+      const ws = (response as unknown as { webSocket?: WebSocketLike }).webSocket;
+      if (!ws) {
+        throw new Error("Durable Object did not return a WebSocket");
+      }
+      ws.accept?.();
+      ws.addEventListener?.("message", (event) => {
+        if (closed) return;
+        let parsed: { channel?: unknown; message?: unknown };
+        try {
+          parsed = JSON.parse(String(event.data));
+        } catch {
+          return;
+        }
+        if (typeof parsed.channel === "string" && typeof parsed.message === "string") {
+          callback(parsed.message, parsed.channel);
+        }
+      });
+      ws.addEventListener?.("close", () => {
+        if (closed || ws !== socket) return;
+        socket = null;
+        scheduleReconnect();
+      });
+      socket = ws;
+      attempts = 0;
+    };
+
+    await open();
+
+    return {
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        clearTimer();
+        const ws = socket;
+        socket = null;
+        ws?.close();
+      },
+    };
+  }
+
   async subscribe(channel: string, callback: SubscriptionCallback): Promise<void> {
     const callbacks = this.channelCallbacks.get(channel);
     if (callbacks) {
@@ -1155,7 +1245,7 @@ export class DurableObjectKVStore implements KVAdapter {
       params.set("patterns", patterns.map(encodeURIComponent).join(","));
     }
 
-    const response = await this.stub.fetch(
+    const response = await this.getStub().fetch(
       `https://covara-kv/subscribe?${params.toString()}`,
       { headers: { Upgrade: "websocket" } }
     );
@@ -1330,8 +1420,14 @@ export const createDurableObjectKV = (
   namespace: DurableObjectNamespaceLike,
   options?: DurableObjectKVOptions
 ): KVAdapter => {
-  const stub = namespace.get(namespace.idFromName(options?.name ?? "covara-kv"));
-  return new DurableObjectKVStore(stub, {
+  const name = options?.name ?? "covara-kv";
+  // Derive the stub per operation. The namespace binding is stable across
+  // requests; `idFromName` is a pure hash and `get` allocates a stub with no
+  // I/O — the request-scoped part is the `.fetch()` on the stub, which now runs
+  // in the calling request's context. Caching the stub here was the cause of the
+  // cross-request OutgoingFactory errors on Workers.
+  const resolveStub = () => namespace.get(namespace.idFromName(name));
+  return new DurableObjectKVStore(resolveStub, {
     prefix: options?.prefix,
     reconnectDelay: options?.reconnectDelay,
   });

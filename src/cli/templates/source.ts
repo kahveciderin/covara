@@ -189,7 +189,6 @@ import {
   scopePatterns,
   createDurableObjectKV,
   setGlobalKV,
-  initializeEventSubscription,
   type CovaraApp,
   type DurableObjectNamespaceLike,
 } from "covara";
@@ -205,8 +204,11 @@ interface Env {
 let app: CovaraApp | undefined;
 
 const buildApp = (env: Env): CovaraApp => {
+  // KV is backed by the CovaraKVDurableObject. createDurableObjectKV derives a
+  // fresh DO stub per operation (Workers requires request-scoped I/O), so this
+  // memoized app is safe across requests. Cross-process subscription fan-out is
+  // established lazily, per live SSE stream — no eager setup needed here.
   setGlobalKV(createDurableObjectKV(env.COVARA_KV));
-  void initializeEventSubscription();
 
   const db = drizzle(env.DB);
   return createCovara({ cors: true, adminUI: true }).resource(todos, {
@@ -233,7 +235,6 @@ import {
   scopePatterns,
   createDurableObjectKV,
   setGlobalKV,
-  initializeEventSubscription,
   type CovaraApp,
   type DurableObjectNamespaceLike,
 } from "covara";
@@ -249,8 +250,11 @@ interface Env {
 let app: CovaraApp | undefined;
 
 const buildApp = (env: Env): CovaraApp => {
+  // KV is backed by the CovaraKVDurableObject. createDurableObjectKV derives a
+  // fresh DO stub per operation (Workers requires request-scoped I/O), so this
+  // memoized app is safe across requests. Cross-process subscription fan-out is
+  // established lazily, per live SSE stream — no eager setup needed here.
   setGlobalKV(createDurableObjectKV(env.COVARA_KV));
-  void initializeEventSubscription();
 
   const client = postgres(env.DATABASE_URL, { max: 5, fetch_types: false });
   const db = drizzle(client);

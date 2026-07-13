@@ -62,7 +62,11 @@ import {
 } from "./procedures";
 import { trackMutations, isTrackedDb } from "./track-mutations";
 import { makeTxRunner } from "./transaction";
-import { normalizeResourceConfig, type ResourceConfigInput } from "./column-ref";
+import {
+  normalizeResourceConfig,
+  columnPropertyKey,
+  type ResourceConfigInput,
+} from "./column-ref";
 import {
   ResourceConfig,
   CustomOperator,
@@ -139,11 +143,15 @@ export const useResource = <TConfig extends TableConfig>(
   rawConfig: ResourceConfigInput<TConfig, Table<TConfig>>
 ): Hono => {
   // Column-reference config fields accept Drizzle columns (preferred) or names
-  // (deprecated); normalize them to names so the rest of the layer is unchanged.
-  const config = normalizeResourceConfig(rawConfig);
+  // (deprecated); normalize them to the schema's JS PROPERTY keys — the key space
+  // of rows, request bodies, and drizzle-zod schemas — so field policies compare
+  // correctly for columns whose DB name differs from their property.
+  const config = normalizeResourceConfig(rawConfig, schema);
   const db = config.db;
   const resourceName = getTableName(schema);
-  const idColumnName = config.id.name;
+  // Property key (not the DB name) since it indexes rows and is used as a filter
+  // field, both of which are property-keyed.
+  const idColumnName = columnPropertyKey(schema, config.id);
   // Interactive transactions everywhere except Cloudflare D1 (no BEGIN/COMMIT).
   // On D1, single-statement mutations auto-commit atomically and multi-statement
   // ones fall back to db.batch; see makeTxRunner.

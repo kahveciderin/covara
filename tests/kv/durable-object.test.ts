@@ -810,3 +810,120 @@ describe("memory transaction failure parity helper", () => {
     await memory.disconnect();
   });
 });
+
+describe("Workers cross-request I/O safety (per-op stub derivation)", () => {
+  // Simulates the Cloudflare constraint: a DO stub is bound to the request in
+  // which it was created; using its .fetch() in a later request throws
+  // OutgoingFactory. A single backing DO is shared, only the stub is scoped.
+  let currentRequest = 0;
+
+  class RequestScopedNamespace implements DurableObjectNamespaceLike {
+    private state = new FakeDOState();
+    private object = new CovaraKVDurableObject(this.state);
+    getCalls = 0;
+
+    idFromName(name: string): unknown {
+      return name;
+    }
+
+    get(_id: unknown): DurableObjectStubLike {
+      this.getCalls++;
+      const boundTo = currentRequest;
+      const target = this.object;
+      return {
+        fetch: (input, init) => {
+          if (boundTo !== currentRequest) {
+            throw new Error(
+              "Cannot perform I/O on behalf of a different request (I/O type: OutgoingFactory)"
+            );
+          }
+          return target.fetch(new Request(input, init as RequestInit));
+        },
+      };
+    }
+  }
+
+  it("survives KV ops across simulated requests and derives a fresh stub per op", async () => {
+    const ns = new RequestScopedNamespace();
+
+    // Request 1: build the store (as buildApp(env) would) and do a write.
+    currentRequest = 1;
+    const kv = createDurableObjectKV(ns);
+    await kv.connect();
+    await kv.set("k", "v1");
+    const callsAfterReq1 = ns.getCalls;
+
+    // Request 2: the store is memoized/reused; a read must NOT throw
+    // OutgoingFactory (the previous code cached the request-1 stub and 500ed).
+    currentRequest = 2;
+    await expect(kv.get("k")).resolves.toBe("v1");
+
+    // Request 3: another write, still fine.
+    currentRequest = 3;
+    await kv.incr("counter");
+    await expect(kv.get("counter")).resolves.toBe("1");
+
+    // A fresh stub was derived for each operation, not cached once.
+    expect(ns.getCalls).toBeGreaterThan(callsAfterReq1);
+
+    await kv.disconnect();
+  });
+});
+
+describe("scoped subscriptions are isolated (Workers bulletproof)", () => {
+  it("closing one scoped subscription never affects another's delivery", async () => {
+    const ns = new FakeNamespace();
+    const kv = createDurableObjectKV(ns);
+    await kv.connect();
+
+    const a: string[] = [];
+    const b: string[] = [];
+    const subA = await kv.subscribeScoped!(["covara:events"], (msg) => a.push(msg));
+    const subB = await kv.subscribeScoped!(["covara:events"], (msg) => b.push(msg));
+
+    await kv.publish("covara:events", "m1");
+    await sleep(0);
+    expect(a).toEqual(["m1"]);
+    expect(b).toEqual(["m1"]);
+
+    // Close only A (as one SSE stream ending would). B's dedicated socket is
+    // untouched and keeps receiving — the previous shared-socket design broke B.
+    await subA.close();
+    await kv.publish("covara:events", "m2");
+    await sleep(0);
+    expect(a).toEqual(["m1"]);
+    expect(b).toEqual(["m1", "m2"]);
+
+    await subB.close();
+    await kv.publish("covara:events", "m3");
+    await sleep(0);
+    expect(b).toEqual(["m1", "m2"]);
+
+    await kv.disconnect();
+  });
+
+  it("a scoped subscription is independent of the shared subscribe() socket", async () => {
+    const ns = new FakeNamespace();
+    const kv = createDurableObjectKV(ns);
+    await kv.connect();
+
+    const shared: string[] = [];
+    const scoped: string[] = [];
+    await kv.subscribe("covara:events", (msg) => shared.push(msg));
+    const sub = await kv.subscribeScoped!(["covara:events"], (msg) => scoped.push(msg));
+
+    await kv.publish("covara:events", "x");
+    await sleep(0);
+    expect(shared).toEqual(["x"]);
+    expect(scoped).toEqual(["x"]);
+
+    // Closing the scoped socket leaves the shared subscription working.
+    await sub.close();
+    await kv.publish("covara:events", "y");
+    await sleep(0);
+    expect(shared).toEqual(["x", "y"]);
+    expect(scoped).toEqual(["x"]);
+
+    await kv.disconnect();
+  });
+});

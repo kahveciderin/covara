@@ -11,6 +11,10 @@ The `fields` config controls, per column, what clients can **read**, **write**, 
 
 Pass the **Drizzle column** (like `id`); a string column name also works but is deprecated.
 
+:::note Columns with a distinct DB name
+Column references are resolved to the schema's **JS property key**, so a column whose database name differs from its property — e.g. `orgId: text("org_id")` — is handled correctly everywhere: `readable`, `writable`, `filterable`, `sortable`, `generatedFields`, and `softDelete.field` all compare in property space (the space of request bodies and query results). You do not need to rename columns to make field policies work.
+:::
+
 ```typescript
 useResource(usersTable, {
   id: usersTable.id,
