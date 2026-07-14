@@ -386,7 +386,14 @@ export const useResource = <TConfig extends TableConfig>(
   const trackedDb = isTrackedDb(db)
     ? db
     : trackMutations(db, {
-        [resourceName]: { table: schema, id: config.id },
+        [resourceName]: {
+          table: schema,
+          id: config.id,
+          // Thread custom operators so the fan-out matcher can compile
+          // subscription filters that use them (a `=has=` in any open
+          // subscription would otherwise 400 every write on this resource).
+          customOperators: config.customOperators,
+        },
       });
 
   const etagConfig = config.etag;

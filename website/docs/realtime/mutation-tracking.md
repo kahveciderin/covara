@@ -60,6 +60,12 @@ const trackedDb = trackMutations(baseDb, tables, {
 trackMutations(baseDb, {
   todos: { table: todosTable, id: todosTable.id },
   users: { table: usersTable, id: usersTable.id, resourceName: "api-users" }, // custom name
+  // If subscriptions on this table use custom filter operators, pass them so the
+  // fan-out matcher can compile those filters — otherwise a subscription using a
+  // custom operator makes every write to the table throw a FilterParseError.
+  // (Resources created via `.resource()` thread their `customOperators` here
+  // automatically; you only need this when calling trackMutations yourself.)
+  posts: { table: postsTable, id: postsTable.id, customOperators: { "=has=": hasOp } },
 });
 ```
 

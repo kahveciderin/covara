@@ -1,6 +1,6 @@
 import { Table, getTableName, AnyColumn, SQL } from "drizzle-orm";
 import { changelog, recordCreate, recordUpdate, recordDelete } from "./changelog";
-import { ChangelogEntry, DrizzleDatabase } from "./types";
+import { ChangelogEntry, DrizzleDatabase, CustomOperator } from "./types";
 import { getGlobalKV, hasGlobalKV } from "../kv";
 import { createHash } from "node:crypto";
 import {
@@ -15,6 +15,11 @@ export interface TableRegistration {
   table: Table<any>;
   id: AnyColumn;
   resourceName?: string;
+  // The resource's custom filter operators. Required so the fan-out matcher can
+  // compile subscription filters that use them — without these, any open
+  // subscription whose filter uses a custom operator (e.g. `=has=`) throws a
+  // FilterParseError on every tracked write, failing the create/update.
+  customOperators?: Record<string, CustomOperator>;
 }
 
 export interface CacheConfig {
@@ -820,7 +825,10 @@ export function trackMutations<TDb extends DrizzleDatabase>(
   for (const registration of Object.values(tables)) {
     const tableName = getTableName(registration.table);
     const resourceName = registration.resourceName ?? tableName;
-    const filter = createResourceFilter(registration.table, {});
+    const filter = createResourceFilter(
+      registration.table,
+      registration.customOperators ?? {}
+    );
 
     const tableInfo: TableInfo = {
       table: registration.table,

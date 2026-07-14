@@ -240,6 +240,8 @@ useResource(usersTable, {
 GET /api/users?filter=permissions=jsoncontains="write"
 ```
 
+Custom operators work in **live subscription filters** too, not just query params — Covara threads a resource's `customOperators` into the mutation fan-out matcher, so a mutation to the resource can be matched against a subscription whose filter uses one. (If you wrap your own db with [`trackMutations`](../realtime/mutation-tracking.md) directly and subscribe with a custom operator, pass the same `customOperators` in the table registration.)
+
 ## Filterable allowlist
 
 To restrict which columns may be filtered, set [`fields.filterable`](./fields.md). A filter referencing a non-allowed column returns a `400 FilterParseError`.
