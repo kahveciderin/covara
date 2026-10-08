@@ -253,6 +253,15 @@ const buildNullAwareEquality = (
   return eq(column, value);
 };
 
+// A cursor is JSON, so a Date sort value comes back as an ISO string. Columns
+// that map Dates to the driver (timestamp modes) need the Date again before
+// the value can be compared against them.
+const reviveCursorValue = (column: AnyColumn, value: unknown): unknown => {
+  if (column.dataType !== "date" || typeof value !== "string") return value;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date;
+};
+
 export const buildCursorCondition = <TConfig extends TableConfig>(
   schema: Table<TConfig>,
   idColumn: AnyColumn,
@@ -269,7 +278,11 @@ export const buildCursorCondition = <TConfig extends TableConfig>(
   }
 
   const conditions: SQL[] = [];
-  const cursorValues = cursor.v as Record<string, unknown>;
+  const cursorValues: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries((cursor.v ?? {}) as Record<string, unknown>)) {
+    const column = columns[field];
+    cursorValues[field] = column ? reviveCursorValue(column, value) : value;
+  }
 
   for (let i = 0; i < orderByFields.length; i++) {
     const { field, direction: fieldDir } = orderByFields[i]!;
