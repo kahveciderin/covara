@@ -34,6 +34,7 @@ import {
   registerKnownIds,
   registerResourceMask,
   registerAggregateWatcher,
+  whenHandlerFanoutReady,
   takeRenderer,
   type EventRenderer,
 } from "./subscription";
@@ -984,6 +985,7 @@ export const useResource = <TConfig extends TableConfig>(
     registerHandler(handlerId, writer, sseConfig.onBackpressure, sink.renderer);
     activeClients++;
     startEventPolling();
+    await whenHandlerFanoutReady(handlerId);
 
     const currentSeq = await changelog.getCurrentSequence();
     sink.writeConnected(currentSeq);
@@ -1320,6 +1322,7 @@ export const useResource = <TConfig extends TableConfig>(
     registerHandler(handlerId, writer, sseConfig.onBackpressure);
     activeClients++;
     startEventPolling();
+    await whenHandlerFanoutReady(handlerId);
 
     let lastFingerprint: string | undefined;
     const emit = async () => {
@@ -1349,9 +1352,13 @@ export const useResource = <TConfig extends TableConfig>(
       }, config.sse?.aggregateDebounceMs ?? 150);
     };
 
-    const unwatch = registerAggregateWatcher(resourceName, (changed) => {
-      if (affectsAggregate(changed)) scheduleRecompute();
-    });
+    const unwatch = registerAggregateWatcher(
+      resourceName,
+      (changed) => {
+        if (affectsAggregate(changed)) scheduleRecompute();
+      },
+      handlerId
+    );
 
     let closed = false;
     const handle: SubscribeHandle = {
@@ -1430,77 +1437,63 @@ export const useResource = <TConfig extends TableConfig>(
   // endpoint so many channels can share one physical SSE stream. Reuses the exact
   // same cores (scope, limits, catchup, scope-recheck, aggregate loop) as the
   // standalone routes — only the sink (framing) and stream ownership differ.
-  registerSubscribeDispatcher(resourceName, async ({ c, sink, kind, params }) => {
+  registerSubscribeDispatcher(resourceName, async ({ c, kind, params }) => {
     const user = getUser(c);
     const userId = user?.id ?? "anonymous";
     const clientIP = getClientIP(c);
 
-    if (kind === "aggregate") {
-      let prepared: PreparedAggregate;
-      try {
-        prepared = await prepareAggregate(c, params);
-      } catch (error) {
-        return {
-          ok: false,
-          status: 400,
-          detail: error instanceof Error ? error.message : "Invalid aggregate subscription",
-        };
-      }
-      const slot = reserveSubscriptionSlot(userId, clientIP);
-      if (!slot.ok) return { ok: false, status: slot.status, detail: slot.detail };
-      try {
-        const handle = await startAggregateSubscription(sink, prepared);
-        return {
-          ok: true,
-          handle: {
-            close: async () => {
-              await handle.close();
-              slot.release();
-            },
-          },
-        };
-      } catch (error) {
-        slot.release();
-        return {
-          ok: false,
-          status: 500,
-          detail: error instanceof Error ? error.message : "Failed to start subscription",
-        };
-      }
-    }
-
-    let scope: ResolvedScope;
+    let begin: (sink: SubscriptionSink) => Promise<SubscribeHandle>;
     try {
-      scope = await validateResourceSubscribe(c, params.filter ?? "");
+      if (kind === "aggregate") {
+        const prepared = await prepareAggregate(c, params);
+        begin = async (sink) => {
+          try {
+            return await startAggregateSubscription(sink, prepared);
+          } catch (error) {
+            sink.writeError(error instanceof Error ? error.message : "Failed to start subscription");
+            throw error;
+          }
+        };
+      } else {
+        const scope = await validateResourceSubscribe(c, params.filter ?? "");
+        // On an initial-data failure the core writes a framed error itself.
+        begin = (sink) => startResourceSubscription(c, sink, params, scope);
+      }
     } catch (error) {
       return {
         ok: false,
         status: 400,
-        detail: error instanceof Error ? error.message : "Invalid subscription",
+        detail:
+          error instanceof Error
+            ? error.message
+            : kind === "aggregate"
+              ? "Invalid aggregate subscription"
+              : "Invalid subscription",
       };
     }
+
     const slot = reserveSubscriptionSlot(userId, clientIP);
     if (!slot.ok) return { ok: false, status: slot.status, detail: slot.detail };
-    try {
-      const handle = await startResourceSubscription(c, sink, params, scope);
-      return {
-        ok: true,
-        handle: {
+
+    return {
+      ok: true,
+      start: async (sink) => {
+        let handle: SubscribeHandle;
+        try {
+          handle = await begin(sink);
+        } catch (error) {
+          slot.release();
+          throw error;
+        }
+        return {
           close: async () => {
             await handle.close();
             slot.release();
           },
-        },
-      };
-    } catch (error) {
-      // The core already wrote a framed error and tore down its channel.
-      slot.release();
-      return {
-        ok: false,
-        status: 500,
-        detail: error instanceof Error ? error.message : "Failed to start subscription",
-      };
-    }
+        };
+      },
+      cancel: () => slot.release(),
+    };
   });
 
   router.get("/count", async (c) => {

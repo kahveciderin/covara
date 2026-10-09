@@ -40,13 +40,21 @@ export interface SubscribeDispatchArgs {
   // Hono context of the control request — carries the authenticated user, IP, and
   // impersonation/admin-bypass markers used to resolve this channel's scope.
   c: Context;
-  sink: SubscriptionSink;
   kind: "resource" | "aggregate";
   params: MuxSubscribeParams;
 }
 
+// Dispatch is two-phase because the control request and the stream are different
+// requests. Validation, scope resolution and the limit slot run in the control
+// request (so errors become its HTTP status); `start` must run in the request
+// that owns the stream, since on Workers only that request may write it or open
+// the channel's fan-out socket. Exactly one of `start` / `cancel` is called.
 export type SubscribeDispatchResult =
-  | { ok: true; handle: SubscribeHandle }
+  | {
+      ok: true;
+      start(sink: SubscriptionSink): Promise<SubscribeHandle>;
+      cancel(): void;
+    }
   | { ok: false; status: number; detail: string };
 
 export type SubscribeDispatcher = (

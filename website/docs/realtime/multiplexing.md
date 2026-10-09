@@ -32,6 +32,8 @@ sequenceDiagram
 - Events are framed with their channel id (`event: mux`, `data: { c, n, e }`) and demultiplexed on the client back into the exact `connected` / `message` / `aggregate` / `error` events each subscription expects.
 - Closing a subscription sends an `unsubscribe`; closing the stream tears down every channel.
 
+Control `POST`s and the stream are separate HTTP requests. The control request only validates the subscription (auth scope, filter, limits). Errors there come back as its HTTP status. The channel itself is always started and stopped **inside the stream's own request**. This matters on Cloudflare Workers, where a stream and the sockets it relies on belong to the request that opened them. Anything a short-lived `POST` opened would die with the `POST`, so the channel would accept the subscription and then never deliver a change. On Workers the server queues the start and wakes the stream's request through its own Durable Object socket. The `POST` returns as soon as the work is queued, and a later start failure arrives as the channel's `error` event. On Node the channel starts inline.
+
 Each channel keeps its **own** auth scope, filter, `resumeFrom`/catchup, and per-user/IP subscription limits — multiplexing changes only the transport, not the semantics. A subscription can never see rows another channel is scoped to.
 
 ## Configuration

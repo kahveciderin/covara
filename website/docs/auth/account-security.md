@@ -18,6 +18,16 @@ useAuth({ adapter, login, csrf: true });
 
 Uses the **double-submit-cookie** pattern: a non-`httpOnly` `csrf_token` cookie is issued on safe requests and refreshed on login, and unsafe methods (`POST`/`PUT`/`PATCH`/`DELETE`) must echo it back in the `X-CSRF-Token` header. Requests carrying an `Authorization` header (bearer/API-key clients) are exempt. A mismatch returns `403`. Also available standalone as `createCsrfMiddleware`.
 
+The Covara client handles this for you. The client transport (`client.session.*` and every other unsafe request) and the React `useAuth()` hook (`login`/`signup`/`logout`/verification) read the `csrf_token` cookie and echo it in `X-CSRF-Token`. If no token cookie has been issued yet, they first make a `GET /me` to get one. The CSRF check covers `/login` itself, so this priming step is what lets a first login succeed. If you renamed the cookie or header on the server, pass the same names to the client:
+
+```typescript
+getOrCreateClient({ baseUrl: location.origin, csrf: { cookieName: "xsrf", headerName: "X-XSRF" } });
+useAuth({ csrf: { cookieName: "xsrf", headerName: "X-XSRF" } }); // React hook
+// csrf: false disables sending the header
+```
+
+The token is read from `document.cookie`, so it is only sent from a browser on the same site as the API. A cross-site client should authenticate with a bearer token, which is exempt.
+
 ## Login throttling
 
 ```typescript

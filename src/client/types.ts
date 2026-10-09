@@ -4,6 +4,7 @@ import type { OfflineManager } from "./offline";
 import type { AuthManager } from "./auth";
 import type { JWTClient } from "./jwt";
 import type { DateFieldRegistry } from "./dates";
+import type { CsrfConfig } from "./csrf";
 import type { LiveQueryCache, InvalidateTarget } from "./query-cache";
 import type { BillingClient } from "./billing";
 
@@ -241,6 +242,13 @@ export interface TransportConfig {
    * Defaults to off (wire types remain ISO `string`).
    */
   parseDates?: boolean | DateFieldRegistry;
+  /**
+   * CSRF double-submit. On unsafe requests the transport echoes the server's
+   * CSRF cookie (default `csrf_token`) in a header (default `X-CSRF-Token`), as
+   * `useAuth({ csrf: true })` on the server requires. Sent only when the cookie
+   * is readable (browser, same site). Set false to never send it.
+   */
+  csrf?: false | CsrfConfig;
 }
 
 export interface TransportRequest {

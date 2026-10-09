@@ -91,6 +91,18 @@ const localHandlerIds = new Set<string>();
 // conservatively.
 type AggregateWatcher = (changed?: Record<string, unknown>[]) => void;
 const aggregateWatchers = new Map<string, Set<AggregateWatcher>>();
+// Watcher → the SSE handler it feeds. A watcher whose handler has its own scoped
+// fan-out socket is only ever invoked from that socket (its request's context).
+const aggregateWatcherHandlers = new Map<AggregateWatcher, string>();
+
+// Rows of recent local aggregate notifications, keyed by the id published with
+// them, so a notification echoed back over pub/sub to this process keeps its row
+// data (scope-skip) and isn't double-applied to watchers already notified.
+const AGGREGATE_NOTICE_TTL_MS = 30000;
+const recentAggregateNotices = new Map<
+  string,
+  { at: number; changed?: Record<string, unknown>[] }
+>();
 
 // In-memory fallback storage (used when KV is not configured)
 const localSubscriptions = new Map<string, Subscription>();
@@ -255,7 +267,8 @@ const getKV = (): KVAdapter | null => {
 // aggregate subscriptions to recompute. Returns an unsubscribe function.
 export const registerAggregateWatcher = (
   resource: string,
-  watcher: AggregateWatcher
+  watcher: AggregateWatcher,
+  handlerId?: string
 ): (() => void) => {
   let set = aggregateWatchers.get(resource);
   if (!set) {
@@ -263,7 +276,9 @@ export const registerAggregateWatcher = (
     aggregateWatchers.set(resource, set);
   }
   set.add(watcher);
+  if (handlerId) aggregateWatcherHandlers.set(watcher, handlerId);
   return () => {
+    aggregateWatcherHandlers.delete(watcher);
     const current = aggregateWatchers.get(resource);
     if (!current) return;
     current.delete(watcher);
@@ -271,13 +286,27 @@ export const registerAggregateWatcher = (
   };
 };
 
+const isSocketBoundWatcher = (watcher: AggregateWatcher): boolean => {
+  const handlerId = aggregateWatcherHandlers.get(watcher);
+  return handlerId !== undefined && localHandlerFanout.has(handlerId);
+};
+
+// `target` selects which watchers run: "unbound" = those NOT fed by their own
+// scoped socket (safe to invoke from any context), or a handler id = only that
+// handler's watchers (invoked from that handler's socket, in its request).
 const notifyLocalAggregateWatchers = (
   resource: string,
-  changed?: Record<string, unknown>[]
+  changed: Record<string, unknown>[] | undefined,
+  target: "unbound" | { handlerId: string }
 ): void => {
   const set = aggregateWatchers.get(resource);
   if (!set) return;
   for (const watcher of set) {
+    const selected =
+      target === "unbound"
+        ? !isSocketBoundWatcher(watcher)
+        : aggregateWatcherHandlers.get(watcher) === target.handlerId;
+    if (!selected) continue;
     try {
       watcher(changed);
     } catch {
@@ -286,23 +315,36 @@ const notifyLocalAggregateWatchers = (
   }
 };
 
+const rememberAggregateNotice = (changed?: Record<string, unknown>[]): string => {
+  const now = Date.now();
+  for (const [id, notice] of recentAggregateNotices) {
+    if (now - notice.at < AGGREGATE_NOTICE_TTL_MS) break;
+    recentAggregateNotices.delete(id);
+  }
+  const id = uuidv4();
+  recentAggregateNotices.set(id, { at: now, changed });
+  return id;
+};
+
 // Signal that a resource was mutated so aggregate subscriptions recompute.
 // Notifies local watchers immediately (with the changed rows, when available,
 // so watchers can skip recompute for out-of-scope mutations) and (when KV is
 // configured) publishes to other processes. The cross-process notification
 // carries no row data — remote watchers recompute conservatively — to avoid
-// shipping raw rows over pub/sub. Double-delivery to the publisher is harmless;
-// watchers debounce before recomputing.
+// shipping raw rows over pub/sub. Watchers fed by their own scoped socket are
+// skipped here (this runs in the mutating request's context) and are notified by
+// the echo on their socket instead, which looks the rows back up by notice id.
 export const notifyAggregateWatchers = async (
   resource: string,
   changed?: Record<string, unknown>[]
 ): Promise<void> => {
   if (aggregateWatchers.size > 0) {
-    notifyLocalAggregateWatchers(resource, changed);
+    notifyLocalAggregateWatchers(resource, changed, "unbound");
   }
   const kv = getKV();
   if (kv) {
-    await kv.publish(AGGREGATE_CHANNEL, JSON.stringify({ resource }));
+    const notice = rememberAggregateNotice(changed);
+    await kv.publish(AGGREGATE_CHANNEL, JSON.stringify({ resource, notice }));
   }
 };
 
@@ -698,6 +740,15 @@ const broadcastEvent = async (event: BroadcastEvent): Promise<void> => {
   await kv.publish(EVENTS_CHANNEL, JSON.stringify(event));
 };
 
+// Deliver a mutation-driven event. A handler with its own scoped fan-out socket
+// (Workers) is never written from here: this runs in the mutating request's
+// context, and a stream may only be touched from the request that owns it. The
+// broadcast reaches the handler through its socket, inside its own request.
+const deliverEvent = async (handlerId: string, broadcast: BroadcastEvent): Promise<void> => {
+  if (!localHandlerFanout.has(handlerId) && sendEvent(handlerId, broadcast.event)) return;
+  await broadcastEvent(broadcast);
+};
+
 const handleBroadcastMessage = async (message: string): Promise<void> => {
   try {
     const broadcast: BroadcastEvent = JSON.parse(message);
@@ -713,11 +764,18 @@ const handleBroadcastMessage = async (message: string): Promise<void> => {
   }
 };
 
-const handleAggregateMessage = (message: string): void => {
+// `handlerId` is set when the message arrived on that handler's own scoped
+// socket; otherwise it came over the shared socket.
+const handleAggregateMessage = (message: string, handlerId?: string): void => {
   try {
-    const { resource } = JSON.parse(message) as { resource?: string };
-    if (typeof resource === "string") {
-      notifyLocalAggregateWatchers(resource);
+    const { resource, notice } = JSON.parse(message) as { resource?: string; notice?: string };
+    if (typeof resource !== "string") return;
+    const local = notice ? recentAggregateNotices.get(notice) : undefined;
+    if (handlerId) {
+      notifyLocalAggregateWatchers(resource, local?.changed, { handlerId });
+    } else if (!local) {
+      // A local notice already reached the unbound watchers directly.
+      notifyLocalAggregateWatchers(resource, undefined, "unbound");
     }
   } catch {
     // Ignore malformed messages
@@ -809,13 +867,24 @@ const openHandlerFanout = (handlerId: string): void => {
   const promise = kv
     .subscribeScoped([EVENTS_CHANNEL, AGGREGATE_CHANNEL], (message, channel) => {
       if (channel === AGGREGATE_CHANNEL) {
-        handleAggregateMessage(message);
+        handleAggregateMessage(message, handlerId);
       } else {
         void deliverBroadcastToHandler(message, handlerId);
       }
     })
-    .catch(() => null);
+    .catch(() => {
+      // No socket: fall back to direct local delivery for this handler.
+      if (localHandlerFanout.get(handlerId) === promise) localHandlerFanout.delete(handlerId);
+      return null;
+    });
   localHandlerFanout.set(handlerId, promise);
+};
+
+// Resolves once the handler's own fan-out socket (if any) is subscribed. A
+// subscription core awaits this before snapshotting initial data, so nothing
+// broadcast between the snapshot and the socket going live can be lost.
+export const whenHandlerFanoutReady = async (handlerId: string): Promise<void> => {
+  await localHandlerFanout.get(handlerId);
 };
 
 const closeHandlerFanout = async (handlerId: string): Promise<void> => {
@@ -956,9 +1025,7 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
       };
 
       // Try local first, then broadcast
-      if (!sendEvent(subscription.handlerId, event)) {
-        await broadcastEvent({ type: "added", subscriptionId: subId, event });
-      }
+      await deliverEvent(subscription.handlerId, { type: "added", subscriptionId: subId, event });
     }
   }
 
@@ -1035,9 +1102,7 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
           object: maskForResource(resource, itemToSend),
         };
 
-        if (!sendEvent(subscription.handlerId, event)) {
-          await broadcastEvent({ type: "added", subscriptionId: subId, event });
-        }
+        await deliverEvent(subscription.handlerId, { type: "added", subscriptionId: subId, event });
       } else if (isRelevant && wasRelevant) {
         const previousObjectId = previousItems?.get(id)
           ? String(previousItems.get(id)![idColumn])
@@ -1054,9 +1119,7 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
           previousObjectId,
         };
 
-        if (!sendEvent(subscription.handlerId, event)) {
-          await broadcastEvent({ type: "changed", subscriptionId: subId, event });
-        }
+        await deliverEvent(subscription.handlerId, { type: "changed", subscriptionId: subId, event });
       } else if (!isRelevant && wasRelevant) {
         await removeRelevantObject(subId, id);
 
@@ -1069,9 +1132,7 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
           objectId: id,
         };
 
-        if (!sendEvent(subscription.handlerId, event)) {
-          await broadcastEvent({ type: "removed", subscriptionId: subId, event });
-        }
+        await deliverEvent(subscription.handlerId, { type: "removed", subscriptionId: subId, event });
       }
     }
   }
@@ -1110,9 +1171,7 @@ export const pushDeletesToSubscriptions = async (
         objectId: id,
       };
 
-      if (!sendEvent(subscription.handlerId, event)) {
-        await broadcastEvent({ type: "removed", subscriptionId: subId, event });
-      }
+      await deliverEvent(subscription.handlerId, { type: "removed", subscriptionId: subId, event });
     }
   }
 
@@ -1138,9 +1197,7 @@ export const sendInvalidateEvent = async (
     reason,
   };
 
-  if (!sendEvent(subscription.handlerId, event)) {
-    await broadcastEvent({ type: "invalidate", subscriptionId, event });
-  }
+  await deliverEvent(subscription.handlerId, { type: "invalidate", subscriptionId, event });
 };
 
 // Send an `invalidate` to every subscription on a resource, forcing clients to
@@ -1295,9 +1352,7 @@ export const applyScopeChange = async <T extends Record<string, unknown>>(
       type: "removed",
       objectId: id,
     };
-    if (!sendEvent(subscription.handlerId, event)) {
-      await broadcastEvent({ type: "removed", subscriptionId, event });
-    }
+    await deliverEvent(subscription.handlerId, { type: "removed", subscriptionId, event });
     removed++;
   }
 
@@ -1317,9 +1372,7 @@ export const applyScopeChange = async <T extends Record<string, unknown>>(
       type: "added",
       object: maskForResource(subscription.resource, itemToSend),
     };
-    if (!sendEvent(subscription.handlerId, event)) {
-      await broadcastEvent({ type: "added", subscriptionId, event });
-    }
+    await deliverEvent(subscription.handlerId, { type: "added", subscriptionId, event });
     added++;
   }
 
@@ -1611,6 +1664,7 @@ export const clearAllSubscriptions = async (): Promise<void> => {
   localEventTimestamps.clear();
   eventSubscriptionActive = false;
   eventSubscriptionInflight = null;
+  recentAggregateNotices.clear();
   for (const promise of localHandlerFanout.values()) {
     void promise.then((sub) => sub?.close()).catch(() => {});
   }

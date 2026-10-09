@@ -4,6 +4,7 @@ import { createSSEStream, type SSEWriter } from "@/server/sse";
 import { getUser } from "@/server/context";
 import { readJsonBody } from "@/server/request";
 import { getResourceNameByPath } from "@/ui/schema-registry";
+import { getGlobalKV, hasGlobalKV, type KVAdapter } from "@/kv/types";
 import {
   getSubscribeDispatcher,
   type SubscriptionSink,
@@ -23,10 +24,18 @@ export interface MultiplexConfig {
   maxQueueBytes?: number;
 }
 
+interface MuxChannel {
+  handle: SubscribeHandle | null;
+  closed: boolean;
+}
+
 interface MuxConnection {
   writer: SSEWriter;
   userId: string;
-  channels: Map<string, SubscribeHandle>;
+  // Includes channels whose start is still pending in the stream's request.
+  channels: Map<string, MuxChannel>;
+  // Run `task` inside the request that owns the stream. See createStreamExecutor.
+  run(task: () => Promise<void>): Promise<void>;
 }
 
 // Process-local registry of open shared streams. A control POST must land on the
@@ -51,6 +60,76 @@ const channelSink = (writer: SSEWriter, channelId: string): SubscriptionSink => 
   writeError: (message) => writer.write(muxFrame(channelId, "error", { error: message })),
   writeAggregate: (data, seq) => writer.write(muxFrame(channelId, "aggregate", { data, seq })),
 });
+
+const DRAIN_FALLBACK_MS = 1000;
+
+const muxControlChannel = (cid: string): string => `covara:mux:${cid}`;
+
+type ScopedKV = KVAdapter & { subscribeScoped: NonNullable<KVAdapter["subscribeScoped"]> };
+
+const scopedKV = (): ScopedKV | null => {
+  const kv = hasGlobalKV() ? getGlobalKV() : null;
+  return kv && typeof kv.subscribeScoped === "function" ? (kv as ScopedKV) : null;
+};
+
+// Control POSTs are separate requests from the stream. On Workers only the
+// stream's own request may write the stream or open a channel's fan-out socket
+// (anything a POST opens dies with the POST), so channel start/stop is queued
+// and drained from inside the stream's request: woken by a doorbell published
+// on the stream's own scoped socket, with a timer in the stream's request as a
+// fallback. Without a scoped-socket KV (Node: no KV, or Redis) there is no such
+// constraint and tasks run directly in the control request.
+const createStreamExecutor = (cid: string) => {
+  const kv = scopedKV();
+  if (!kv) {
+    return { run: async (task: () => Promise<void>) => task(), drain: async () => {}, close: () => {} };
+  }
+
+  const queue: (() => Promise<void>)[] = [];
+  let draining = false;
+  const drain = async (): Promise<void> => {
+    if (draining) return;
+    draining = true;
+    try {
+      for (let task = queue.shift(); task; task = queue.shift()) {
+        try {
+          await task();
+        } catch {
+          // one channel failing to start must not stall the others
+        }
+      }
+    } finally {
+      draining = false;
+    }
+  };
+
+  const doorbell = kv
+    .subscribeScoped([muxControlChannel(cid)], () => void drain())
+    .then(
+      (sub) => {
+        void drain();
+        return sub;
+      },
+      () => null
+    );
+  const fallback = setInterval(() => void drain(), DRAIN_FALLBACK_MS);
+
+  return {
+    run: async (task: () => Promise<void>) => {
+      queue.push(task);
+      try {
+        await kv.publish(muxControlChannel(cid), "");
+      } catch {
+        // the fallback timer drains it
+      }
+    },
+    drain,
+    close: () => {
+      clearInterval(fallback);
+      void doorbell.then((sub) => sub?.close()).catch(() => {});
+    },
+  };
+};
 
 const problem = (status: number, title: string, detail: string, code?: string) => ({
   type: "/__covara/problems/multiplex",
@@ -89,7 +168,13 @@ export const createMultiplexRouter = (config: MultiplexConfig = {}): Hono => {
       maxQueueBytes,
     });
 
-    const connection: MuxConnection = { writer, userId, channels: new Map() };
+    const executor = createStreamExecutor(cid);
+    const connection: MuxConnection = {
+      writer,
+      userId,
+      channels: new Map(),
+      run: executor.run,
+    };
     muxConnections.set(cid, connection);
 
     // Flush `ready` immediately — the client only needs the connection id to
@@ -109,9 +194,14 @@ export const createMultiplexRouter = (config: MultiplexConfig = {}): Hono => {
     writer.onClose(() => {
       clearInterval(heartbeat);
       muxConnections.delete(cid);
-      const handles = Array.from(connection.channels.values());
+      const channels = Array.from(connection.channels.values());
       connection.channels.clear();
-      for (const handle of handles) void handle.close();
+      for (const channel of channels) {
+        channel.closed = true;
+        if (channel.handle) void channel.handle.close();
+      }
+      // Pending starts see the closed stream and release their reserved slots.
+      void executor.drain().finally(executor.close);
     });
 
     return response;
@@ -155,10 +245,8 @@ export const createMultiplexRouter = (config: MultiplexConfig = {}): Hono => {
       return c.json(problem(404, "Unknown resource", `No subscribable resource at ${resource}`), 404);
     }
 
-    const sink = channelSink(connection.writer, channelId);
     const result = await dispatcher({
       c,
-      sink,
       kind: body.kind === "aggregate" ? "aggregate" : "resource",
       params: {
         filter: body.filter,
@@ -174,14 +262,55 @@ export const createMultiplexRouter = (config: MultiplexConfig = {}): Hono => {
       return c.json(problem(result.status, "Subscription failed", result.detail), result.status as never);
     }
 
-    // The stream may have closed while the dispatcher ran; if so, tear the new
-    // channel back down instead of leaking it.
-    if (writerClosed(connection)) {
-      void result.handle.close();
+    // Re-check after the dispatcher's await: a concurrent subscribe may have
+    // claimed the id or filled the connection, or the stream may have closed.
+    if (connection.writer.closed) {
+      result.cancel();
+      return c.json(problem(409, "Stream closed", "The stream closed before the subscription completed", "stream_not_found"), 409);
+    }
+    if (connection.channels.has(channelId)) {
+      result.cancel();
+      return c.json(problem(409, "Channel exists", `Channel ${channelId} is already subscribed`), 409);
+    }
+    if (connection.channels.size >= maxChannels) {
+      result.cancel();
+      return c.json(
+        problem(429, "Too many channels", `Maximum ${maxChannels} channels per connection`),
+        429
+      );
+    }
+
+    // The channel id is claimed now (before the start runs) so a duplicate or an
+    // over-limit subscribe is rejected even while this one is pending.
+    const channel: MuxChannel = { handle: null, closed: false };
+    connection.channels.set(channelId, channel);
+    let startError: string | null = null;
+
+    await connection.run(async () => {
+      if (channel.closed || connection.writer.closed) {
+        result.cancel();
+        return;
+      }
+      try {
+        channel.handle = await result.start(channelSink(connection.writer, channelId));
+      } catch (error) {
+        startError = error instanceof Error ? error.message : "Failed to start subscription";
+        if (connection.channels.get(channelId) === channel) connection.channels.delete(channelId);
+        return;
+      }
+      // Unsubscribed or the stream closed while the start ran: tear it back down.
+      if (channel.closed || connection.writer.closed) await channel.handle.close();
+    });
+
+    // Only observable when the start ran inline (no scoped KV); otherwise the
+    // outcome is reported on the channel itself (connected / error frames).
+    if (startError !== null) {
+      return c.json(problem(500, "Subscription failed", startError), 500);
+    }
+    if (connection.writer.closed) {
       return c.json(problem(409, "Stream closed", "The stream closed before the subscription completed", "stream_not_found"), 409);
     }
 
-    connection.channels.set(channelId, result.handle);
     return c.json({ ok: true, channelId });
   });
 
@@ -197,17 +326,16 @@ export const createMultiplexRouter = (config: MultiplexConfig = {}): Hono => {
     }
     const body = (await readJsonBody(c)) as { channelId?: string };
     const channelId = body?.channelId;
-    if (channelId) {
-      const handle = connection.channels.get(channelId);
-      if (handle) {
-        connection.channels.delete(channelId);
-        await handle.close();
-      }
+    const channel = channelId ? connection.channels.get(channelId) : undefined;
+    if (channelId && channel) {
+      connection.channels.delete(channelId);
+      channel.closed = true;
+      await connection.run(async () => {
+        if (channel.handle) await channel.handle.close();
+      });
     }
     return c.json({ ok: true });
   });
 
   return router;
 };
-
-const writerClosed = (connection: MuxConnection): boolean => connection.writer.closed;

@@ -5,6 +5,8 @@ import { createLiveQuery, LiveQuery, LiveQueryOptions, LiveQueryState, LiveQuery
 import { createMutation, resourceMutationFn, MutationOptions, MutationState, ResourceMutationVars } from "./mutation";
 import type { InvalidateTarget } from "./query-cache";
 import { captchaController, loadCaptchaWidget, type CaptchaChallenge } from "./captcha";
+import { csrfHeaders, needsCsrfToken, type CsrfConfig } from "./csrf";
+import { describeErrorBody } from "./errors";
 
 export type LiveStatus = "loading" | "live" | "reconnecting" | "offline" | "error";
 
@@ -556,6 +558,12 @@ export interface UseAuthOptions {
   socialBasePath?: string;
   /** Session auth route prefix (mounted server-side, default `/api/auth`). */
   authBasePath?: string;
+  /**
+   * CSRF double-submit (default on): login/signup/logout/verification echo the
+   * server's CSRF cookie in a header, as `useAuth({ csrf: true })` requires.
+   * Rename to match the server's `CsrfOptions`, or set false to disable.
+   */
+  csrf?: false | CsrfConfig;
 }
 
 export interface UseAuthResult<TUser = unknown> {
@@ -789,6 +797,19 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
     }
   }, [baseUrl, options.checkUrl, effectiveStrategy, getAuthHeaders]);
 
+  // The server issues its CSRF cookie on any safe request; make one first if an
+  // auth POST would otherwise go out without the token.
+  const ensureCsrfToken = useCallback(async () => {
+    if (!needsCsrfToken(options.csrf)) return;
+    const checkUrl = options.checkUrl ?? "/api/auth/me";
+    const fullUrl = checkUrl.startsWith("http") ? checkUrl : `${baseUrl}${checkUrl}`;
+    try {
+      await fetch(fullUrl, { credentials: "include" });
+    } catch {
+      // the POST will surface the real error
+    }
+  }, [baseUrl, options.checkUrl, options.csrf]);
+
   const logout = useCallback(async () => {
     const logoutUrl = options.logoutUrl ?? "/api/auth/logout";
     const fullUrl = logoutUrl.startsWith("http") ? logoutUrl : `${baseUrl}${logoutUrl}`;
@@ -798,10 +819,11 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
       if (effectiveStrategy === "jwt" && client?.jwt) {
         await client.jwt.logout();
       } else {
+        await ensureCsrfToken();
         await fetch(fullUrl, {
           method: "POST",
           credentials: effectiveStrategy === "cookie" ? "include" : "same-origin",
-          headers: authHeaders,
+          headers: { ...csrfHeaders("POST", options.csrf), ...authHeaders },
         });
       }
     } catch {
@@ -813,27 +835,32 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
     setUser(null);
     setStatus("unauthenticated");
     setAccessToken(null);
-  }, [baseUrl, options.logoutUrl, effectiveStrategy, getAuthHeaders, client, store, setUser, setStatus, setAccessToken]);
+  }, [baseUrl, options.logoutUrl, options.csrf, effectiveStrategy, getAuthHeaders, ensureCsrfToken, client, store, setUser, setStatus, setAccessToken]);
 
   const authBase = options.authBasePath ?? "/api/auth";
 
   const postAuth = useCallback(
     async (path: string, body?: unknown): Promise<unknown> => {
+      await ensureCsrfToken();
       const res = await fetch(`${baseUrl}${authBase}${path}`, {
         method: "POST",
         credentials: "include",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...csrfHeaders("POST", options.csrf) },
         body: body ? JSON.stringify(body) : undefined,
       });
       if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as
-          | { error?: { message?: string } }
-          | null;
-        throw new Error(data?.error?.message ?? `Request failed (${res.status})`);
+        const text = await res.text().catch(() => "");
+        let data: unknown = text;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          // plain-text error body
+        }
+        throw new Error(describeErrorBody(data, res.status, `Request failed (${res.status})`).message);
       }
       return res.json().catch(() => ({}));
     },
-    [baseUrl, authBase]
+    [baseUrl, authBase, options.csrf, ensureCsrfToken]
   );
 
   // Capture a JWT access token from a login/signup response (jwtSession) so the

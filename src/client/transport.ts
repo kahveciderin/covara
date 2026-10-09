@@ -2,11 +2,12 @@ import {
   TransportConfig,
   TransportRequest,
   TransportResponse,
-  ErrorResponse,
 } from "./types";
 import { reviveDates } from "./dates";
 import { solvePowChallenge } from "./pow";
 import { SharedSSEConnection } from "./shared-sse";
+import { csrfHeaders } from "./csrf";
+import { describeErrorBody } from "./errors";
 import type { CaptchaSolver } from "./captcha";
 import type { PowAlgorithm } from "@/pow/core";
 
@@ -184,6 +185,7 @@ export class FetchTransport implements Transport {
 
     const headers = {
       "Content-Type": "application/json",
+      ...csrfHeaders(req.method, this.config.csrf),
       ...this.headers,
       ...req.headers,
     };
@@ -202,12 +204,12 @@ export class FetchTransport implements Transport {
       const data = response.ok ? this.maybeReviveDates(req, parsed) : parsed;
 
       if (!response.ok) {
-        const errorData = data as unknown as ErrorResponse;
+        const error = describeErrorBody(data, response.status);
         throw new TransportError(
-          errorData?.error?.message ?? `HTTP ${response.status}`,
+          error.message,
           response.status,
-          errorData?.error?.code ?? "HTTP_ERROR",
-          errorData?.error?.details,
+          error.code,
+          error.details,
           response.headers
         );
       }
@@ -306,7 +308,7 @@ export class FetchTransport implements Transport {
     if (!this.sharedSSE) {
       this.sharedSSE = new SharedSSEConnection({
         buildUrl: (p) => this.buildUrl(p),
-        getHeaders: () => ({ ...this.headers }),
+        getHeaders: () => ({ ...csrfHeaders("POST", this.config.csrf), ...this.headers }),
         credentials: this.config.credentials,
         createNativeEventSource: (p, prms) => this.createNativeEventSource(p, prms),
       });

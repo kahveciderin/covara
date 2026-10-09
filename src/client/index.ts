@@ -12,6 +12,7 @@ import {
 } from "./auth";
 import { createJWTClient, JWTClient, JWTClientConfig } from "./jwt";
 import type { DateFieldRegistry } from "./dates";
+import { needsCsrfToken, type CsrfConfig } from "./csrf";
 import { createBillingClient } from "./billing";
 
 export { getClient, setGlobalClient, getAuthErrorHandler } from "./globals";
@@ -20,6 +21,10 @@ export { solvePowChallenge } from "./pow";
 export type { PowClientConfig } from "./pow";
 export { loadCaptchaWidget } from "./captcha";
 export type { CaptchaChallenge, CaptchaSolver } from "./captcha";
+export { csrfHeaders, readCsrfToken } from "./csrf";
+export type { CsrfConfig } from "./csrf";
+export { describeErrorBody } from "./errors";
+export type { ErrorBodyInfo } from "./errors";
 
 export interface SimplifiedClientConfig {
   baseUrl: string;
@@ -53,6 +58,12 @@ export interface SimplifiedClientConfig {
   social?: { basePath?: string };
   /** Session auth routes (mounted server-side, default `/api/auth`). */
   session?: { basePath?: string };
+  /**
+   * CSRF double-submit (default on): unsafe requests echo the server's CSRF
+   * cookie in a header, as `useAuth({ csrf: true })` requires. Set false to
+   * disable, or rename the cookie/header to match the server's `CsrfOptions`.
+   */
+  csrf?: false | CsrfConfig;
 }
 
 export const createClient = (config: SimplifiedClientConfig): CovaraClient => {
@@ -68,6 +79,7 @@ export const createClient = (config: SimplifiedClientConfig): CovaraClient => {
     pow: config.pow,
     captcha: config.captcha,
     multiplex: config.multiplex,
+    csrf: config.csrf,
     refreshAuth: async () => {
       if (jwtClient?.isAuthenticated()) {
         const tokens = await jwtClient.refresh();
@@ -215,14 +227,26 @@ export const createClient = (config: SimplifiedClientConfig): CovaraClient => {
     `${config.baseUrl}${socialBasePath}/${encodeURIComponent(provider)}`;
 
   const authBasePath = config.session?.basePath ?? "/api/auth";
+  // The server issues its CSRF cookie on any safe request; make one first if a
+  // session call would otherwise go out without the token.
+  const ensureCsrfToken = async (): Promise<void> => {
+    if (!needsCsrfToken(config.csrf)) return;
+    try {
+      await transport.request({ method: "GET", path: `${authBasePath}/me` });
+    } catch {
+      // the unsafe request will surface the real error
+    }
+  };
   const session: SessionAuthClient = {
     async signup(input) {
+      await ensureCsrfToken();
       const res = await transport.request<{ user: { id: string; email?: string; name?: string } }>(
         { method: "POST", path: `${authBasePath}/signup`, body: input }
       );
       return res.data;
     },
     async login(email, password) {
+      await ensureCsrfToken();
       const res = await transport.request<{
         user: Record<string, unknown>;
         sessionId?: string;
@@ -238,13 +262,16 @@ export const createClient = (config: SimplifiedClientConfig): CovaraClient => {
       return res.data;
     },
     async logout() {
+      await ensureCsrfToken();
       await transport.request({ method: "POST", path: `${authBasePath}/logout` });
       transport.removeHeader("Authorization");
     },
     async requestEmailVerification(email) {
+      await ensureCsrfToken();
       await transport.request({ method: "POST", path: `${authBasePath}/verify/request`, body: { email } });
     },
     async confirmEmail(email, token) {
+      await ensureCsrfToken();
       await transport.request({ method: "POST", path: `${authBasePath}/verify/confirm`, body: { email, token } });
     },
     async me<TUser = unknown>() {

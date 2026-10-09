@@ -112,6 +112,8 @@ try {
 }
 ```
 
+`error.message` is the server's own explanation. The client reads Covara's RFC 7807 problem responses (`detail`, then `title`; `code` and field `errors` land in `error.code` / `error.details`). It also reads the `{ error: { message, code, details } }` envelope, a bare `{ error: "text" }` or `{ message: "text" }`, and plain-text bodies. Only an empty or unrecognized body falls back to `HTTP <status>`. The same parser is exported as `describeErrorBody(body, status)` for your own `fetch` calls. React `useAuth()` uses it too.
+
 ## Where to go next
 
 - **[Queries & repository](./queries.md)** — CRUD, the fluent query builder, filter helpers.
