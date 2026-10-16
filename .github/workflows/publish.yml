@@ -1,0 +1,92 @@
+# Publish covara to npm whenever master carries a version that isn't on the registry yet.
+#
+# Uses npm TRUSTED PUBLISHING (OIDC): GitHub mints a short-lived token scoped to this
+# workflow and npm accepts it in place of a login, so there is no NPM_TOKEN secret to store
+# or rotate. Because the repo is public, npm also attaches provenance automatically.
+#
+# ONE-TIME SETUP on npmjs.com:
+#   covara → Settings → Trusted Publisher → GitHub Actions
+#     Organization or user:  kahveciderin
+#     Repository:            covara
+#     Workflow filename:     publish.yml
+#   Leave "Environment" blank.
+#
+# To release: bump "version" in package.json and push to master. Any push that leaves the
+# version alone (or re-runs) is a no-op, not a failure.
+name: publish
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - package.json
+      - .github/workflows/publish.yml
+  workflow_dispatch:
+
+# Two quick pushes would otherwise race to publish the same version.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # the OIDC token npm exchanges for publish rights
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          # Deliberately NO registry-url: it writes an .npmrc with an empty
+          # ${NODE_AUTH_TOKEN} credential that can shadow the OIDC exchange.
+
+      - name: npm >= 11.5.1 (OIDC support)
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      # Query the registry API rather than `npm view`: a missing version and an unreachable
+      # registry both make npm exit nonzero, and those must not mean the same thing.
+      # 404 → publish, 200 → skip, anything else → stop instead of guessing.
+      - name: Is this version new?
+        id: v
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/$name/$version")
+          case "$code" in
+            404) echo "new=true"  >> "$GITHUB_OUTPUT"; echo "publishing $name@$version" ;;
+            200) echo "new=false" >> "$GITHUB_OUTPUT"; echo "$name@$version is already on the registry — nothing to publish." ;;
+            *)   echo "registry returned $code for $name@$version — not guessing" >&2; exit 1 ;;
+          esac
+
+      - if: steps.v.outputs.new == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - if: steps.v.outputs.new == 'true'
+        run: pnpm lint
+
+      - if: steps.v.outputs.new == 'true'
+        run: pnpm build
+
+      - if: steps.v.outputs.new == 'true'
+        run: pnpm test
+
+      # --ignore-scripts: prepublishOnly would rebuild and rerun the whole suite a second
+      # time; the steps above already did both against this exact checkout.
+      - if: steps.v.outputs.new == 'true'
+        run: npm publish --ignore-scripts
+
+      - if: steps.v.outputs.new == 'true'
+        run: echo "published ${{ steps.v.outputs.name }}@${{ steps.v.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
