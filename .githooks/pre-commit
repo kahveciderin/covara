@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+#
+# Refuse a commit that changes what npm ships without a version to publish it under.
+#
+# If a commit touches the published package, the version in that same commit must be one
+# that is NOT on the registry yet. That is the version the change will go out under, and
+# .github/workflows/publish.yml publishes it on push to master.
+#
+# Deliberately not "the version differs from HEAD": several commits may accumulate under
+# one unpublished version, which is normal and fine.
+#
+# Enable (once per clone):   git config core.hooksPath .githooks
+# Skip for one commit:       git commit --no-verify
+
+set -uo pipefail
+
+PKG="package.json"
+NAME="covara"
+
+# What npm ships: `files` in package.json (dist, assets, README.md, LICENSE), where dist is
+# built from src/ with the tsconfig. A commit that only bumps the version satisfies the
+# check by definition, so this cannot deadlock.
+staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+touches_library=0
+while IFS= read -r file; do
+  case "$file" in
+    src/*|assets/*|README.md|LICENSE|package.json|tsconfig*.json) touches_library=1 ;;
+  esac
+done <<< "$staged"
+
+[ "$touches_library" -eq 1 ] || exit 0
+
+# The version being COMMITTED, not whatever the working tree happens to say.
+#
+# Three ways of reading one field, because the tool that reads it must not be the reason
+# the check does not run. It was `node` alone, and `node` is not installed everywhere a
+# commit is made — an agent's container, a CI image, a phone. That failed open with a
+# skip, so the guard was silently absent exactly where nobody would notice, which is the
+# whole failure mode it exists to prevent one layer up.
+manifest="$(git show ":$PKG" 2>/dev/null)"
+read_version() {
+  if command -v node >/dev/null 2>&1; then
+    printf '%s' "$manifest" | node -e '
+      let s = "";
+      process.stdin.on("data", d => (s += d));
+      process.stdin.on("end", () => {
+        try { process.stdout.write(JSON.parse(s).version ?? ""); } catch { process.stdout.write(""); }
+      });
+    ' 2>/dev/null && return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$manifest" | python3 -c \
+      'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null && return
+  fi
+  # Last resort, and good enough for a manifest npm itself writes: the first "version"
+  # at the top level. Wrong only for a hand-mangled file, which would fail the publish
+  # anyway.
+  printf '%s' "$manifest" | sed -n 's/^  *"version": *"\([^"]*\)".*/\1/p' | head -1
+}
+version="$(read_version | tr -d '[:space:]')"
+
+if [ -z "$version" ]; then
+  echo "pre-commit: could not read a version from $PKG — skipping the publish check." >&2
+  exit 0
+fi
+
+# Best-effort, and short. A hook that blocks a commit because a laptop is on a train is a
+# hook people disable, and being offline is not evidence of anything. `curl` covers the
+# machines that have the registry but not npm — same reasoning as reading the version.
+if command -v npm >/dev/null 2>&1; then
+  published="$(npm view "$NAME" versions --json --fetch-timeout=5000 --fetch-retries=1 2>/dev/null)"
+  status=$?
+elif command -v curl >/dev/null 2>&1; then
+  # Ask about the ONE version instead of parsing the packument: 200 means published, 404
+  # means it is free. Exact, so this cannot block a commit over a version string that
+  # merely appears somewhere in the JSON — a false positive here refuses a commit, which
+  # is the one failure this hook must not have.
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+    "https://registry.npmjs.org/$(printf '%s' "$NAME" | sed 's|/|%2F|')/$version" 2>/dev/null)"
+  case "$code" in
+    200) published="\"$version\""; status=0 ;;
+    404) published="none"; status=0 ;;
+    *)   published=""; status=1 ;;   # unreachable, or something unexpected: allow
+  esac
+else
+  status=1
+  published=""
+fi
+
+if [ $status -ne 0 ] || [ -z "$published" ]; then
+  # Either the registry is unreachable or the package has never been published. Neither is
+  # a reason to refuse the commit; the first is not the author's fault and the second means
+  # any version is new.
+  echo "pre-commit: could not reach npm to check published versions of $NAME — allowing." >&2
+  exit 0
+fi
+
+if ! printf '%s' "$published" | grep -qE "\"$(printf '%s' "$version" | sed 's/\./\\./g')\""; then
+  exit 0
+fi
+
+cat >&2 <<EOF
+
+  ✗ This commit changes the published package, but $NAME@$version is already on npm.
+
+    Anyone installing $NAME gets the registry's $version, which does not contain it.
+
+    Bump the version in $PKG first:
+
+      npm version patch --no-git-tag-version   # or: minor / major
+
+    Then commit and push to master: .github/workflows/publish.yml publishes the new
+    version to npm by itself (trusted publishing, no token).
+
+    Changing something that is not shipped?  git commit --no-verify
+
+EOF
+exit 1
