@@ -7,6 +7,10 @@ import {
   PresignedUrlOptions,
   PresignedUploadResult,
   S3StorageConfig,
+  ListObjectsOptions,
+  ListObjectsResult,
+  MultipartLimits,
+  MultipartPart,
 } from "./types";
 
 interface S3Client {
@@ -16,6 +20,25 @@ interface S3Client {
 interface S3CommandConstructor {
   new (input: unknown): unknown;
 }
+
+interface S3ListResponse {
+  Contents?: { Key?: string; Size?: number; LastModified?: Date }[];
+  NextContinuationToken?: string;
+  IsTruncated?: boolean;
+}
+
+interface S3ListPartsResponse {
+  Parts?: { PartNumber?: number; ETag?: string; Size?: number }[];
+  IsTruncated?: boolean;
+  NextPartNumberMarker?: string | number;
+}
+
+const MIB = 1024 * 1024;
+
+const isMissingObjectError = (error: unknown): boolean => {
+  const err = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+  return err?.name === "NoSuchKey" || err?.name === "NotFound" || err?.$metadata?.httpStatusCode === 404;
+};
 
 interface S3Response {
   Body?: {
@@ -30,6 +53,13 @@ interface S3Response {
 
 export class S3StorageAdapter implements StorageAdapter {
   private client: S3Client | null = null;
+  private sdk: Record<string, unknown> | null = null;
+
+  readonly multipartLimits: MultipartLimits = {
+    minPartSize: 5 * MIB,
+    maxPartSize: 5 * 1024 * MIB,
+    maxParts: 10000,
+  };
   private bucket: string;
   private config: S3StorageConfig;
   private presignedUrlExpiry: number;
@@ -55,14 +85,16 @@ export class S3StorageAdapter implements StorageAdapter {
     }
 
     try {
-      const { S3Client: S3ClientClass } = await import("@aws-sdk/client-s3" as string);
+      const sdk = (await import("@aws-sdk/client-s3" as string)) as Record<string, unknown>;
+      this.sdk = sdk;
+      const { S3Client: S3ClientClass } = sdk as { S3Client: new (config: unknown) => unknown };
       const {
         PutObjectCommand,
         GetObjectCommand,
         DeleteObjectCommand,
         DeleteObjectsCommand,
         HeadObjectCommand,
-      } = await import("@aws-sdk/client-s3" as string);
+      } = sdk;
       const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner" as string);
 
       this.PutObjectCommand = PutObjectCommand as S3CommandConstructor;
@@ -130,6 +162,7 @@ export class S3StorageAdapter implements StorageAdapter {
       ContentEncoding: options?.contentEncoding,
       CacheControl: options?.cacheControl,
       Metadata: options?.customMetadata,
+      ...(options?.contentDisposition ? { ContentDisposition: options.contentDisposition } : {}),
     });
 
     const response = (await client.send(command)) as S3Response;
@@ -174,6 +207,158 @@ export class S3StorageAdapter implements StorageAdapter {
     }
 
     return response.Body;
+  }
+
+  private command(name: string, input: Record<string, unknown>): unknown {
+    const Ctor = this.sdk?.[name] as S3CommandConstructor | undefined;
+    if (!Ctor) throw new Error(`AWS SDK command ${name} is not available`);
+    return new Ctor({ Bucket: this.bucket, ...input });
+  }
+
+  async readRange(key: string, offset: number, length: number): Promise<Buffer> {
+    if (length <= 0) return Buffer.alloc(0);
+    const client = await this.ensureClient();
+    const command = new this.GetObjectCommand!({
+      Bucket: this.bucket,
+      Key: key,
+      Range: `bytes=${offset}-${offset + length - 1}`,
+    });
+    try {
+      const response = (await client.send(command)) as S3Response;
+      if (!response.Body) throw new Error(`File not found: ${key}`);
+      return Buffer.from(await response.Body.transformToByteArray());
+    } catch (error) {
+      const err = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+      if (err?.name === "InvalidRange" || err?.$metadata?.httpStatusCode === 416) return Buffer.alloc(0);
+      if (isMissingObjectError(error)) throw new Error(`File not found: ${key}`);
+      throw error;
+    }
+  }
+
+  async list(options: ListObjectsOptions = {}): Promise<ListObjectsResult> {
+    const client = await this.ensureClient();
+    const response = (await client.send(
+      this.command("ListObjectsV2Command", {
+        Prefix: options.prefix || undefined,
+        ContinuationToken: options.cursor,
+        MaxKeys: options.limit ?? 1000,
+      })
+    )) as S3ListResponse;
+    return {
+      objects: (response.Contents ?? [])
+        .filter((o) => typeof o.Key === "string")
+        .map((o) => ({
+          key: o.Key as string,
+          size: o.Size ?? 0,
+          lastModified: o.LastModified ?? new Date(0),
+        })),
+      cursor: response.IsTruncated ? response.NextContinuationToken : undefined,
+    };
+  }
+
+  async createMultipartUpload(key: string, options?: UploadOptions): Promise<{ uploadId: string }> {
+    const client = await this.ensureClient();
+    const response = (await client.send(
+      this.command("CreateMultipartUploadCommand", {
+        Key: key,
+        ContentType: options?.mimeType,
+        ...(options?.contentDisposition ? { ContentDisposition: options.contentDisposition } : {}),
+        ...(options?.customMetadata ? { Metadata: options.customMetadata } : {}),
+      })
+    )) as { UploadId?: string };
+    if (!response.UploadId) throw new Error("S3 did not return an UploadId");
+    return { uploadId: response.UploadId };
+  }
+
+  async uploadPart(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    data: Buffer
+  ): Promise<{ etag: string }> {
+    const client = await this.ensureClient();
+    const response = (await client.send(
+      this.command("UploadPartCommand", {
+        Key: key,
+        UploadId: uploadId,
+        PartNumber: partNumber,
+        Body: data,
+        ContentLength: data.length,
+      })
+    )) as { ETag?: string };
+    return { etag: response.ETag ?? "" };
+  }
+
+  async completeMultipartUpload(
+    key: string,
+    uploadId: string,
+    parts: MultipartPart[]
+  ): Promise<UploadResult> {
+    const client = await this.ensureClient();
+    const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
+    const response = (await client.send(
+      this.command("CompleteMultipartUploadCommand", {
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: {
+          Parts: sorted.map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })),
+        },
+      })
+    )) as { ETag?: string };
+    const size = sorted.every((p) => typeof p.size === "number")
+      ? sorted.reduce((sum, p) => sum + (p.size ?? 0), 0)
+      : ((await this.getMetadata(key))?.size ?? 0);
+    return { key, etag: response.ETag?.replace(/"/g, ""), size };
+  }
+
+  async abortMultipartUpload(key: string, uploadId: string): Promise<void> {
+    const client = await this.ensureClient();
+    try {
+      await client.send(this.command("AbortMultipartUploadCommand", { Key: key, UploadId: uploadId }));
+    } catch (error) {
+      const err = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+      if (err?.name === "NoSuchUpload" || err?.$metadata?.httpStatusCode === 404) return;
+      throw error;
+    }
+  }
+
+  async listMultipartParts(key: string, uploadId: string): Promise<MultipartPart[]> {
+    const client = await this.ensureClient();
+    const parts: MultipartPart[] = [];
+    let marker: string | number | undefined;
+    for (;;) {
+      const response = (await client.send(
+        this.command("ListPartsCommand", {
+          Key: key,
+          UploadId: uploadId,
+          ...(marker !== undefined ? { PartNumberMarker: marker } : {}),
+        })
+      )) as S3ListPartsResponse;
+      for (const part of response.Parts ?? []) {
+        if (typeof part.PartNumber !== "number") continue;
+        parts.push({ partNumber: part.PartNumber, etag: part.ETag ?? "", size: part.Size });
+      }
+      if (!response.IsTruncated || response.NextPartNumberMarker === undefined) break;
+      marker = response.NextPartNumberMarker;
+    }
+    return parts;
+  }
+
+  async getUploadPartUrl(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    options?: PresignedUrlOptions
+  ): Promise<string | null> {
+    const client = await this.ensureClient();
+    const command = this.command("UploadPartCommand", {
+      Key: key,
+      UploadId: uploadId,
+      PartNumber: partNumber,
+    });
+    return this.getSignedUrl!(client, command, {
+      expiresIn: options?.expiresIn ?? this.presignedUrlExpiry,
+    });
   }
 
   async delete(key: string): Promise<void> {
@@ -249,6 +434,10 @@ export class S3StorageAdapter implements StorageAdapter {
     const command = new this.GetObjectCommand!({
       Bucket: this.bucket,
       Key: key,
+      ...(options?.responseContentType ? { ResponseContentType: options.responseContentType } : {}),
+      ...(options?.responseContentDisposition
+        ? { ResponseContentDisposition: options.responseContentDisposition }
+        : {}),
     });
 
     return this.getSignedUrl!(client, command, {

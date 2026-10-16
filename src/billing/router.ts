@@ -12,6 +12,9 @@ export interface BillingRouterOptions {
   getCustomerId?: (c: Context) => string | undefined | Promise<string | undefined>;
   // Optional override for the customer email used at checkout.
   getCustomerEmail?: (c: Context) => string | undefined | Promise<string | undefined>;
+  // Guard for the admin `POST /reconcile` endpoint. The route is only mounted
+  // when this is provided; return true to allow the caller (e.g. admins only).
+  authorizeReconcile?: (c: Context) => boolean | Promise<boolean>;
 }
 
 interface CheckoutBody {
@@ -100,6 +103,28 @@ export const createBillingRouter = (
     const balance = await billing.credits.balance(account);
     return c.json({ balance });
   });
+
+  const authorizeReconcile = options.authorizeReconcile;
+  if (authorizeReconcile) {
+    router.post("/reconcile", async (c) => {
+      if (!(await authorizeReconcile(c))) return c.json({ error: "Forbidden" }, 403);
+      const text = await c.req.text();
+      let body: { customerId?: unknown; dryRun?: unknown } = {};
+      if (text) {
+        try {
+          body = JSON.parse(text) as typeof body;
+        } catch {
+          return c.json({ error: "Invalid JSON body" }, 400);
+        }
+      }
+      const dryRun = body.dryRun === true;
+      const report =
+        typeof body.customerId === "string" && body.customerId
+          ? await billing.reconcile({ customerId: body.customerId, dryRun })
+          : await billing.reconcileAll({ dryRun });
+      return c.json(report);
+    });
+  }
 
   router.post("/webhook", billing.webhookHandler());
 

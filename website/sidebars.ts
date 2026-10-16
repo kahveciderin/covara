@@ -52,6 +52,7 @@ const sidebars: SidebarsConfig = {
         "auth/federated",
         "auth/social",
         "auth/api-keys",
+        "auth/passkeys",
         "auth/mfa",
         "auth/magic-links",
         "auth/passwords",

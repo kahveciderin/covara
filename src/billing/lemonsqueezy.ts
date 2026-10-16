@@ -12,7 +12,10 @@ import {
   PortalSession,
   ReportUsageInput,
   SubscriptionStatus,
+  ListSubscriptionsPageOptions,
+  SubscriptionPage,
 } from "./types";
+import { clampPageSize, collectAllPages } from "./pagination";
 
 export interface LemonSqueezyAdapterConfig {
   apiKey: string;
@@ -30,6 +33,7 @@ interface JsonApiResource<A = Record<string, unknown>> {
 
 interface JsonApiDocument<A = Record<string, unknown>> {
   data?: JsonApiResource<A> | JsonApiResource<A>[];
+  meta?: { page?: { currentPage?: number; lastPage?: number } };
 }
 
 interface LSCustomerAttributes {
@@ -253,13 +257,29 @@ export class LemonSqueezyBillingAdapter implements BillingAdapter {
     return mapSubscription(doc.data as JsonApiResource<LSSubscriptionAttributes>);
   }
 
-  async listSubscriptions(customerId: string): Promise<BillingSubscription[]> {
-    const doc = (await this.request<JsonApiDocument<LSSubscriptionAttributes>>(
-      "GET",
-      `/subscriptions?filter[customer_id]=${encodeURIComponent(customerId)}`
-    ))!;
+  private async subscriptionsPage(
+    filter: string,
+    options: ListSubscriptionsPageOptions = {}
+  ): Promise<SubscriptionPage> {
+    const page = Math.max(1, Number(options.cursor ?? 1) || 1);
+    const path = `/subscriptions?${filter}&page[size]=${clampPageSize(options.limit, 100)}&page[number]=${page}`;
+    const doc = (await this.request<JsonApiDocument<LSSubscriptionAttributes>>("GET", path))!;
     const data = Array.isArray(doc.data) ? doc.data : doc.data ? [doc.data] : [];
-    return data.map((r) => mapSubscription(r));
+    const lastPage = doc.meta?.page?.lastPage ?? page;
+    return {
+      subscriptions: data.map((r) => mapSubscription(r)),
+      nextCursor: page < lastPage && data.length > 0 ? String(page + 1) : undefined,
+    };
+  }
+
+  async listSubscriptions(customerId: string): Promise<BillingSubscription[]> {
+    return collectAllPages((cursor) =>
+      this.subscriptionsPage(`filter[customer_id]=${encodeURIComponent(customerId)}`, { cursor })
+    );
+  }
+
+  async listAllSubscriptions(options?: ListSubscriptionsPageOptions): Promise<SubscriptionPage> {
+    return this.subscriptionsPage(`filter[store_id]=${encodeURIComponent(this.storeId)}`, options);
   }
 
   // Lemon Squeezy cancels at the end of the current billing period.

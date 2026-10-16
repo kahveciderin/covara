@@ -6,7 +6,10 @@ import {
   UploadResult,
   PresignedUrlOptions,
   PresignedUploadResult,
+  ListObjectsOptions,
+  ListObjectsResult,
 } from "./types";
+import { paginateKeys } from "./list";
 
 interface StoredFile {
   data: Buffer;
@@ -63,6 +66,22 @@ export class MemoryStorageAdapter implements StorageAdapter {
   async downloadStream(key: string): Promise<Readable> {
     const buffer = await this.download(key);
     return Readable.from(buffer);
+  }
+
+  async readRange(key: string, offset: number, length: number): Promise<Buffer> {
+    const buffer = await this.download(key);
+    return buffer.subarray(offset, offset + length);
+  }
+
+  async list(options: ListObjectsOptions = {}): Promise<ListObjectsResult> {
+    return paginateKeys(
+      Array.from(this.files.values(), (file) => ({
+        key: file.metadata.key,
+        size: file.data.length,
+        lastModified: file.metadata.updatedAt ?? file.metadata.createdAt,
+      })),
+      options
+    );
   }
 
   async delete(key: string): Promise<void> {

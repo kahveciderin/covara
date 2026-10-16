@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import type { PgColumn } from "drizzle-orm/pg-core";
-import { eq, inArray, Table, TableConfig, InferSelectModel, getTableName, getTableColumns } from "drizzle-orm";
+import { and, eq, inArray, lt, Table, TableConfig, InferSelectModel, getTableName, getTableColumns } from "drizzle-orm";
 import {
   StorageAdapter,
   getGlobalStorage,
   hasGlobalStorage,
   PresignedUrlOptions,
+  readObjectHead,
 } from "./types";
 import {
   NotFoundError,
@@ -28,6 +29,20 @@ import { isAdminBypassRequest } from "@/server/admin-bypass";
 import { getUser } from "@/server/context";
 import { readJsonBody } from "@/server/request";
 import { setResourceFileFlag } from "@/ui/schema-registry";
+import {
+  SNIFF_BYTES,
+  contentMismatchMessage,
+  isActiveContentType,
+  resolveContentType,
+  type ContentSniffingPolicy,
+} from "./sniff";
+import { DOWNLOAD_CSP, attachmentDisposition, safeResponseContentType } from "./http";
+import { enqueueBlobDeletion, registerFileResource, settleBlobDeletion } from "./cleanup";
+import {
+  mountResumableUploadRoutes,
+  type PersistFileInput,
+  type ResumableUploadConfig,
+} from "./resumable";
 
 type DrizzleColumn = SQLiteColumn | PgColumn;
 
@@ -39,7 +54,7 @@ export interface FileRecord {
   size: number;
   storagePath: string;
   url?: string | null;
-  status: "pending" | "completed";
+  status: "pending" | "completed" | "rejected";
   createdAt: Date;
 }
 
@@ -67,6 +82,9 @@ interface FileResourceExtras {
   generateKey?: (filename: string, userId?: string) => string;
   usePresignedUrls?: boolean;
   presignedUrlExpiry?: number;
+  contentSniffing?: ContentSniffingPolicy;
+  keyPrefix?: string;
+  resumable?: false | ResumableUploadConfig;
   /** @deprecated columns are read from the table; kept for back-compat. */
   schema?: FileTableSchema;
 }
@@ -93,7 +111,7 @@ const defaultGenerateKey = (filename: string, userId?: string): string => {
 
 const parseMultipartFormData = async (
   c: Context
-): Promise<{ file: Buffer; filename: string; mimeType: string } | null> => {
+): Promise<{ file: Buffer; filename: string; mimeType: string | null } | null> => {
   const contentType = c.req.header("content-type") || "";
   if (!contentType.includes("multipart/form-data")) return null;
 
@@ -109,8 +127,7 @@ const parseMultipartFormData = async (
     for (const candidate of candidates) {
       if (candidate instanceof File) {
         const file = Buffer.from(await candidate.arrayBuffer());
-        const mimeType = candidate.type || "application/octet-stream";
-        return { file, filename: candidate.name, mimeType };
+        return { file, filename: candidate.name, mimeType: candidate.type || null };
       }
     }
   }
@@ -144,7 +161,11 @@ export const useFileResource = <TConfig extends TableConfig>(
     generateKey = defaultGenerateKey,
     usePresignedUrls = false,
     presignedUrlExpiry = 3600,
+    contentSniffing = "enforce",
+    keyPrefix = "",
   } = config;
+  const partsPrefix = `${keyPrefix}.covara-uploads/`;
+  const makeKey = (filename: string, userId?: string): string => `${keyPrefix}${generateKey(filename, userId)}`;
 
   const resourceName = getTableName(table);
   // Property key (not DB name) since it indexes rows returned by drizzle.
@@ -169,30 +190,107 @@ export const useFileResource = <TConfig extends TableConfig>(
 
   // Compose storage cleanup into onAfterDelete so deleting a record (via the
   // generic resource DELETE) also removes the stored object.
+  const dbAny = db as {
+    insert: (t: unknown) => { values: (v: unknown) => { returning: () => Promise<unknown[]> } };
+    select: () => {
+      from: (t: unknown) => {
+        where: (c: unknown) => Promise<unknown[]> & { limit: (n: number) => Promise<unknown[]> };
+      };
+    };
+    update: (t: unknown) => { set: (v: unknown) => { where: (c: unknown) => { returning: () => Promise<unknown[]> } } };
+    delete: (t: unknown) => { where: (c: unknown) => Promise<void> };
+  };
+
+  const findFile = async (fileId: string): Promise<Record<string, unknown> | undefined> => {
+    const [file] = (await dbAny.select().from(table).where(eq(idColumn, fileId)).limit(1)) as Record<
+      string,
+      unknown
+    >[];
+    return file;
+  };
+
+  registerFileResource({
+    resource: resourceName,
+    storage,
+    keyPrefix,
+    partsPrefix,
+    findReferences: async (key) => {
+      const rows = (await dbAny.select().from(table).where(eq(table.storagePath, key)).limit(10)) as Record<
+        string,
+        unknown
+      >[];
+      return rows.map((row) => ({ id: String(row[idColumnName]), status: String(row.status) }));
+    },
+    findStaleUploads: async (cutoff) => {
+      const rows = (await dbAny
+        .select()
+        .from(table)
+        .where(and(inArray(table.status, ["pending", "rejected"]), lt(table.createdAt, cutoff)))) as Record<
+        string,
+        unknown
+      >[];
+      return rows.map((row) => ({ id: String(row[idColumnName]), storagePath: String(row.storagePath) }));
+    },
+    deleteRow: async (rowId) => {
+      await dbAny.delete(table).where(eq(idColumn, rowId));
+    },
+  });
+
+  // Deletion is ordered for crash safety: a "prepared" tombstone is persisted
+  // before the row is deleted, then settled (blob deleted, tombstone cleared)
+  // after. A crash anywhere leaves a tombstone the drainer resolves by checking
+  // whether any row still references the key.
   const userHooks: LifecycleHooks<TConfig> = config.hooks ?? {};
   const hooks: LifecycleHooks<TConfig> = {
     ...userHooks,
-    onAfterDelete: async (ctx, deleted) => {
-      const storagePath = (deleted as Record<string, unknown>).storagePath as
-        | string
-        | undefined;
-      if (storagePath) {
-        try {
-          await storage.delete(storagePath);
-        } catch {
-          // Best-effort: the row is already gone; don't fail the request.
-        }
+    onBeforeDelete: async (ctx, deleteId) => {
+      if (userHooks.onBeforeDelete) await userHooks.onBeforeDelete(ctx, deleteId);
+      const row = await findFile(String(deleteId));
+      if (row?.storagePath) {
+        await enqueueBlobDeletion(resourceName, String(row.storagePath), { phase: "prepared" });
       }
+    },
+    onAfterDelete: async (ctx, deleted) => {
+      const storagePath = (deleted as Record<string, unknown>).storagePath as string | undefined;
+      if (storagePath) await settleBlobDeletion(resourceName, storagePath);
       if (userHooks.onAfterDelete) await userHooks.onAfterDelete(ctx, deleted);
     },
   };
 
-  const dbAny = db as {
-    insert: (t: unknown) => { values: (v: unknown) => { returning: () => Promise<unknown[]> } };
-    select: () => { from: (t: unknown) => { where: (c: unknown) => { limit: (n: number) => Promise<unknown[]> } } };
-    update: (t: unknown) => { set: (v: unknown) => { where: (c: unknown) => { returning: () => Promise<unknown[]> } } };
-    delete: (t: unknown) => { where: (c: unknown) => Promise<void> };
+  const checkContent = (declared: string | null, sample: Uint8Array, complete: boolean): string => {
+    const decision = resolveContentType({ declared, bytes: sample, complete, policy: contentSniffing });
+    if (decision.rejected) {
+      throw new ValidationError(contentMismatchMessage(decision), {
+        reason: decision.reason,
+        declared: decision.declared,
+        detected: decision.sniffed?.mimeType,
+      });
+    }
+    const mimeType = decision.mimeType;
+    if (allowedMimeTypes && !allowedMimeTypes.includes(mimeType)) {
+      throw new ValidationError(
+        `File type not allowed. Allowed types: ${allowedMimeTypes.join(", ")}`,
+        { contentType: mimeType, allowedTypes: allowedMimeTypes }
+      );
+    }
+    if (validation) validateUpload({ contentType: mimeType }, validation);
+    return mimeType;
   };
+
+  const checkSize = (size: number): void => {
+    if (maxFileSize && size > maxFileSize) {
+      throw new ValidationError(
+        `File too large. Maximum size: ${Math.round(maxFileSize / 1024 / 1024)}MB`
+      );
+    }
+    if (validation?.maxSize !== undefined) validateUpload({ size }, { maxSize: validation.maxSize });
+  };
+
+  const storedObjectOptions = (filename: string, mimeType: string) => ({
+    filename,
+    mimeType: safeResponseContentType(mimeType),
+    ...(isActiveContentType(mimeType) ? { contentDisposition: attachmentDisposition(filename) } : {}),
+  });
 
   const readable = config.fields?.readable;
   const mask = (record: Record<string, unknown>): Record<string, unknown> => {
@@ -225,49 +323,19 @@ export const useFileResource = <TConfig extends TableConfig>(
     }
   };
 
-  const router = new Hono();
-
-  // --- Upload (custom create): multipart -> storage -> tracked create ---
-  router.post("/", async (c) => {
-    await requireCreate(c);
-
-    const parsed = await parseMultipartFormData(c);
-    if (!parsed) {
-      throw new ValidationError("No file provided or invalid multipart form data");
-    }
-    const { file, filename, mimeType } = parsed;
-
-    if (allowedMimeTypes && !allowedMimeTypes.includes(mimeType)) {
-      throw new ValidationError(
-        `File type not allowed. Allowed types: ${allowedMimeTypes.join(", ")}`
-      );
-    }
-    if (maxFileSize && file.length > maxFileSize) {
-      throw new ValidationError(
-        `File too large. Maximum size: ${Math.round(maxFileSize / 1024 / 1024)}MB`
-      );
-    }
-    if (validation) {
-      validateUpload({ contentType: mimeType, size: file.length }, validation);
-    }
-
+  const persistFile = async (c: Context, input: PersistFileInput): Promise<Record<string, unknown>> => {
     const user = getUser(c);
-    const userId = user?.id;
-    const key = generateKey(filename, userId);
-    const result = await storage.upload(key, file, { filename, mimeType });
-    const url = storage.getUrl(key);
-
     let record: Record<string, unknown> = {
-      id: randomUUID(),
-      filename,
-      mimeType,
-      size: result.size,
-      storagePath: key,
-      url,
+      id: input.id,
+      filename: input.filename,
+      mimeType: input.mimeType,
+      size: input.size,
+      storagePath: input.key,
+      url: storage.getUrl(input.key),
       status: "completed",
       createdAt: new Date(),
     };
-    if (hasUserId) record.userId = userId ?? null;
+    if (hasUserId) record.userId = user?.id ?? null;
 
     const ctx: ProcedureContext<TConfig> = {
       db,
@@ -287,7 +355,7 @@ export const useFileResource = <TConfig extends TableConfig>(
     >[];
 
     await executeAfterCreate(hooks, ctx, created as never);
-    recordCreate(resourceName, String(created[idColumnName]), created, userId);
+    recordCreate(resourceName, String(created[idColumnName]), created, user?.id);
     await pushInsertsToSubscriptions(
       resourceName,
       filterer as never,
@@ -296,7 +364,57 @@ export const useFileResource = <TConfig extends TableConfig>(
       undefined,
       undefined
     );
+    return created;
+  };
 
+  const router = new Hono();
+
+  if (config.resumable !== false) {
+    const sizeLimits = [config.resumable?.maxSize, maxFileSize || undefined, validation?.maxSize].filter(
+      (v): v is number => typeof v === "number"
+    );
+    mountResumableUploadRoutes(router, {
+      storage,
+      resource: resourceName,
+      partsPrefix,
+      config: config.resumable ?? {},
+      maxSize: sizeLimits.length > 0 ? Math.min(...sizeLimits) : undefined,
+      presignedUrlExpiry,
+      makeKey,
+      requireCreate,
+      checkContent,
+      persist: persistFile,
+      findFile,
+      mask,
+    });
+  }
+
+  // --- Upload (custom create): multipart -> storage -> tracked create ---
+  router.post("/", async (c) => {
+    await requireCreate(c);
+
+    const parsed = await parseMultipartFormData(c);
+    if (!parsed) {
+      throw new ValidationError("No file provided or invalid multipart form data");
+    }
+    const { file, filename } = parsed;
+    checkSize(file.length);
+    const mimeType = checkContent(
+      parsed.mimeType,
+      file.subarray(0, SNIFF_BYTES),
+      file.length <= SNIFF_BYTES
+    );
+
+    const key = makeKey(filename, getUser(c)?.id);
+    await storage.upload(key, file, storedObjectOptions(filename, mimeType));
+
+    let created: Record<string, unknown>;
+    try {
+      created = await persistFile(c, { id: randomUUID(), key, filename, mimeType, size: file.length });
+    } catch (error) {
+      await settleBlobDeletion(resourceName, key).catch(() => undefined);
+      throw error;
+    }
     return c.json(mask(created), 201);
   });
 
@@ -321,7 +439,7 @@ export const useFileResource = <TConfig extends TableConfig>(
 
     const user = getUser(c);
     const userId = user?.id;
-    const key = generateKey(filename, userId);
+    const key = makeKey(filename, userId);
 
     const presignedOptions: PresignedUrlOptions = { expiresIn: presignedUrlExpiry, contentType };
     if (maxFileSize) presignedOptions.contentLength = maxFileSize;
@@ -355,37 +473,46 @@ export const useFileResource = <TConfig extends TableConfig>(
   // --- Confirm a presigned upload ---
   router.post("/:id/confirm", async (c) => {
     const fileId = c.req.param("id");
-    const [file] = (await dbAny
-      .select()
-      .from(table)
-      .where(eq(idColumn, fileId))
-      .limit(1)) as Record<string, unknown>[];
+    const file = await findFile(fileId);
     if (!file) throw new NotFoundError("File", fileId);
     await requireReadAccess(c, file);
 
-    if (file.status === "completed") return c.json(file);
+    if (file.status === "completed") return c.json(mask(file));
+    if (file.status === "rejected") throw new ValidationError("File upload was rejected");
 
-    const metadata = await storage.getMetadata(file.storagePath as string);
-    if (!metadata) throw new NotFoundError("File", file.storagePath as string);
+    const storagePath = file.storagePath as string;
+    const metadata = await storage.getMetadata(storagePath);
+    if (!metadata) throw new NotFoundError("File", storagePath);
 
-    const url = storage.getUrl(file.storagePath as string);
+    let mimeType: string;
+    try {
+      checkSize(metadata.size);
+      const head = await readObjectHead(storage, storagePath, SNIFF_BYTES);
+      mimeType = checkContent(
+        (file.mimeType as string | undefined) ?? null,
+        head,
+        metadata.size <= SNIFF_BYTES
+      );
+    } catch (error) {
+      await dbAny.update(table).set({ status: "rejected" }).where(eq(idColumn, fileId)).returning();
+      await settleBlobDeletion(resourceName, storagePath).catch(() => undefined);
+      throw error;
+    }
+
+    const url = storage.getUrl(storagePath);
     const [updated] = (await dbAny
       .update(table)
-      .set({ size: metadata.size, mimeType: metadata.mimeType, url, status: "completed" })
+      .set({ size: metadata.size, mimeType, url, status: "completed" })
       .where(eq(idColumn, fileId))
       .returning()) as Record<string, unknown>[];
 
-    return c.json(updated);
+    return c.json(mask(updated));
   });
 
   // --- Download (stream or presigned redirect) ---
   router.get("/:id/download", async (c) => {
     const fileId = c.req.param("id");
-    const [file] = (await dbAny
-      .select()
-      .from(table)
-      .where(eq(idColumn, fileId))
-      .limit(1)) as Record<string, unknown>[];
+    const file = await findFile(fileId);
     if (!file) throw new NotFoundError("File", fileId);
     await requireReadAccess(c, file);
 
@@ -393,17 +520,24 @@ export const useFileResource = <TConfig extends TableConfig>(
       throw new ValidationError("File upload not completed");
     }
 
+    const disposition = attachmentDisposition(String(file.filename));
+    const contentType = safeResponseContentType(file.mimeType as string | undefined);
+
     if (usePresignedUrls && storage.supportsPresignedUrls()) {
       const downloadUrl = await storage.getDownloadUrl(file.storagePath as string, {
         expiresIn: presignedUrlExpiry,
+        responseContentType: contentType,
+        responseContentDisposition: disposition,
       });
       if (downloadUrl) return c.redirect(downloadUrl, 302);
     }
 
     const stream = await storage.downloadStream(file.storagePath as string);
-    c.header("Content-Type", file.mimeType as string);
-    c.header("Content-Disposition", `attachment; filename="${file.filename as string}"`);
+    c.header("Content-Type", contentType);
+    c.header("Content-Disposition", disposition);
     c.header("Content-Length", String(file.size));
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("Content-Security-Policy", DOWNLOAD_CSP);
     return c.body(Readable.toWeb(stream) as unknown as ReadableStream);
   });
 
@@ -429,10 +563,15 @@ export const useFileResource = <TConfig extends TableConfig>(
       }
     }
 
-    const storagePaths = files.map((f) => f.storagePath as string);
-    await storage.deleteMany(storagePaths);
-    for (const file of files) {
-      await dbAny.delete(table).where(eq(idColumn, file.id));
+    const storagePaths = files.map((f) => f.storagePath as string).filter(Boolean);
+    for (const storagePath of storagePaths) {
+      await enqueueBlobDeletion(resourceName, storagePath, { phase: "prepared" });
+    }
+    if (files.length > 0) {
+      await dbAny.delete(table).where(inArray(idColumn, files.map((f) => f[idColumnName])));
+    }
+    for (const storagePath of storagePaths) {
+      await settleBlobDeletion(resourceName, storagePath);
     }
     return c.json({ deleted: files.length });
   });

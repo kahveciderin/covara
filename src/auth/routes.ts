@@ -31,7 +31,14 @@ import {
   type PasswordPolicyOptions,
 } from "./password-policy";
 import { createSocialRouter, type SocialAuthOptions } from "./social";
+import { createPasskeyRouter, type PasskeyAuthOptions } from "./passkey";
 import { fromAuthAdapter, type SessionStrategy } from "./session";
+import {
+  assertAuthEmailFlow,
+  createAuthEmailDispatcher,
+  type AuthEmailComposer,
+  type AuthEmailOptions,
+} from "./email-delivery";
 import { enforceAbuse } from "@/abuse/enforce";
 import type { EndpointCaptchaConfig, EndpointPowConfig } from "@/abuse/config";
 
@@ -97,26 +104,32 @@ export interface UseAuthOptions {
   onSignup?: (user: AuthUser, c: Context) => void | Promise<void>;
   csrf?: boolean | CsrfOptions;
   throttle?: boolean | LoginThrottleOptions;
+  // Shared delivery settings for composeEmail-based flows: the adapter (default:
+  // the global email adapter, e.g. a durableEmail(...) wrapper) and a hook for
+  // failures that the enumeration-sensitive endpoints swallow.
+  email?: AuthEmailOptions;
   verification?: {
     store: VerificationTokenStore;
-    sendToken: (params: {
+    sendToken?: (params: {
       identifier: string;
       token: string;
       expiresAt: Date;
       c: Context;
     }) => void | Promise<void>;
+    composeEmail?: AuthEmailComposer;
     markVerified: (identifier: string) => void | Promise<void>;
     ttlMs?: number;
     hashTokens?: boolean;
   };
   passwordReset?: {
     store: VerificationTokenStore;
-    sendToken: (params: {
+    sendToken?: (params: {
       identifier: string;
       token: string;
       expiresAt: Date;
       c: Context;
     }) => void | Promise<void>;
+    composeEmail?: AuthEmailComposer;
     resetPassword: (identifier: string, passwordHash: string) => void | Promise<void>;
     findUserByEmail?: (identifier: string) => Promise<{ id: string } | null>;
     ttlMs?: number;
@@ -135,6 +148,9 @@ export interface UseAuthOptions {
   // ...). Mounts redirect + callback routes that mint the same session as a
   // password login. See `fromPassport`.
   social?: SocialAuthOptions;
+  // Passkeys (WebAuthn): registration for signed-in users, passwordless and
+  // usernameless login, and credential management under `/passkey`.
+  passkey?: PasskeyAuthOptions;
 }
 
 export interface MfaEnrollment {
@@ -157,12 +173,13 @@ export interface MfaOptions {
 
 export interface MagicLinkAuthOptions {
   store: VerificationTokenStore;
-  sendLink: (params: {
+  sendLink?: (params: {
     identifier: string;
     token: string;
     expiresAt: Date;
     c: Context;
   }) => void | Promise<void>;
+  composeEmail?: AuthEmailComposer;
   findUserByEmail: (identifier: string) => Promise<AuthUser | null>;
   ttlMs?: number;
   hashTokens?: boolean;
@@ -224,7 +241,29 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
     mfa,
     magicLink,
     social,
+    email: emailOptions,
+    passkey,
   } = options;
+
+  if (verification) {
+    assertAuthEmailFlow("verification", "sendToken", {
+      send: verification.sendToken,
+      composeEmail: verification.composeEmail,
+    });
+  }
+  if (passwordReset) {
+    assertAuthEmailFlow("passwordReset", "sendToken", {
+      send: passwordReset.sendToken,
+      composeEmail: passwordReset.composeEmail,
+    });
+  }
+  if (magicLink) {
+    assertAuthEmailFlow("magicLink", "sendLink", {
+      send: magicLink.sendLink,
+      composeEmail: magicLink.composeEmail,
+    });
+  }
+  const emailDispatcher = createAuthEmailDispatcher(emailOptions);
 
   const finalCookieOptions = {
     ...defaultCookieOptions,
@@ -502,7 +541,11 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
         { hash: verification.hashTokens }
       );
 
-      await verification.sendToken({ identifier: email, token, expiresAt, c });
+      await emailDispatcher.deliver(
+        "verification",
+        { send: verification.sendToken, composeEmail: verification.composeEmail },
+        { identifier: email, token, expiresAt, c }
+      );
 
       return c.json({ success: true });
     });
@@ -551,7 +594,11 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
           ttlMs: passwordReset.ttlMs,
           hashTokens: passwordReset.hashTokens,
         });
-        await passwordReset.sendToken({ identifier: email, token, expiresAt, c });
+        await emailDispatcher.deliverQuietly(
+          "passwordReset",
+          { send: passwordReset.sendToken, composeEmail: passwordReset.composeEmail },
+          { identifier: email, token, expiresAt, c }
+        );
       }
 
       return c.json({ success: true });
@@ -593,15 +640,15 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
     });
   }
 
-  if (mfa) {
-    const requireCurrentUser = async (c: Context): Promise<UserContext> => {
-      const result = await strategy.authenticate(c);
-      if (result.success && result.user) {
-        return result.user;
-      }
-      throw new UnauthorizedError("Authentication required");
-    };
+  const requireCurrentUser = async (c: Context): Promise<UserContext> => {
+    const result = await strategy.authenticate(c);
+    if (result.success && result.user) {
+      return result.user;
+    }
+    throw new UnauthorizedError("Authentication required");
+  };
 
+  if (mfa) {
     router.post("/mfa/enroll", async (c) => {
       const user = await requireCurrentUser(c);
       const secret = generateTotpSecret();
@@ -692,7 +739,11 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
           ttlMs: magicLink.ttlMs,
           hashTokens: magicLink.hashTokens,
         });
-        await magicLink.sendLink({ identifier: email, token, expiresAt, c });
+        await emailDispatcher.deliverQuietly(
+          "magicLink",
+          { send: magicLink.sendLink, composeEmail: magicLink.composeEmail },
+          { identifier: email, token, expiresAt, c }
+        );
       }
 
       return c.json({ success: true });
@@ -735,6 +786,15 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
       cookiePath: finalCookieOptions.path,
     });
     router.route(social.basePath ?? "/social", socialRouter);
+  }
+
+  if (passkey) {
+    const passkeyRouter = createPasskeyRouter(passkey, {
+      completeLogin,
+      requireCurrentUser,
+      throttle: throttle$,
+    });
+    router.route(passkey.basePath ?? "/passkey", passkeyRouter);
   }
 
   // Strategy-owned routes (e.g. JWT `/refresh`).

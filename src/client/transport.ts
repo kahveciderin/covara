@@ -184,7 +184,7 @@ export class FetchTransport implements Transport {
     const signal = this.combineSignals(controller.signal, req.signal);
 
     const headers = {
-      "Content-Type": "application/json",
+      "Content-Type": req.rawBody !== undefined ? "application/octet-stream" : "application/json",
       ...csrfHeaders(req.method, this.config.csrf),
       ...this.headers,
       ...req.headers,
@@ -195,7 +195,12 @@ export class FetchTransport implements Transport {
       const response = await fetch(url, {
         method: req.method,
         headers,
-        body: req.body ? JSON.stringify(req.body) : undefined,
+        body:
+          req.rawBody !== undefined
+            ? (req.rawBody as BodyInit)
+            : req.body
+              ? JSON.stringify(req.body)
+              : undefined,
         credentials: this.config.credentials,
         signal,
       });

@@ -12,7 +12,10 @@ import {
   PortalSession,
   ReportUsageInput,
   SubscriptionStatus,
+  ListSubscriptionsPageOptions,
+  SubscriptionPage,
 } from "./types";
+import { clampPageSize, collectAllPages } from "./pagination";
 
 export interface PolarAdapterConfig {
   accessToken: string;
@@ -53,6 +56,7 @@ interface PolarSubscription {
 
 interface PolarList<T> {
   items?: T[];
+  pagination?: { total_count?: number; max_page?: number };
 }
 
 interface PolarOrder {
@@ -243,12 +247,28 @@ export class PolarBillingAdapter implements BillingAdapter {
     return sub ? mapSubscription(sub) : null;
   }
 
+  private async subscriptionsPage(
+    filter: string,
+    options: ListSubscriptionsPageOptions = {}
+  ): Promise<SubscriptionPage> {
+    const page = Math.max(1, Number(options.cursor ?? 1) || 1);
+    const path = `/v1/subscriptions/?${filter}limit=${clampPageSize(options.limit, 100)}&page=${page}`;
+    const list = (await this.request<PolarList<PolarSubscription>>("GET", path))!;
+    const maxPage = list.pagination?.max_page ?? page;
+    return {
+      subscriptions: (list.items ?? []).map(mapSubscription),
+      nextCursor: page < maxPage && (list.items ?? []).length > 0 ? String(page + 1) : undefined,
+    };
+  }
+
   async listSubscriptions(customerId: string): Promise<BillingSubscription[]> {
-    const list = (await this.request<PolarList<PolarSubscription>>(
-      "GET",
-      `/v1/subscriptions/?customer_id=${encodeURIComponent(customerId)}`
-    ))!;
-    return (list.items ?? []).map(mapSubscription);
+    return collectAllPages((cursor) =>
+      this.subscriptionsPage(`customer_id=${encodeURIComponent(customerId)}&`, { cursor })
+    );
+  }
+
+  async listAllSubscriptions(options?: ListSubscriptionsPageOptions): Promise<SubscriptionPage> {
+    return this.subscriptionsPage("", options);
   }
 
   async cancelSubscription(

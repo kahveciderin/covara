@@ -12,3 +12,6 @@ export {
 export type { DrizzleSessionStoreOptions, SessionsTableColumns } from "./drizzle";
 
 export { InMemorySessionStore } from "../types";
+
+export { DrizzlePasskeyStore, createDrizzlePasskeyStore } from "./drizzle-passkeys";
+export type { DrizzlePasskeyStoreOptions } from "./drizzle-passkeys";

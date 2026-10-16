@@ -8,6 +8,12 @@ export type {
   LocalStorageConfig,
   S3StorageConfig,
   StorageConfig,
+  StoredObjectInfo,
+  ListObjectsOptions,
+  ListObjectsResult,
+  MultipartPart,
+  MultipartLimits,
+  MultipartStorageAdapter,
 } from "./types";
 
 export {
@@ -15,7 +21,41 @@ export {
   getGlobalStorage,
   hasGlobalStorage,
   clearGlobalStorage,
+  supportsMultipart,
+  readObjectHead,
 } from "./types";
+
+export {
+  sniffContentType,
+  resolveContentType,
+  isActiveContentType,
+  SNIFF_BYTES,
+} from "./sniff";
+export type {
+  ContentSniffingPolicy,
+  SniffResult,
+  SniffFamily,
+  ContentTypeDecision,
+} from "./sniff";
+
+export {
+  drainBlobDeletions,
+  sweepOrphanedBlobs,
+  runStorageMaintenance,
+  startStorageMaintenance,
+  stopStorageMaintenance,
+  defineStorageMaintenanceTask,
+  getBlobDeletionStats,
+} from "./cleanup";
+export type {
+  BlobDeletionConfig,
+  BlobDeletionDrainResult,
+  SweepOptions,
+  SweepResult,
+  StorageMaintenanceOptions,
+} from "./cleanup";
+
+export type { ResumableUploadConfig } from "./resumable";
 
 export { MemoryStorageAdapter, createMemoryStorage } from "./memory";
 
@@ -29,6 +69,7 @@ export type {
   R2S3Config,
   R2BindingConfig,
   R2Bucket,
+  R2MultipartUpload,
 } from "./r2";
 
 export { validateUpload } from "./validation";

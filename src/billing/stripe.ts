@@ -12,7 +12,10 @@ import {
   PortalSession,
   ReportUsageInput,
   SubscriptionStatus,
+  ListSubscriptionsPageOptions,
+  SubscriptionPage,
 } from "./types";
+import { clampPageSize, collectAllPages } from "./pagination";
 
 export interface StripeAdapterConfig {
   apiKey: string;
@@ -81,6 +84,7 @@ interface StripeSubscription {
 
 interface StripeList<T> {
   data?: T[];
+  has_more?: boolean;
 }
 
 interface StripeInvoice {
@@ -267,12 +271,29 @@ export class StripeBillingAdapter implements BillingAdapter {
     return sub ? mapSubscription(sub) : null;
   }
 
+  private async subscriptionsPage(
+    filter: string,
+    options: ListSubscriptionsPageOptions = {}
+  ): Promise<SubscriptionPage> {
+    let path = `/subscriptions?${filter}status=all&limit=${clampPageSize(options.limit, 100)}`;
+    if (options.cursor) path += `&starting_after=${encodeURIComponent(options.cursor)}`;
+    const list = (await this.request<StripeList<StripeSubscription>>("GET", path))!;
+    const data = list.data ?? [];
+    const last = data[data.length - 1];
+    return {
+      subscriptions: data.map(mapSubscription),
+      nextCursor: list.has_more && last ? last.id : undefined,
+    };
+  }
+
   async listSubscriptions(customerId: string): Promise<BillingSubscription[]> {
-    const list = (await this.request<StripeList<StripeSubscription>>(
-      "GET",
-      `/subscriptions?customer=${encodeURIComponent(customerId)}&status=all`
-    ))!;
-    return (list.data ?? []).map(mapSubscription);
+    return collectAllPages((cursor) =>
+      this.subscriptionsPage(`customer=${encodeURIComponent(customerId)}&`, { cursor })
+    );
+  }
+
+  async listAllSubscriptions(options?: ListSubscriptionsPageOptions): Promise<SubscriptionPage> {
+    return this.subscriptionsPage("", options);
   }
 
   async cancelSubscription(

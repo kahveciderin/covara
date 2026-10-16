@@ -8,6 +8,7 @@ import {
   normalizeAddress,
   normalizeRecipients,
 } from "./types";
+import { EmailDeliveryError } from "./errors";
 
 // Structural type for the Cloudflare Email Service send binding
 // (https://developers.cloudflare.com/email-service/). The service is in beta and
@@ -265,7 +266,10 @@ export class CloudflareEmailAdapter implements EmailAdapter {
   private resolve(message: EmailMessage): EmailMessage {
     if (message.from !== undefined && message.from !== "") return message;
     if (this.defaultFrom === undefined) {
-      throw new Error("cloudflare-email: no 'from' address provided");
+      throw new EmailDeliveryError("cloudflare-email: no 'from' address provided", {
+        provider: this.provider,
+        permanent: true,
+      });
     }
     return { ...message, from: this.defaultFrom };
   }
@@ -282,7 +286,10 @@ export class CloudflareEmailAdapter implements EmailAdapter {
       ...normalizeRecipients(resolved.bcc),
     ];
     if (envelopes.length === 0) {
-      throw new Error("cloudflare-email: at least one recipient is required");
+      throw new EmailDeliveryError("cloudflare-email: at least one recipient is required", {
+        provider: this.provider,
+        permanent: true,
+      });
     }
 
     const from = formatAddress(resolved.from);
@@ -303,7 +310,10 @@ export class CloudflareEmailAdapter implements EmailAdapter {
       }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`cloudflare-email: send failed: ${detail}`);
+      throw new EmailDeliveryError(`cloudflare-email: send failed: ${detail}`, {
+        provider: this.provider,
+        cause: error,
+      });
     }
 
     return { provider: this.provider };

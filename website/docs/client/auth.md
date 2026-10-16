@@ -51,6 +51,7 @@ interface UseAuthOptions {
   apiKey?: string;     // apiKey
   baseUrl?: string;
   authBasePath?: string;   // default /api/auth (login/signup/verify)
+  passkeyPath?: string;    // default /passkey (inside authBasePath)
   socialBasePath?: string; // default /api/auth/social
 }
 
@@ -70,6 +71,13 @@ interface UseAuthResult<TUser> {
   confirmEmail: (email: string, token: string) => Promise<void>;
   // Social (Passport) — redirects to the provider
   signInWith: (provider: string) => void;
+  // Passkeys (WebAuthn)
+  registerPasskey: (options?: { name?: string; signal?: AbortSignal }) => Promise<PasskeyInfo>;
+  loginWithPasskey: (options?: {
+    email?: string;
+    mediation?: CredentialMediationRequirement;
+    signal?: AbortSignal;
+  }) => Promise<void>;
 }
 ```
 
@@ -108,6 +116,45 @@ client.loginWithSocial("github");
 Both default to the `/api/auth` mount; override with `useAuth({ authBasePath })` or `createClient({ session: { basePath } })`.
 
 For JWT login/signup/refresh control, use [`useJWTAuth`](../auth/jwt.md).
+
+### Passkeys
+
+When the server enables [passkeys](../auth/passkeys.md), the client runs the WebAuthn ceremonies for you: it fetches the options, converts the base64url fields to `ArrayBuffer`s for `navigator.credentials.create`/`get`, serializes the resulting credential back to JSON, and posts it to the verify route.
+
+```tsx
+const { registerPasskey, loginWithPasskey } = useAuth<User>();
+
+await registerPasskey({ name: "MacBook" });          // signed in: add a passkey
+await loginWithPasskey();                             // usernameless; refreshes `user`
+await loginWithPasskey({ email: "ada@example.com" }); // email-first (security keys)
+```
+
+Outside React:
+
+```typescript
+import { isPasskeySupported, isConditionalMediationAvailable } from "covara/client";
+
+if (isPasskeySupported()) {
+  await client.session.registerPasskey({ name: "Phone" });
+}
+await client.session.loginWithPasskey();
+const passkeys = await client.session.listPasskeys(); // [{ id, name, createdAt, lastUsedAt, ... }]
+await client.session.renamePasskey(passkeys[0].id, "Work laptop");
+await client.session.deletePasskey(passkeys[0].id);
+```
+
+**Autofill.** For passkey autofill (conditional UI), mark the username field with `autocomplete="username webauthn"` and start a conditional request when the page loads; abort it if the user submits the form another way:
+
+```typescript
+const controller = new AbortController();
+if (await isConditionalMediationAvailable()) {
+  client.session.loginWithPasskey({ mediation: "conditional", signal: controller.signal })
+    .then(() => location.assign("/"))
+    .catch(() => {});
+}
+```
+
+With a `jwtSession` server, `loginWithPasskey` captures the returned access token exactly like `login`. Both throw when WebAuthn is unavailable (`Passkeys (WebAuthn) are not supported in this environment`) or the user cancels the browser prompt, and surface the server's problem detail on failure (e.g. `Passkey authentication failed`). The lower-level helpers `createPasskeyCredential`, `getPasskeyCredential`, `base64urlToBuffer` and `bufferToBase64url` are exported from `covara/client` for custom flows. Passkey routes default to `/api/auth/passkey`; override with `createClient({ session: { passkeyPath } })` / `useAuth({ passkeyPath })` to match the server's `passkey.basePath`.
 
 ## OIDC PKCE flow
 

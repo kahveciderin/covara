@@ -6,6 +6,8 @@ import { observabilityMiddleware, type ObservabilityConfig } from "@/middleware/
 import { useResource } from "@/resource/hook";
 import { useFileResource, type FileResourceConfig, type FileTableSchema } from "@/storage";
 import { hasGlobalStorage, getGlobalStorage } from "@/storage/types";
+import { isActiveContentType } from "@/storage/sniff";
+import { attachmentDisposition } from "@/storage/http";
 import type { UserContext } from "@/resource/types";
 import type { ResourceConfigInput } from "@/resource/column-ref";
 import { createHealthEndpoints, type HealthConfig } from "@/health";
@@ -248,9 +250,26 @@ export class CovaraApp extends Hono {
       return loading;
     };
 
+    const activeExtension = /\.(html?|xht(ml)?|svgz?|xml|xslt?|m?js|cjs)$/i;
     this.use(`${cfg.baseUrl}/*`, async (c, next) => {
+      let relative = c.req.path.replace(prefix, "");
+      try {
+        relative = decodeURIComponent(relative);
+      } catch {
+        return c.notFound();
+      }
+      if (relative.endsWith(".meta.json") || relative.split("/").includes(".covara-uploads")) {
+        return c.notFound();
+      }
       const mw = middleware ?? (await load());
-      return mw(c, next);
+      const res = await mw(c, next);
+      if (!(res instanceof Response)) return res;
+      res.headers.set("X-Content-Type-Options", "nosniff");
+      if (activeExtension.test(relative) || isActiveContentType(res.headers.get("content-type"))) {
+        res.headers.set("Content-Type", "application/octet-stream");
+        res.headers.set("Content-Disposition", attachmentDisposition(relative.split("/").pop() ?? "download"));
+      }
+      return res;
     });
   }
 

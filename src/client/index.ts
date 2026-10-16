@@ -14,6 +14,13 @@ import { createJWTClient, JWTClient, JWTClientConfig } from "./jwt";
 import type { DateFieldRegistry } from "./dates";
 import { needsCsrfToken, type CsrfConfig } from "./csrf";
 import { createBillingClient } from "./billing";
+import {
+  createPasskeyCredential,
+  getPasskeyCredential,
+  type PasskeyCreationOptionsJSON,
+  type PasskeyInfo,
+  type PasskeyRequestOptionsJSON,
+} from "./passkey";
 
 export { getClient, setGlobalClient, getAuthErrorHandler } from "./globals";
 export type { CovaraClient } from "./types";
@@ -25,6 +32,23 @@ export { csrfHeaders, readCsrfToken } from "./csrf";
 export type { CsrfConfig } from "./csrf";
 export { describeErrorBody } from "./errors";
 export type { ErrorBodyInfo } from "./errors";
+export {
+  isPasskeySupported,
+  isConditionalMediationAvailable,
+  createPasskeyCredential,
+  getPasskeyCredential,
+  base64urlToBuffer,
+  bufferToBase64url,
+} from "./passkey";
+export type {
+  PasskeyInfo,
+  RegisterPasskeyOptions,
+  LoginWithPasskeyOptions,
+  PasskeyCreationOptionsJSON,
+  PasskeyRequestOptionsJSON,
+  PasskeyRegistrationResponseJSON,
+  PasskeyAuthenticationResponseJSON,
+} from "./passkey";
 
 export interface SimplifiedClientConfig {
   baseUrl: string;
@@ -56,8 +80,11 @@ export interface SimplifiedClientConfig {
   billing?: { basePath?: string };
   /** Social login routes (mounted server-side, default `/api/auth/social`). */
   social?: { basePath?: string };
-  /** Session auth routes (mounted server-side, default `/api/auth`). */
-  session?: { basePath?: string };
+  /**
+   * Session auth routes (mounted server-side, default `/api/auth`); passkey
+   * routes live under `passkeyPath` (default `/passkey`) inside it.
+   */
+  session?: { basePath?: string; passkeyPath?: string };
   /**
    * CSRF double-submit (default on): unsafe requests echo the server's CSRF
    * cookie in a header, as `useAuth({ csrf: true })` requires. Set false to
@@ -227,6 +254,7 @@ export const createClient = (config: SimplifiedClientConfig): CovaraClient => {
     `${config.baseUrl}${socialBasePath}/${encodeURIComponent(provider)}`;
 
   const authBasePath = config.session?.basePath ?? "/api/auth";
+  const passkeyBasePath = `${authBasePath}${config.session?.passkeyPath ?? "/passkey"}`;
   // The server issues its CSRF cookie on any safe request; make one first if a
   // session call would otherwise go out without the token.
   const ensureCsrfToken = async (): Promise<void> => {
@@ -279,6 +307,67 @@ export const createClient = (config: SimplifiedClientConfig): CovaraClient => {
         { method: "GET", path: `${authBasePath}/me` }
       );
       return res.data.user;
+    },
+    async registerPasskey(options = {}) {
+      await ensureCsrfToken();
+      const creation = await transport.request<PasskeyCreationOptionsJSON>({
+        method: "POST",
+        path: `${passkeyBasePath}/register/options`,
+        body: {},
+      });
+      const response = await createPasskeyCredential(creation.data, { signal: options.signal });
+      const res = await transport.request<{ passkey: PasskeyInfo }>({
+        method: "POST",
+        path: `${passkeyBasePath}/register/verify`,
+        body: { response, name: options.name },
+      });
+      return res.data.passkey;
+    },
+    async loginWithPasskey(options = {}) {
+      await ensureCsrfToken();
+      const request = await transport.request<PasskeyRequestOptionsJSON>({
+        method: "POST",
+        path: `${passkeyBasePath}/login/options`,
+        body: options.email ? { email: options.email } : {},
+      });
+      const response = await getPasskeyCredential(request.data, {
+        signal: options.signal,
+        mediation: options.mediation,
+      });
+      const res = await transport.request<{
+        user: Record<string, unknown>;
+        sessionId?: string;
+        accessToken?: string;
+        expiresIn?: number;
+        tokenType?: string;
+      }>({ method: "POST", path: `${passkeyBasePath}/login/verify`, body: { response } });
+      if (res.data.accessToken) {
+        transport.setHeader("Authorization", `Bearer ${res.data.accessToken}`);
+      }
+      return res.data;
+    },
+    async listPasskeys() {
+      const res = await transport.request<{ passkeys: PasskeyInfo[] }>({
+        method: "GET",
+        path: `${passkeyBasePath}/credentials`,
+      });
+      return res.data.passkeys;
+    },
+    async renamePasskey(id, name) {
+      await ensureCsrfToken();
+      const res = await transport.request<{ passkey: PasskeyInfo }>({
+        method: "PATCH",
+        path: `${passkeyBasePath}/credentials/${encodeURIComponent(id)}`,
+        body: { name },
+      });
+      return res.data.passkey;
+    },
+    async deletePasskey(id) {
+      await ensureCsrfToken();
+      await transport.request({
+        method: "DELETE",
+        path: `${passkeyBasePath}/credentials/${encodeURIComponent(id)}`,
+      });
     },
   };
 
@@ -604,6 +693,12 @@ export type {
   FileListOptions,
   FileListResponse,
   FileClientConfig,
+  ResumableUploadOptions,
+  ResumableUploadHandle,
+  ResumableUploadSession,
+  ResumableUploadStatus,
+  ResumeStore,
+  UploadableFile,
 } from "./file-upload";
 
 export {

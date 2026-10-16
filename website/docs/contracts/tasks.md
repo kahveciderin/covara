@@ -18,6 +18,8 @@
 - **Bounded retries**: Tasks retry up to `maxRetries` times before going to DLQ
 - **Exponential backoff**: Retry delays increase exponentially with configurable base and multiplier
 - **Jitter**: Retry times include random jitter to prevent thundering herd
+- **Per-error delay override**: `retry.retryDelayMs(error, attempt)` may return a delay (ms) that replaces the computed backoff for that retry (used to honour provider `Retry-After`); `undefined`, negative, or non-finite values fall back to the backoff. Applies to both the KV worker and the Cloudflare Queues consumer (whose `delaySeconds` is capped at 12h)
+- **Non-retryable errors**: when `retry.retryOn(error)` returns `false` the task goes straight to the DLQ regardless of remaining attempts
 
 ### Claim/Lease
 - **Exclusive execution**: Only one worker executes a task at a time (via claim mechanism)

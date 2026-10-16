@@ -6,11 +6,14 @@ import {
   UploadedFile,
   UploadProgress,
   FileListOptions,
+  ResumableUploadHandle,
+  ResumableUploadOptions,
 } from "./file-upload";
 
 export interface UseFileUploadOptions {
   resourcePath: string;
   usePresignedUrl?: boolean;
+  resumable?: boolean | Omit<ResumableUploadOptions, "onProgress" | "signal">;
   onSuccess?: (file: UploadedFile) => void;
   onError?: (error: Error) => void;
 }
@@ -21,14 +24,20 @@ export interface UseFileUploadResult {
   progress: UploadProgress | null;
   error: Error | null;
   reset: () => void;
+  uploadId: string | null;
+  pause: () => void;
+  abort: () => Promise<void>;
 }
 
 export function useFileUpload(options: UseFileUploadOptions): UseFileUploadResult {
-  const { resourcePath, usePresignedUrl = false, onSuccess, onError } = options;
+  const { resourcePath, usePresignedUrl = false, resumable, onSuccess, onError } = options;
 
   const [isUploading, setIsUploading] = useState(false);
   const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [error, setError] = useState<Error | null>(null);
+  const [uploadId, setUploadId] = useState<string | null>(null);
+  const handleRef = useRef<ResumableUploadHandle | null>(null);
+  const resumableOptions = resumable === true ? {} : resumable || null;
 
   const fileClient = useMemo(() => {
     const client = getClient();
@@ -45,14 +54,31 @@ export function useFileUpload(options: UseFileUploadOptions): UseFileUploadResul
       setError(null);
 
       try {
-        const uploadFn = usePresignedUrl
-          ? fileClient.uploadWithPresignedUrl
-          : fileClient.upload;
-
-        const result = await uploadFn(file, {
-          ...uploadOptions,
-          onProgress: setProgress,
-        });
+        let result: UploadedFile;
+        if (resumableOptions) {
+          const handle = fileClient.startResumableUpload(file, {
+            ...resumableOptions,
+            onProgress: setProgress,
+            onSessionCreated: (session) => {
+              setUploadId(session.uploadId);
+              resumableOptions.onSessionCreated?.(session);
+            },
+          });
+          handleRef.current = handle;
+          try {
+            result = await handle.promise;
+          } finally {
+            if (handleRef.current === handle) handleRef.current = null;
+          }
+        } else {
+          const uploadFn = usePresignedUrl
+            ? fileClient.uploadWithPresignedUrl
+            : fileClient.upload;
+          result = await uploadFn(file, {
+            ...uploadOptions,
+            onProgress: setProgress,
+          });
+        }
 
         onSuccess?.(result);
         return result;
@@ -65,13 +91,25 @@ export function useFileUpload(options: UseFileUploadOptions): UseFileUploadResul
         setIsUploading(false);
       }
     },
-    [fileClient, usePresignedUrl, onSuccess, onError]
+    [fileClient, usePresignedUrl, JSON.stringify(resumableOptions ?? null), onSuccess, onError]
   );
 
   const reset = useCallback(() => {
     setIsUploading(false);
     setProgress(null);
     setError(null);
+    setUploadId(null);
+  }, []);
+
+  const pause = useCallback(() => {
+    handleRef.current?.pause();
+  }, []);
+
+  const abort = useCallback(async () => {
+    const handle = handleRef.current;
+    handleRef.current = null;
+    if (handle) await handle.abort();
+    setUploadId(null);
   }, []);
 
   return {
@@ -80,6 +118,9 @@ export function useFileUpload(options: UseFileUploadOptions): UseFileUploadResul
     progress,
     error,
     reset,
+    uploadId,
+    pause,
+    abort,
   };
 }
 
@@ -264,4 +305,13 @@ export function useFiles(options: UseFilesOptions): UseFilesResult {
   };
 }
 
-export type { UploadedFile, UploadProgress, FileUploadOptions } from "./file-upload";
+export type {
+  UploadedFile,
+  UploadProgress,
+  FileUploadOptions,
+  ResumableUploadOptions,
+  ResumableUploadHandle,
+  ResumableUploadSession,
+  ResumableUploadStatus,
+  ResumeStore,
+} from "./file-upload";

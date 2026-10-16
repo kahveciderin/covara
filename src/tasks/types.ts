@@ -14,6 +14,7 @@ export interface RetryConfig {
   initialDelayMs?: number;
   maxDelayMs?: number;
   retryOn?: (error: Error) => boolean;
+  retryDelayMs?: (error: Error, attempt: number) => number | undefined;
 }
 
 export interface DebounceConfig {

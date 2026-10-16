@@ -22,7 +22,7 @@ Follow the [**Auth quickstart**](./getting-started.md) — the fastest path to e
 
 Both populate the same request context, so [authorization scopes](./scopes.md), [subscriptions](../realtime/subscriptions.md), and the [client `useAuth` hook](#client-side-useauth) work identically regardless of which you choose.
 
-On top of either approach you can layer: [social login](./social.md) (sign in with GitHub/Discord/Google/… via any Passport.js strategy), [JWT tokens](./jwt.md), [federated login](./federated.md), [API keys](./api-keys.md), [MFA/TOTP](./mfa.md), [magic links](./magic-links.md), a [password policy](./passwords.md), and [account-security flows](./account-security.md) (CSRF, login throttling, email verification, password reset).
+On top of either approach you can layer: [social login](./social.md) (sign in with GitHub/Discord/Google/… via any Passport.js strategy), [JWT tokens](./jwt.md), [federated login](./federated.md), [API keys](./api-keys.md), [passkeys](./passkeys.md) (WebAuthn: passwordless and usernameless login), [MFA/TOTP](./mfa.md), [magic links](./magic-links.md), a [password policy](./passwords.md), and [account-security flows](./account-security.md) (CSRF, login throttling, email verification, password reset).
 
 ## The request user
 
@@ -117,6 +117,6 @@ See [Client auth](../client/auth.md) for every strategy and the OIDC PKCE flow.
 
 ## Related
 
-- [Quickstart](./getting-started.md) · [Sessions](./sessions.md) · [Social login](./social.md) · [JWT](./jwt.md) · [OIDC provider](./oidc-provider.md) · [Federated login](./federated.md)
+- [Quickstart](./getting-started.md) · [Sessions](./sessions.md) · [Social login](./social.md) · [Passkeys](./passkeys.md) · [JWT](./jwt.md) · [OIDC provider](./oidc-provider.md) · [Federated login](./federated.md)
 - [Scopes](./scopes.md) · [Secure queries](./secure-queries.md) · [Passwords](./passwords.md)
 - [Auth contract](../contracts/auth.md) — the threat model and guarantees

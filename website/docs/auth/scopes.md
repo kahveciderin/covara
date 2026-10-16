@@ -34,7 +34,11 @@ useResource(postsTable, {
 Operations: `read`, `create`, `update`, `delete`, `subscribe`. Omit one to deny it (unless `public` grants it).
 
 :::info Empty scope fails closed on every operation
-An empty scope is an explicit **deny** and is enforced uniformly: reads (`GET /`, `GET /:id`, `/count`, `/aggregate`, `/search`) return no rows, live `subscribe` streams match nothing, and writes return `403`. It never degrades to "no `WHERE` clause" (which would return every row), and a client-supplied `?filter=` cannot widen it — the user's filter is dropped, not applied. Returning `emptyScope()` (or an empty `` rsql`` ``) is the safe, correct way to say "this user sees nothing." Note that an *unconfigured* operation resolves to `allScope()`, not empty, so deny requires an explicit empty scope (or omitting the operation).
+An empty scope is an explicit **deny** and is enforced uniformly: reads (`GET /`, `GET /:id`, `/count`, `/aggregate`, `/search`) return no rows, live `subscribe` streams match nothing, and writes return `403`. It never degrades to "no `WHERE` clause" (which would return every row), and a client-supplied `?filter=` cannot widen it — the user's filter is dropped, not applied. Returning `emptyScope()` (or an empty `` rsql`` ``) is the safe, correct way to say "this user sees nothing." Note that an *unconfigured* operation resolves to `allScope()`, not empty, so deny requires an explicit empty scope.
+
+:::warning Unscoped operations
+An operation with no scope function that isn't granted by `public` resolves to `allScope()`: **any signed-in user can perform it on every row**. `useResource` logs a one-time warning per resource listing such operations (suppressed when `NODE_ENV=test`). To silence it, declare a scope for each operation — `scope` covers them all, `subscribe` inherits `read` — or make unrestricted access explicit with `` scope: async () => allScope() ``.
+:::
 :::
 
 **Anonymous access — `public`.** `public: true` makes **read and subscribe** public (writes still require auth — a safe default). The object form opts each operation in explicitly and can open **writes** too: `public: { read: true, subscribe: true, create: true, update: true, delete: true }` for a fully-public resource (e.g. a prototype or a genuinely open collection). With the object form, `subscribe` is **not** implied by `read` — grant it explicitly or anonymous SSE subscriptions return `401`. An operation not granted by `public` and reached without a user returns `401`.

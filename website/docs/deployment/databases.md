@@ -66,7 +66,7 @@ On D1, apply migrations via wrangler — see [Workers deployment](./workers.md).
 
 ## Internal tables (`covara/db`)
 
-The auth subsystem persists state in four framework-owned tables. The `covara/db` subpath provides canonical schemas, an idempotent migrator, a generic seeder, and pool-sizing guidance.
+The auth and billing subsystems persist state in seven framework-owned tables. The `covara/db` subpath provides canonical schemas, an idempotent migrator, a generic seeder, and pool-sizing guidance.
 
 | Table | Purpose | Used by |
 |-------|---------|---------|
@@ -74,8 +74,11 @@ The auth subsystem persists state in four framework-owned tables. The `covara/db
 | `auth_accounts` | Linked OAuth/OIDC accounts | Auth.js / [federated](../auth/federated.md) adapters |
 | `auth_api_keys` | Hashed [API keys](../auth/api-keys.md) | API-key credential flow |
 | `auth_verification_tokens` | Email/magic-link/reset tokens | [Verification flows](../auth/account-security.md) |
+| `billing_credit_entries` | Append-only credits journal | [`createDrizzleCreditsLedger`](../platform/billing.md#credits-ledger) |
+| `billing_credit_balances` | Per-account credit balance + version | [`createDrizzleCreditsLedger`](../platform/billing.md#credits-ledger) |
+| `billing_subscriptions` | Local mirror of provider subscriptions | [Billing reconciliation](../platform/billing.md#reconciliation) |
 
-Timestamps are stored as Unix-epoch integers on SQLite (`{ mode: "timestamp" }`) and as `TIMESTAMP` on Postgres.
+Timestamps are stored as Unix-epoch integers on SQLite (`{ mode: "timestamp" }`, milliseconds for the billing tables) and as `TIMESTAMP` on Postgres.
 
 Spread the dialect-appropriate tables into your Drizzle schema so drizzle-kit and queries see them:
 

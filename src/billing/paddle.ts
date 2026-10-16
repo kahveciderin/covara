@@ -11,7 +11,10 @@ import {
   CreateCustomerInput,
   ReportUsageInput,
   SubscriptionStatus,
+  ListSubscriptionsPageOptions,
+  SubscriptionPage,
 } from "./types";
+import { clampPageSize, collectAllPages } from "./pagination";
 
 export interface PaddleAdapterConfig {
   apiKey: string;
@@ -62,6 +65,7 @@ interface PaddleTransaction {
 
 interface PaddleEnvelope<T> {
   data?: T;
+  meta?: { pagination?: { has_more?: boolean; next?: string } };
 }
 
 const mapStatus = (status?: string): SubscriptionStatus => {
@@ -225,12 +229,29 @@ export class PaddleBillingAdapter implements BillingAdapter {
     return mapSubscription(envelope.data ?? {});
   }
 
+  private async subscriptionsPage(
+    filter: string,
+    options: ListSubscriptionsPageOptions = {}
+  ): Promise<SubscriptionPage> {
+    let path = `/subscriptions?${filter}per_page=${clampPageSize(options.limit, 200)}`;
+    if (options.cursor) path += `&after=${encodeURIComponent(options.cursor)}`;
+    const envelope = (await this.request<PaddleEnvelope<PaddleSubscription[]>>("GET", path))!;
+    const data = envelope.data ?? [];
+    const last = data[data.length - 1];
+    return {
+      subscriptions: data.map(mapSubscription),
+      nextCursor: envelope.meta?.pagination?.has_more && last?.id ? last.id : undefined,
+    };
+  }
+
   async listSubscriptions(customerId: string): Promise<BillingSubscription[]> {
-    const envelope = (await this.request<PaddleEnvelope<PaddleSubscription[]>>(
-      "GET",
-      `/subscriptions?customer_id=${encodeURIComponent(customerId)}`
-    ))!;
-    return (envelope.data ?? []).map(mapSubscription);
+    return collectAllPages((cursor) =>
+      this.subscriptionsPage(`customer_id=${encodeURIComponent(customerId)}&`, { cursor })
+    );
+  }
+
+  async listAllSubscriptions(options?: ListSubscriptionsPageOptions): Promise<SubscriptionPage> {
+    return this.subscriptionsPage("", options);
   }
 
   async cancelSubscription(

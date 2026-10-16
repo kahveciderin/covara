@@ -170,6 +170,7 @@
   "dependencies": {
     "@hono/node-server": "^2.0.4",
     "@opensearch-project/opensearch": "^3.5.1",
+    "@simplewebauthn/server": "^14.0.3",
     "cron-parser": "^5.4.0",
     "drizzle-zod": "^0.8.3",
     "hono": "^4.12.25",

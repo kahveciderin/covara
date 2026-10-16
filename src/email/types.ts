@@ -29,13 +29,19 @@ export interface EmailMessage {
 export interface SendEmailResult {
   id?: string;
   provider: string;
+  status?: "sent" | "queued";
+  taskId?: string;
+}
+
+export interface SendEmailOptions {
+  idempotencyKey?: string;
 }
 
 export interface EmailAdapter {
   readonly provider: string;
-  send(message: EmailMessage): Promise<SendEmailResult>;
+  send(message: EmailMessage, options?: SendEmailOptions): Promise<SendEmailResult>;
   // Optional batch send; the registry/helpers fall back to N sends when absent.
-  sendBatch?(messages: EmailMessage[]): Promise<SendEmailResult[]>;
+  sendBatch?(messages: EmailMessage[], options?: SendEmailOptions): Promise<SendEmailResult[]>;
 }
 
 export const normalizeAddress = (addr: string | EmailAddress): EmailAddress =>

@@ -7,6 +7,7 @@ import type { DateFieldRegistry } from "./dates";
 import type { CsrfConfig } from "./csrf";
 import type { LiveQueryCache, InvalidateTarget } from "./query-cache";
 import type { BillingClient } from "./billing";
+import type { LoginWithPasskeyOptions, PasskeyInfo, RegisterPasskeyOptions } from "./passkey";
 
 export type EventType = "added" | "existing" | "changed" | "removed" | "invalidate";
 
@@ -256,6 +257,11 @@ export interface TransportRequest {
   path: string;
   params?: Record<string, string | number | boolean | string[]>;
   body?: unknown;
+  /**
+   * Send this payload as-is (e.g. a Blob for a binary upload part) instead of
+   * JSON-encoding `body`. Defaults the Content-Type to application/octet-stream.
+   */
+  rawBody?: Blob | ArrayBuffer | Uint8Array | string;
   headers?: Record<string, string>;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -561,6 +567,23 @@ export interface SessionAuthClient {
   confirmEmail(email: string, token: string): Promise<void>;
   /** The current user, or null. */
   me<TUser = unknown>(): Promise<TUser | null>;
+  /** Add a passkey to the signed-in account (runs `navigator.credentials.create`). */
+  registerPasskey(options?: RegisterPasskeyOptions): Promise<PasskeyInfo>;
+  /**
+   * Sign in with a passkey (runs `navigator.credentials.get`). Without `email`
+   * this is usernameless login with a discoverable credential.
+   */
+  loginWithPasskey(options?: LoginWithPasskeyOptions): Promise<{
+    user: Record<string, unknown>;
+    sessionId?: string;
+    accessToken?: string;
+    expiresIn?: number;
+    tokenType?: string;
+  }>;
+  /** The signed-in account's passkeys. */
+  listPasskeys(): Promise<PasskeyInfo[]>;
+  renamePasskey(id: string, name: string | null): Promise<PasskeyInfo>;
+  deletePasskey(id: string): Promise<void>;
 }
 
 export interface CovaraClient {

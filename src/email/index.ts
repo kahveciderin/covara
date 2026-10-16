@@ -1,4 +1,4 @@
-import { EmailAdapter, EmailMessage, SendEmailResult } from "./types";
+import { EmailAdapter, EmailMessage, SendEmailOptions, SendEmailResult } from "./types";
 
 let globalEmailAdapter: EmailAdapter | null = null;
 
@@ -20,16 +20,30 @@ export const clearGlobalEmail = (): void => {
 };
 
 // Send via the configured global adapter.
-export const sendEmail = (message: EmailMessage): Promise<SendEmailResult> =>
-  getGlobalEmail().send(message);
+export const sendEmail = (
+  message: EmailMessage,
+  options?: SendEmailOptions
+): Promise<SendEmailResult> => getGlobalEmail().send(message, options);
 
-export const sendEmailBatch = async (messages: EmailMessage[]): Promise<SendEmailResult[]> => {
+export const sendEmailBatch = async (
+  messages: EmailMessage[],
+  options?: SendEmailOptions
+): Promise<SendEmailResult[]> => {
   const adapter = getGlobalEmail();
-  if (adapter.sendBatch) return adapter.sendBatch(messages);
-  return Promise.all(messages.map((m) => adapter.send(m)));
+  if (adapter.sendBatch) return adapter.sendBatch(messages, options);
+  return Promise.all(
+    messages.map((m, index) =>
+      adapter.send(
+        m,
+        options?.idempotencyKey ? { idempotencyKey: `${options.idempotencyKey}:${index}` } : undefined
+      )
+    )
+  );
 };
 
 export * from "./types";
 export * from "./builder";
 export * from "./resend";
 export * from "./cloudflare";
+export * from "./errors";
+export * from "./durable";

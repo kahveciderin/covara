@@ -17,6 +17,7 @@ export interface UploadOptions {
   mimeType?: string;
   contentEncoding?: string;
   cacheControl?: string;
+  contentDisposition?: string;
   customMetadata?: Record<string, string>;
 }
 
@@ -32,6 +33,37 @@ export interface PresignedUrlOptions {
   contentType?: string;
   contentLength?: number;
   metadata?: Record<string, string>;
+  responseContentType?: string;
+  responseContentDisposition?: string;
+}
+
+export interface StoredObjectInfo {
+  key: string;
+  size: number;
+  lastModified: Date;
+}
+
+export interface ListObjectsOptions {
+  prefix?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ListObjectsResult {
+  objects: StoredObjectInfo[];
+  cursor?: string;
+}
+
+export interface MultipartPart {
+  partNumber: number;
+  etag: string;
+  size?: number;
+}
+
+export interface MultipartLimits {
+  minPartSize: number;
+  maxPartSize: number;
+  maxParts: number;
 }
 
 export interface PresignedUploadResult {
@@ -73,7 +105,66 @@ export interface StorageAdapter {
   ): Promise<PresignedUploadResult | null>;
 
   supportsPresignedUrls(): boolean;
+
+  readRange?(key: string, offset: number, length: number): Promise<Buffer>;
+
+  list?(options?: ListObjectsOptions): Promise<ListObjectsResult>;
+
+  multipartLimits?: MultipartLimits;
+
+  supportsMultipartUpload?(): boolean;
+
+  createMultipartUpload?(key: string, options?: UploadOptions): Promise<{ uploadId: string }>;
+
+  uploadPart?(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    data: Buffer
+  ): Promise<{ etag: string }>;
+
+  completeMultipartUpload?(
+    key: string,
+    uploadId: string,
+    parts: MultipartPart[]
+  ): Promise<UploadResult>;
+
+  abortMultipartUpload?(key: string, uploadId: string): Promise<void>;
+
+  listMultipartParts?(key: string, uploadId: string): Promise<MultipartPart[]>;
+
+  getUploadPartUrl?(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    options?: PresignedUrlOptions
+  ): Promise<string | null>;
 }
+
+export type MultipartStorageAdapter = StorageAdapter &
+  Required<
+    Pick<
+      StorageAdapter,
+      "createMultipartUpload" | "uploadPart" | "completeMultipartUpload" | "abortMultipartUpload"
+    >
+  >;
+
+export const supportsMultipart = (storage: StorageAdapter): storage is MultipartStorageAdapter =>
+  typeof storage.createMultipartUpload === "function" &&
+  typeof storage.uploadPart === "function" &&
+  typeof storage.completeMultipartUpload === "function" &&
+  typeof storage.abortMultipartUpload === "function" &&
+  (storage.supportsMultipartUpload?.() ?? true);
+
+export const readObjectHead = async (
+  storage: StorageAdapter,
+  key: string,
+  length: number
+): Promise<Buffer> => {
+  if (typeof storage.readRange === "function") return storage.readRange(key, 0, length);
+  const full = await storage.download(key);
+  return full.subarray(0, length);
+};
 
 export interface LocalStorageConfig {
   basePath: string;

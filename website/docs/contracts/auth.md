@@ -40,6 +40,16 @@
 - **Magic links**: `magicLink` adds `/magic-link/request` (always returns `{ success: true }`, anti-enumeration) and `/magic-link/verify` (single-use token, creates the session)
 - **API keys**: `createApiKey`/`verifyApiKey`/`rotateApiKey`/`revokeApiKey` store only a hash of the key; the raw key (`[prefix_]<id>.<secret>`) is returned once; verification returns a typed `reason` (`not_found`/`expired`/`mismatch`) on failure
 
+### Passkeys (WebAuthn)
+- **Same login path**: a verified passkey assertion issues the session through the same `completeLogin` as `/login` (`strategy.issue`, CSRF token, `onLogin`), so it behaves identically under `cookieSession` and `jwtSession`; if the account no longer resolves (`getUserById` → null) no session is issued and the response is `401`
+- **Challenges are single-use, short-lived and purpose-bound**: every options call mints a random challenge stored with its purpose (`registration`/`authentication`), expiry (`challengeTtlMs`, default 5 min) and binding; verify consumes it (KV `del` count decides a concurrent race) *before* any other check, so a challenge can never be redeemed twice, even after a failed attempt. A registration challenge never satisfies login and vice versa
+- **Registration is bound to the signed-in user**: both registration routes require an authenticated user, and the challenge's user must equal the verifying user; a credential id already registered (to anyone) is rejected with `409` and never re-assigned
+- **Email-scoped login is account-bound**: `/passkey/login/options` with `{ email }` binds the challenge to that account (an unknown email binds to no account), so a different account's passkey cannot complete it; the response shape does not reveal whether the email exists
+- **Full verification**: `clientDataJSON.type` (`webauthn.create`/`webauthn.get`), challenge, and origin (exact match against `origin`) are checked; `authenticatorData.rpIdHash` must equal SHA-256 of `rpId`; user presence is always required and user verification is required when `userVerification: "required"`; the attestation (fmt `none` accepted) and the assertion signature are verified against the stored COSE public key (ES256, RS256, EdDSA). A non-empty `userHandle` must equal the credential's stored user handle
+- **Signature-counter regression is rejected**: after the signature is proven, an assertion whose counter is not strictly greater than the stored counter (unless both are `0`) is rejected and reported via `onCounterRegression`; the stored counter only moves forward
+- **Uniform login failures**: every `/passkey/login/verify` failure is the same `401 Passkey authentication failed` (no oracle), charges `cost.failed` (deferred, success is free), and feeds the login throttle keyed by credential id + IP when `throttle` is on
+- **Credential privacy & ownership**: the WebAuthn user handle is random (never the user id/email) and stable per user; list/rename/delete only ever touch the caller's own credentials (another user's id is `404`); public keys are never returned by the API
+
 ### Field-Level Write Enforcement (mass-assignment protection)
 - **Enforced allowlist**: when `fields.writable` is configured, any table column not in the list is stripped from create/update bodies (single, batch, and `POST /batch/upsert`) before hooks and the database see it
 - **Exemptions**: the primary key and `generatedFields` are never stripped; non-column keys (relation payloads) pass through
@@ -72,7 +82,7 @@
 ### Scope Combination (Fail-Closed)
 - **Empty scope denies on every path**: An empty resolved scope (`emptyScope()`, an empty `` rsql`` ``, or `and()`/`or()` that reduces to empty) is an explicit deny. It is enforced identically for reads and writes: `combineScopes` emits an internal deny sentinel that converts to `1 = 0` in SQL and `false` in memory, so `GET /`, `GET /:id`, `/count`, `/aggregate`, `/search`, and live `subscribe` matching all return nothing, and writes return `403`. It never degrades to an absent `WHERE` clause (every row)
 - **User filter cannot widen an empty scope**: A client `?filter=` is AND-ed into a concrete scope but is *dropped* against an empty scope — the deny wins. A denied user cannot probe rows by supplying a targeted filter (e.g. `?filter=id==<secret>`)
-- **Unconfigured ≠ deny**: An operation with no scope function (and not granted by `public`) resolves to `allScope()` for authenticated users, not empty. Deny must be expressed explicitly (return `emptyScope()` or omit the operation)
+- **Unconfigured ≠ deny**: An operation with no scope function (and not granted by `public`) resolves to `allScope()` for authenticated users, not empty. Deny must be expressed explicitly (return `emptyScope()`). Each resource with such operations logs a one-time `console.warn` at `useResource` time naming them (not under `NODE_ENV=test`); declaring any scope function for the operation, including `allScope()`, silences it. The warning does not change enforcement
 - **Subscriptions store the deny sentinel**: The scope frozen onto a subscription (and refreshed by `sse.scopeRecheckMs`) maps an empty scope to the deny sentinel, so live `added`/`changed` events for an empty-scope subscriber match nothing regardless of the subscriber's own filter
 
 ### Relation Scope Enforcement
@@ -94,6 +104,7 @@
 - **Logical contract is stable**: `SessionData` (`id`/`userId`/`createdAt`/`expiresAt`/`data`) is always exposed in logical keys regardless of the underlying column names; remapping (`defineInternalSchema` `fieldMap`) applies only at the SQL persistence boundary — see [Internal tables](../auth/internal-tables.md)
 - **Fail-fast validation**: `defineInternalSchema` validates that every required logical key resolves to a column on the supplied table at construction time, never at query time
 - **Defaults are unchanged**: with no `internalSchema`, the built-in tables and the byte-for-byte original migration DDL are used; `createCovara({ internalSchema })` is for migration/introspection and never silently rewires a pre-built store
+- **Passkeys table**: `auth_passkeys` (`id` = credential id primary key) is a framework-owned internal table like the others — remappable via `defineInternalSchema({ passkeys })`, created by `migrateInternal`, and read column-by-column by `DrizzlePasskeyStore`; the signature counter is stored as `BIGINT` on Postgres so the full unsigned 32-bit range fits
 - **Migration safety**: generated DDL (`migrateInternal` mode c) covers single-primary-key tables only and throws for compound-PK tables (`auth_accounts`, `auth_verification_tokens`) rather than emitting an incorrect schema; `managedExternally: true` makes migration a no-op
 - **KV session store is backend-agnostic**: `createKVSessionStore` works over any KV adapter; its hash field names are a private serialization, never user-facing, and are not remappable
 - **Users/files are app-owned**: the framework never owns a users table (reached via `getUserById`) or a files table (supplied to `fileResource`); the changelog and rate limits are KV/memory-backed, not database tables
@@ -143,6 +154,7 @@
 - PKCE downgrade (plain rejected, required for public clients)
 - Federated id_token forgery (signature + nonce + sub cross-check)
 - Stored-XSS via login_hint (HTML-escaped)
+- Passkey challenge replay, cross-origin / cross-RP assertions, and cloned authenticators detectable by signature-counter regression
 
 ### Out of Scope (Not Protected Against)
 - Compromised signing keys (operational security)
@@ -186,3 +198,5 @@
 - `tests/auth.test.ts` - Basic authentication
 - `tests/auth-routes.test.ts` - Auth endpoints
 - `tests/oidc/provider.test.ts` - OIDC provider
+- `tests/auth/passkey.test.ts` - Passkey registration/login/management invariants (real ES256/RS256 attestations and assertions)
+- `tests/auth/passkey-stores.test.ts` - `PasskeyStore` contract (memory, KV, Drizzle SQLite/Postgres, remapped tables) and single-use challenge stores

@@ -2,7 +2,7 @@
 id: internal-tables
 title: Internal & system tables
 sidebar_label: Internal tables
-description: Every table Covara's auth/system layer reads or writes, the columns each one requires, which are framework-owned vs app-supplied, and how to bring your own tables or remap their columns with defineInternalSchema.
+description: Every table Covara's auth, billing and system layers read or write, the columns each one requires, which are framework-owned vs app-supplied, and how to bring your own tables or remap their columns with defineInternalSchema.
 ---
 
 # Internal & system tables
@@ -11,13 +11,13 @@ Covara's auth and system features touch a handful of tables. This page lists **e
 
 There are three categories:
 
-- **Framework-owned SQL tables** — `auth_sessions`, `auth_accounts`, `auth_api_keys`, `auth_verification_tokens`. Covara ships their schema and (optionally) migrates them. You can rename them and remap their columns.
+- **Framework-owned SQL tables** — `auth_sessions`, `auth_accounts`, `auth_api_keys`, `auth_verification_tokens`, `auth_passkeys`, and the billing tables `billing_credit_entries`, `billing_credit_balances`, `billing_subscriptions`. Covara ships their schema and (optionally) migrates them. You can rename them and remap their columns.
 - **App-supplied tables** — your **users** table and (if you use file uploads) a **files** table. Covara never owns these; it reaches them through callbacks/resources you provide. You only need to satisfy a required shape.
 - **Not database tables** — the **changelog** and **rate limits** are backed by the [KV store](../platform/kv.md) (or memory), *not* DB tables. The example app defines `changelog`/`rate_limits` tables for illustration, but the framework does not read them.
 
 ## Framework-owned SQL tables
 
-Built-in definitions live in `internal-schema.ts` (exported as `authSessions`, `authAccounts`, `authApiKeys`, `authVerificationTokens`, and the dialect-specific `…Sqlite`/`…Pg` variants). Only **`auth_sessions`** is read column-by-column at runtime today (by the Drizzle session store); the others are reached through stores/adapters or only created by migration.
+Built-in definitions live in `internal-schema.ts` (exported as `authSessions`, `authAccounts`, `authApiKeys`, `authVerificationTokens`, `authPasskeys`, and the dialect-specific `…Sqlite`/`…Pg` variants). **`auth_sessions`** and **`auth_passkeys`** are read column-by-column at runtime (by the Drizzle session and passkey stores); the others are reached through stores/adapters or only created by migration.
 
 ### `auth_sessions`
 
@@ -48,6 +48,72 @@ Required: `id`, `userId`, `name`, `keyHash`, `keyPrefix`, `createdAt`. Optional:
 Email-verification / password-reset / magic-link tokens. Reached through the `VerificationTokenStore` interface. Compound primary key on `(identifier, token)`.
 
 Required: `identifier`, `token`, `expires`.
+
+### `auth_passkeys`
+
+[Passkey](./passkeys.md) (WebAuthn) credentials. Read/written column-by-column by `createDrizzlePasskeyStore`. Single primary key on `id` (the base64url credential id), indexed on `userId`.
+
+| Logical key | Required | Purpose |
+|---|---|---|
+| `id` | ✅ | credential id (primary key) |
+| `userId` | ✅ | owning user |
+| `webauthnUserId` | ✅ | the random WebAuthn user handle (base64url), shared by all of a user's passkeys |
+| `publicKey` | ✅ | COSE public key (base64url) |
+| `counter` | ✅ | signature counter (`BIGINT` on Postgres) |
+| `createdAt` | ✅ | registration time |
+| `transports` | optional | JSON array of transports hinted by the authenticator |
+| `deviceType` | optional | `singleDevice` / `multiDevice` |
+| `backedUp` | optional | whether the credential is synced/backed up |
+| `name` | optional | user-chosen label |
+| `lastUsedAt` | optional | last successful login |
+
+Optional columns you don't map are simply not stored.
+
+```typescript
+const internal = defineInternalSchema({
+  passkeys: { table: myPasskeys, fieldMap: { id: myPasskeys.credentialId, userId: myPasskeys.ownerId } },
+});
+const store = createDrizzlePasskeyStore({ db, resolver: internal.passkeys });
+```
+
+### `billing_credit_entries`
+
+The append-only journal of the [durable credits ledger](../platform/billing.md#credits-ledger) (`createDrizzleCreditsLedger`). One row per grant/consume/set; never updated or deleted.
+
+| Logical key | Required | Purpose |
+|---|---|---|
+| `id` | ✅ | entry id (primary key) |
+| `account` | ✅ | credits account |
+| `seq` | ✅ | per-account sequence, equal to the balance row's `version` after the write |
+| `kind` | ✅ | `grant` \| `consume` \| `set` |
+| `delta` | ✅ | signed change |
+| `balanceAfter` | ✅ | balance after this entry |
+| `idempotencyKey` | ✅ (nullable) | caller-supplied dedupe key |
+| `createdAt` | ✅ | timestamp (ms precision) |
+| `reason` | optional | free text |
+| `metadata` | optional | JSON |
+
+Two **unique indexes are load-bearing**: `(account, seq)` is the optimistic-concurrency guard that stops two writers from both committing against the same balance version, and `(account, idempotencyKey)` makes idempotent grants safe under races. `migrateInternal` creates both, including for overridden tables (mode 3); if you manage the table yourself, create them too.
+
+### `billing_credit_balances`
+
+One row per account: `account` (primary key), `balance`, `version` (all required), `updatedAt` (optional). Written in the same transaction / atomic batch as the entry.
+
+### `billing_subscriptions`
+
+The local mirror of provider subscription state that [billing reconciliation](../platform/billing.md#reconciliation) diffs against, written by `createDrizzleSubscriptionStore`. Required: `id` (primary key), `provider`, `customerId` (indexed), `status`, `updatedAt`. Optional: `account`, `priceId`, `productId`, `quantity`, `currentPeriodStart`, `currentPeriodEnd`, `cancelAtPeriodEnd`, `trialEndsAt`, `metadata` (JSON), `source` (`webhook` \| `reconcile`).
+
+Override them like any other internal table:
+
+```typescript
+const internal = defineInternalSchema({
+  creditEntries: { table: myLedger, fieldMap: { account: myLedger.ownerId } },
+  creditBalances: { table: myBalances, fieldMap: { account: myBalances.ownerId } },
+  billingSubscriptions: { table: mySubs },
+});
+const credits = createDrizzleCreditsLedger({ db, schema: internal });
+const subscriptions = createDrizzleSubscriptionStore({ db, schema: internal });
+```
 
 ## Bringing your own tables (and remapping columns)
 
@@ -95,7 +161,7 @@ const app = createCovara({ internalSchema: internal, auth: useAuth({ adapter }) 
 
 1. **No `schema`** → creates the built-in tables with the canonical DDL (indexes + compound PKs). This is the default and is byte-for-byte unchanged.
 2. **`schema.managedExternally = true`** → **no-op**. Recommended whenever you customize tables: create them with your own tool (e.g. `drizzle-kit`), which handles indexes and compound primary keys correctly.
-3. **`schema` without `managedExternally`** → generates `CREATE TABLE IF NOT EXISTS` for overridden tables from the Drizzle table objects. Single-primary-key tables only — it **throws** for compound-PK tables (`auth_accounts`, `auth_verification_tokens`), directing you to mode 2. Indexes are not regenerated in this mode.
+3. **`schema` without `managedExternally`** → generates `CREATE TABLE IF NOT EXISTS` for overridden tables from the Drizzle table objects. Single-primary-key tables only — it **throws** for compound-PK tables (`auth_accounts`, `auth_verification_tokens`), directing you to mode 2. Indexes are not regenerated in this mode, except the credits ledger's two unique indexes and the subscriptions `customerId` index, which correctness depends on.
 
 ## App-supplied tables
 

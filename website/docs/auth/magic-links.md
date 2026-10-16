@@ -29,7 +29,7 @@ useAuth({
 
 | Route | Method | Description |
 |-------|--------|-------------|
-| `/magic-link/request` | POST | `{ email }` — issues a single-use token and calls `sendLink` **only if the user exists**, but always returns `{ success: true }` (no email enumeration). |
+| `/magic-link/request` | POST | `{ email }` — issues a single-use token and calls `sendLink` (or sends `composeEmail`'s message) **only if the user exists**, but always returns `{ success: true }` (no email enumeration). Delivery failures go to `email.onDeliveryError` and never change the response; see [sending the emails](./account-security.md#sending-the-emails). |
 | `/magic-link/verify` | POST | `{ email, token }` — consumes the token and creates the session, returning `{ user, sessionId }`; invalid/expired returns `401`. |
 
 ## Low-level helpers

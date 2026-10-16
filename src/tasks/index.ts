@@ -67,7 +67,7 @@ export type {
   QueueSendOptions,
 } from "./cloudflare-queues";
 
-export { calculateBackoff, shouldRetry } from "./retry";
+export { calculateBackoff, shouldRetry, resolveRetryDelay } from "./retry";
 
 export {
   createTaskTriggerHooks,

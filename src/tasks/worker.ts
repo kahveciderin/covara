@@ -11,7 +11,7 @@ import { createTaskLock } from "./lock";
 import { createTaskQueue } from "./queue";
 import { createTaskStorage } from "./storage";
 import { createDeadLetterQueue } from "./dlq";
-import { calculateBackoff, shouldRetry } from "./retry";
+import { resolveRetryDelay, shouldRetry } from "./retry";
 import { createConcurrencyLimiter } from "./concurrency";
 import {
   createIdempotencyStore,
@@ -99,7 +99,7 @@ export const createTaskWorker = (
     const retryConfig = definition.retry ?? {};
 
     if (shouldRetry(error, nextAttempt, task.maxAttempts, retryConfig)) {
-      const backoff = calculateBackoff(nextAttempt, retryConfig);
+      const backoff = resolveRetryDelay(error, nextAttempt, retryConfig);
       const scheduledFor = Date.now() + backoff;
 
       await storage.updateStatus(task.id, "running", "scheduled", {

@@ -168,7 +168,10 @@ retry: { backoff: "exponential", initialDelayMs: 1000, maxDelayMs: 60000 } // 1,
 retry: { backoff: "linear", initialDelayMs: 2000, maxDelayMs: 30000 }      // 2,4,6,8s (cap 30)
 retry: { backoff: "fixed", initialDelayMs: 5000 }                          // 5,5,5s
 retry: { maxAttempts: 3, retryOn: (e) => e.name !== "ValidationError" }     // conditional
+retry: { retryDelayMs: (e) => (e as { retryAfterMs?: number }).retryAfterMs } // per-error delay
 ```
+
+`retryOn` returning `false` sends the task straight to the DLQ. `retryDelayMs(error, attempt)` overrides the backoff for one retry when it returns a non-negative number (e.g. a provider's `Retry-After`); `undefined` falls back to the configured backoff. Both apply to the KV worker and the Cloudflare Queues consumer. [Durable email](./email.md#durable-delivery) is built on these.
 
 ## Dead letter queue
 

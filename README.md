@@ -82,6 +82,7 @@ function TodoList() {
 - **Session Auth** - Auth.js, Passport.js, and session adapters with session rotation on login
 - **Multi-Factor Auth** - Opt-in TOTP MFA with backup codes
 - **Magic Links** - Opt-in passwordless email login
+- **Passkeys** - WebAuthn registration, passwordless and usernameless login (`useAuth({ passkey })`), credentials in KV or an `auth_passkeys` table, with `registerPasskey` / `loginWithPasskey` on the client; Workers-safe
 - **API Keys** - Standalone helpers to create, verify, rotate, and revoke hashed API keys
 - **Password Hashing & Policy** - Built-in scrypt `hashPassword`/`verifyPassword`/`needsRehash` (Workers-safe) plus an enforceable password policy
 - **Account Security** - Opt-in CSRF protection, login throttling, email verification, password reset
@@ -94,6 +95,9 @@ function TodoList() {
 ### File Storage
 - **Storage Adapters** - Local disk, S3, Cloudflare R2 (native binding or S3-compat), and in-memory behind one `StorageAdapter` interface
 - **File Resources** - First-class resources with an upload/download layer: `app.fileResource(...)` chains like any resource and inherits the full CRUD/hooks/procedures/relations/subscriptions/scopes surface, plus MIME/size validation, per-user keys, and storage cleanup on delete
+- **Content Sniffing** - Uploads are typed from their magic bytes, not the client's claim; HTML/SVG disguised as images, spoofed or truncated signatures, and script polyglots are rejected; downloads are `nosniff` + sandboxed attachments
+- **Resumable Uploads** - Chunked, parallel, retryable uploads that resume after a reload (native S3/R2 multipart, generic fallback elsewhere, optional direct-to-bucket parts) via `files.uploadResumable()` / `useFileUpload({ resumable: true })`
+- **Durable Blob Cleanup** - Crash-safe delete tombstones with retry/backoff plus `sweepOrphanedBlobs()` for orphaned objects, abandoned presigned uploads, and expired upload sessions
 - **Zero-config local serving** - `createCovara` auto-serves a local adapter's `baseUrl`; admin data explorer gets a per-row Download action
 - **Presigned URLs** - Optional direct-to-bucket uploads/downloads with configurable expiry
 - **React Hooks** - `useFileUpload` (with progress), `useFile`, `useFiles`; `getDownloadUrl()` for React Native
@@ -112,12 +116,14 @@ function TodoList() {
 - **Unified Adapters** - `covara/email` with **Resend** and **Cloudflare Email Service** adapters behind one `EmailAdapter` interface
 - **Template Builder** - Fluent `createEmail().heading().button().code().build()` rendering responsive, escaped HTML + a plaintext fallback, with theming
 - **Batch Sending** - `sendEmailBatch` for bulk delivery
+- **Durable Delivery** - `durableEmail(adapter, { queue })` enqueues sends into the task system with error classification, `Retry-After`-aware backoff, idempotency keys (Resend `Idempotency-Key` + KV dedupe), a DLQ and an `onDeliveryFailed` hook; auth flows can send via `composeEmail` and never leak account existence on delivery failure
 
 ### Billing
 - **One Interface, Four Providers** - `covara/billing` over **Stripe**, **Lemon Squeezy**, **Paddle**, and **Polar.sh** (fetch-based, no SDK deps, Workers-safe)
 - **Plans, One-Time & Usage** - Define subscription/one-time/usage plans by key; checkout, subscription management, `reportUsage`, hosted portal
-- **Credits Ledger** - KV-backed atomic `grant`/`consume`/`balance`/`history`
-- **Webhooks** - Per-provider signature verification, idempotent delivery dedupe, and automatic credit granting on `payment.succeeded`
+- **Credits Ledger** - Durable Drizzle-backed ledger (append-only journal, no overdraw under concurrency, idempotency keys, full paginated history) with a KV ledger kept for back-compat
+- **Reconciliation** - `billing.reconcile()` / `reconcileAll()` repair subscription state missed by webhooks, plus a recurring `createBillingReconcileTask`
+- **Webhooks** - Per-provider signature verification, idempotent delivery dedupe (marked seen only after handlers succeed), and exactly-once credit granting on `payment.succeeded`
 - **Router & Client** - `createBillingRouter` plus `client.billing.*` and `useCredits`/`useSubscription`/`useCheckout` hooks
 
 ### Client Library
@@ -538,6 +544,8 @@ function Uploader() {
 }
 ```
 
+For large files, `useFileUpload({ resourcePath, resumable: true })` uploads in parallel parts and resumes after a reload; `pause()`/`abort()` control it. Uploaded content is sniffed server-side (`contentSniffing: "enforce"` by default), and `runStorageMaintenance()` (or `startStorageMaintenance()`) retries failed blob deletes and sweeps orphans.
+
 See [Storage](https://kahveciderin.github.io/covara/platform/storage).
 
 ## Server-side Authentication
@@ -557,7 +565,7 @@ app.route("/api/auth", router); // /me, /login, /signup, /logout
 app.use("*", middleware);       // populates c.get("user")
 ```
 
-Opt-in extras: TOTP MFA with backup codes, magic links, email verification, password reset, login throttling, CSRF protection, and API key management. See [Authentication](https://kahveciderin.github.io/covara/auth/overview).
+Opt-in extras: passkeys (WebAuthn), TOTP MFA with backup codes, magic links, email verification, password reset, login throttling, CSRF protection, and API key management. See [Authentication](https://kahveciderin.github.io/covara/auth/overview).
 
 ### OIDC Provider
 
@@ -697,7 +705,7 @@ function Account() {
 }
 ```
 
-Webhooks are signature-verified, deduplicated, and grant credits automatically on `payment.succeeded`. See [Billing](https://kahveciderin.github.io/covara/platform/billing).
+Webhooks are signature-verified, deduplicated, and grant credits idempotently on `payment.succeeded`. Use `createDrizzleCreditsLedger({ db })` for a durable credits ledger, and schedule `createBillingReconcileTask({ billing })` to repair state from missed webhooks. See [Billing](https://kahveciderin.github.io/covara/platform/billing).
 
 ## Mutation Tracking
 

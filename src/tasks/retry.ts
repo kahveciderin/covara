@@ -39,3 +39,15 @@ export const shouldRetry = (
   }
   return true;
 };
+
+export const resolveRetryDelay = (
+  error: Error,
+  attempt: number,
+  config: RetryConfig
+): number => {
+  const override = config.retryDelayMs?.(error, attempt);
+  if (override !== undefined && Number.isFinite(override) && override >= 0) {
+    return Math.floor(override);
+  }
+  return calculateBackoff(attempt, config);
+};

@@ -4,14 +4,18 @@ import {
   integer as sqliteInteger,
   primaryKey as sqlitePrimaryKey,
   index as sqliteIndex,
+  uniqueIndex as sqliteUniqueIndex,
 } from "drizzle-orm/sqlite-core";
 import {
   pgTable,
   text as pgText,
   timestamp as pgTimestamp,
   jsonb as pgJsonb,
+  bigint as pgBigint,
+  boolean as pgBoolean,
   primaryKey as pgPrimaryKey,
   index as pgIndex,
+  uniqueIndex as pgUniqueIndex,
 } from "drizzle-orm/pg-core";
 import { getTableColumns, type AnyColumn } from "drizzle-orm";
 
@@ -19,13 +23,21 @@ export type InternalTableName =
   | "auth_sessions"
   | "auth_accounts"
   | "auth_api_keys"
-  | "auth_verification_tokens";
+  | "auth_verification_tokens"
+  | "auth_passkeys"
+  | "billing_credit_entries"
+  | "billing_credit_balances"
+  | "billing_subscriptions";
 
 export const INTERNAL_TABLE_NAMES: InternalTableName[] = [
   "auth_sessions",
   "auth_accounts",
   "auth_api_keys",
   "auth_verification_tokens",
+  "auth_passkeys",
+  "billing_credit_entries",
+  "billing_credit_balances",
+  "billing_subscriptions",
 ];
 
 export const authSessionsSqlite = sqliteTable(
@@ -97,6 +109,83 @@ export const authVerificationTokensSqlite = sqliteTable(
     compoundKey: sqlitePrimaryKey({
       columns: [table.identifier, table.token],
     }),
+  })
+);
+
+export const authPasskeysSqlite = sqliteTable(
+  "auth_passkeys",
+  {
+    id: sqliteText("id").primaryKey(),
+    userId: sqliteText("userId").notNull(),
+    webauthnUserId: sqliteText("webauthnUserId").notNull(),
+    publicKey: sqliteText("publicKey").notNull(),
+    counter: sqliteInteger("counter").notNull(),
+    transports: sqliteText("transports", { mode: "json" }).$type<string[]>(),
+    deviceType: sqliteText("deviceType"),
+    backedUp: sqliteInteger("backedUp", { mode: "boolean" }),
+    name: sqliteText("name"),
+    createdAt: sqliteInteger("createdAt", { mode: "timestamp" }).notNull(),
+    lastUsedAt: sqliteInteger("lastUsedAt", { mode: "timestamp" }),
+  },
+  (table) => ({
+    userIdIdx: sqliteIndex("auth_passkey_userId_idx").on(table.userId),
+  })
+);
+
+export const billingCreditEntriesSqlite = sqliteTable(
+  "billing_credit_entries",
+  {
+    id: sqliteText("id").primaryKey(),
+    account: sqliteText("account").notNull(),
+    seq: sqliteInteger("seq").notNull(),
+    kind: sqliteText("kind").notNull(),
+    delta: sqliteInteger("delta").notNull(),
+    balanceAfter: sqliteInteger("balanceAfter").notNull(),
+    reason: sqliteText("reason"),
+    metadata: sqliteText("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
+    idempotencyKey: sqliteText("idempotencyKey"),
+    createdAt: sqliteInteger("createdAt", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => ({
+    accountSeqIdx: sqliteUniqueIndex("billing_credit_entries_account_seq_uq").on(
+      table.account,
+      table.seq
+    ),
+    accountIdemIdx: sqliteUniqueIndex("billing_credit_entries_account_idem_uq").on(
+      table.account,
+      table.idempotencyKey
+    ),
+  })
+);
+
+export const billingCreditBalancesSqlite = sqliteTable("billing_credit_balances", {
+  account: sqliteText("account").primaryKey(),
+  balance: sqliteInteger("balance").notNull(),
+  version: sqliteInteger("version").notNull(),
+  updatedAt: sqliteInteger("updatedAt", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const billingSubscriptionsSqlite = sqliteTable(
+  "billing_subscriptions",
+  {
+    id: sqliteText("id").primaryKey(),
+    provider: sqliteText("provider").notNull(),
+    customerId: sqliteText("customerId").notNull(),
+    account: sqliteText("account"),
+    status: sqliteText("status").notNull(),
+    priceId: sqliteText("priceId"),
+    productId: sqliteText("productId"),
+    quantity: sqliteInteger("quantity"),
+    currentPeriodStart: sqliteInteger("currentPeriodStart", { mode: "timestamp_ms" }),
+    currentPeriodEnd: sqliteInteger("currentPeriodEnd", { mode: "timestamp_ms" }),
+    cancelAtPeriodEnd: sqliteInteger("cancelAtPeriodEnd", { mode: "boolean" }),
+    trialEndsAt: sqliteInteger("trialEndsAt", { mode: "timestamp_ms" }),
+    metadata: sqliteText("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
+    source: sqliteText("source"),
+    updatedAt: sqliteInteger("updatedAt", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => ({
+    customerIdx: sqliteIndex("billing_subscriptions_customer_idx").on(table.customerId),
   })
 );
 
@@ -172,11 +261,92 @@ export const authVerificationTokensPg = pgTable(
   })
 );
 
+export const authPasskeysPg = pgTable(
+  "auth_passkeys",
+  {
+    id: pgText("id").primaryKey(),
+    userId: pgText("userId").notNull(),
+    webauthnUserId: pgText("webauthnUserId").notNull(),
+    publicKey: pgText("publicKey").notNull(),
+    counter: pgBigint("counter", { mode: "number" }).notNull(),
+    transports: pgJsonb("transports").$type<string[]>(),
+    deviceType: pgText("deviceType"),
+    backedUp: pgBoolean("backedUp"),
+    name: pgText("name"),
+    createdAt: pgTimestamp("createdAt", { mode: "date" }).notNull(),
+    lastUsedAt: pgTimestamp("lastUsedAt", { mode: "date" }),
+  },
+  (table) => ({
+    userIdIdx: pgIndex("auth_passkey_userId_idx").on(table.userId),
+  })
+);
+
+export const billingCreditEntriesPg = pgTable(
+  "billing_credit_entries",
+  {
+    id: pgText("id").primaryKey(),
+    account: pgText("account").notNull(),
+    seq: pgBigint("seq", { mode: "number" }).notNull(),
+    kind: pgText("kind").notNull(),
+    delta: pgBigint("delta", { mode: "number" }).notNull(),
+    balanceAfter: pgBigint("balanceAfter", { mode: "number" }).notNull(),
+    reason: pgText("reason"),
+    metadata: pgJsonb("metadata").$type<Record<string, unknown>>(),
+    idempotencyKey: pgText("idempotencyKey"),
+    createdAt: pgTimestamp("createdAt", { mode: "date", precision: 3 }).notNull(),
+  },
+  (table) => ({
+    accountSeqIdx: pgUniqueIndex("billing_credit_entries_account_seq_uq").on(
+      table.account,
+      table.seq
+    ),
+    accountIdemIdx: pgUniqueIndex("billing_credit_entries_account_idem_uq").on(
+      table.account,
+      table.idempotencyKey
+    ),
+  })
+);
+
+export const billingCreditBalancesPg = pgTable("billing_credit_balances", {
+  account: pgText("account").primaryKey(),
+  balance: pgBigint("balance", { mode: "number" }).notNull(),
+  version: pgBigint("version", { mode: "number" }).notNull(),
+  updatedAt: pgTimestamp("updatedAt", { mode: "date", precision: 3 }).notNull(),
+});
+
+export const billingSubscriptionsPg = pgTable(
+  "billing_subscriptions",
+  {
+    id: pgText("id").primaryKey(),
+    provider: pgText("provider").notNull(),
+    customerId: pgText("customerId").notNull(),
+    account: pgText("account"),
+    status: pgText("status").notNull(),
+    priceId: pgText("priceId"),
+    productId: pgText("productId"),
+    quantity: pgBigint("quantity", { mode: "number" }),
+    currentPeriodStart: pgTimestamp("currentPeriodStart", { mode: "date", precision: 3 }),
+    currentPeriodEnd: pgTimestamp("currentPeriodEnd", { mode: "date", precision: 3 }),
+    cancelAtPeriodEnd: pgBoolean("cancelAtPeriodEnd"),
+    trialEndsAt: pgTimestamp("trialEndsAt", { mode: "date", precision: 3 }),
+    metadata: pgJsonb("metadata").$type<Record<string, unknown>>(),
+    source: pgText("source"),
+    updatedAt: pgTimestamp("updatedAt", { mode: "date", precision: 3 }).notNull(),
+  },
+  (table) => ({
+    customerIdx: pgIndex("billing_subscriptions_customer_idx").on(table.customerId),
+  })
+);
+
 export const internalSchemaSqlite = {
   authSessions: authSessionsSqlite,
   authAccounts: authAccountsSqlite,
   authApiKeys: authApiKeysSqlite,
   authVerificationTokens: authVerificationTokensSqlite,
+  authPasskeys: authPasskeysSqlite,
+  billingCreditEntries: billingCreditEntriesSqlite,
+  billingCreditBalances: billingCreditBalancesSqlite,
+  billingSubscriptions: billingSubscriptionsSqlite,
 };
 
 export const internalSchemaPg = {
@@ -184,6 +354,10 @@ export const internalSchemaPg = {
   authAccounts: authAccountsPg,
   authApiKeys: authApiKeysPg,
   authVerificationTokens: authVerificationTokensPg,
+  authPasskeys: authPasskeysPg,
+  billingCreditEntries: billingCreditEntriesPg,
+  billingCreditBalances: billingCreditBalancesPg,
+  billingSubscriptions: billingSubscriptionsPg,
 };
 
 export const internalSchema = (dialect: "sqlite" | "postgresql") =>
@@ -193,6 +367,7 @@ export const authSessions = authSessionsSqlite;
 export const authAccounts = authAccountsSqlite;
 export const authApiKeys = authApiKeysSqlite;
 export const authVerificationTokens = authVerificationTokensSqlite;
+export const authPasskeys = authPasskeysSqlite;
 
 export const SESSION_KEYS = [
   "id",
@@ -258,6 +433,87 @@ const VERIFICATION_REQUIRED: readonly VerificationKey[] = [
   "identifier",
   "token",
   "expires",
+];
+
+export const PASSKEY_KEYS = [
+  "id",
+  "userId",
+  "webauthnUserId",
+  "publicKey",
+  "counter",
+  "transports",
+  "deviceType",
+  "backedUp",
+  "name",
+  "createdAt",
+  "lastUsedAt",
+] as const;
+export type PasskeyKey = (typeof PASSKEY_KEYS)[number];
+export const PASSKEY_REQUIRED: readonly PasskeyKey[] = [
+  "id",
+  "userId",
+  "webauthnUserId",
+  "publicKey",
+  "counter",
+  "createdAt",
+];
+
+export const CREDIT_ENTRY_KEYS = [
+  "id",
+  "account",
+  "seq",
+  "kind",
+  "delta",
+  "balanceAfter",
+  "reason",
+  "metadata",
+  "idempotencyKey",
+  "createdAt",
+] as const;
+export type CreditEntryKey = (typeof CREDIT_ENTRY_KEYS)[number];
+const CREDIT_ENTRY_REQUIRED: readonly CreditEntryKey[] = [
+  "id",
+  "account",
+  "seq",
+  "kind",
+  "delta",
+  "balanceAfter",
+  "idempotencyKey",
+  "createdAt",
+];
+
+export const CREDIT_BALANCE_KEYS = ["account", "balance", "version", "updatedAt"] as const;
+export type CreditBalanceKey = (typeof CREDIT_BALANCE_KEYS)[number];
+const CREDIT_BALANCE_REQUIRED: readonly CreditBalanceKey[] = [
+  "account",
+  "balance",
+  "version",
+];
+
+export const BILLING_SUBSCRIPTION_KEYS = [
+  "id",
+  "provider",
+  "customerId",
+  "account",
+  "status",
+  "priceId",
+  "productId",
+  "quantity",
+  "currentPeriodStart",
+  "currentPeriodEnd",
+  "cancelAtPeriodEnd",
+  "trialEndsAt",
+  "metadata",
+  "source",
+  "updatedAt",
+] as const;
+export type BillingSubscriptionKey = (typeof BILLING_SUBSCRIPTION_KEYS)[number];
+const BILLING_SUBSCRIPTION_REQUIRED: readonly BillingSubscriptionKey[] = [
+  "id",
+  "provider",
+  "customerId",
+  "status",
+  "updatedAt",
 ];
 
 type AnyTable = Record<string, unknown>;
@@ -353,6 +609,10 @@ export interface InternalSchemaInput {
   accounts?: InternalTableOverride<AccountKey>;
   apiKeys?: InternalTableOverride<ApiKeyKey>;
   verificationTokens?: InternalTableOverride<VerificationKey>;
+  passkeys?: InternalTableOverride<PasskeyKey>;
+  creditEntries?: InternalTableOverride<CreditEntryKey>;
+  creditBalances?: InternalTableOverride<CreditBalanceKey>;
+  billingSubscriptions?: InternalTableOverride<BillingSubscriptionKey>;
   managedExternally?: boolean;
 }
 
@@ -363,6 +623,10 @@ export interface InternalSchemaBundle {
   accounts: TableResolver<AccountKey>;
   apiKeys: TableResolver<ApiKeyKey>;
   verificationTokens: TableResolver<VerificationKey>;
+  passkeys: TableResolver<PasskeyKey>;
+  creditEntries: TableResolver<CreditEntryKey>;
+  creditBalances: TableResolver<CreditBalanceKey>;
+  billingSubscriptions: TableResolver<BillingSubscriptionKey>;
 }
 
 export const defineInternalSchema = (
@@ -409,6 +673,30 @@ export const defineInternalSchema = (
       builtins.authVerificationTokens as unknown as AnyTable,
       VERIFICATION_REQUIRED,
       "verificationTokens"
+    ),
+    passkeys: resolve(
+      input.passkeys,
+      builtins.authPasskeys as unknown as AnyTable,
+      PASSKEY_REQUIRED,
+      "passkeys"
+    ),
+    creditEntries: resolve(
+      input.creditEntries,
+      builtins.billingCreditEntries as unknown as AnyTable,
+      CREDIT_ENTRY_REQUIRED,
+      "creditEntries"
+    ),
+    creditBalances: resolve(
+      input.creditBalances,
+      builtins.billingCreditBalances as unknown as AnyTable,
+      CREDIT_BALANCE_REQUIRED,
+      "creditBalances"
+    ),
+    billingSubscriptions: resolve(
+      input.billingSubscriptions,
+      builtins.billingSubscriptions as unknown as AnyTable,
+      BILLING_SUBSCRIPTION_REQUIRED,
+      "billingSubscriptions"
     ),
   };
 };

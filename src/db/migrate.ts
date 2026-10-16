@@ -103,6 +103,66 @@ const sqliteDDLByTable: Record<InternalTableName, string[]> = {
     PRIMARY KEY (identifier, token)
   )`,
   ],
+  auth_passkeys: [
+    `CREATE TABLE IF NOT EXISTS auth_passkeys (
+    id TEXT PRIMARY KEY NOT NULL,
+    userId TEXT NOT NULL,
+    webauthnUserId TEXT NOT NULL,
+    publicKey TEXT NOT NULL,
+    counter INTEGER NOT NULL,
+    transports TEXT,
+    deviceType TEXT,
+    backedUp INTEGER,
+    name TEXT,
+    createdAt INTEGER NOT NULL,
+    lastUsedAt INTEGER
+  )`,
+    `CREATE INDEX IF NOT EXISTS auth_passkey_userId_idx ON auth_passkeys (userId)`,
+  ],
+  billing_credit_entries: [
+    `CREATE TABLE IF NOT EXISTS billing_credit_entries (
+    id TEXT PRIMARY KEY NOT NULL,
+    account TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    delta INTEGER NOT NULL,
+    balanceAfter INTEGER NOT NULL,
+    reason TEXT,
+    metadata TEXT,
+    idempotencyKey TEXT,
+    createdAt INTEGER NOT NULL
+  )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS billing_credit_entries_account_seq_uq ON billing_credit_entries (account, seq)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS billing_credit_entries_account_idem_uq ON billing_credit_entries (account, idempotencyKey)`,
+  ],
+  billing_credit_balances: [
+    `CREATE TABLE IF NOT EXISTS billing_credit_balances (
+    account TEXT PRIMARY KEY NOT NULL,
+    balance INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    updatedAt INTEGER NOT NULL
+  )`,
+  ],
+  billing_subscriptions: [
+    `CREATE TABLE IF NOT EXISTS billing_subscriptions (
+    id TEXT PRIMARY KEY NOT NULL,
+    provider TEXT NOT NULL,
+    customerId TEXT NOT NULL,
+    account TEXT,
+    status TEXT NOT NULL,
+    priceId TEXT,
+    productId TEXT,
+    quantity INTEGER,
+    currentPeriodStart INTEGER,
+    currentPeriodEnd INTEGER,
+    cancelAtPeriodEnd INTEGER,
+    trialEndsAt INTEGER,
+    metadata TEXT,
+    source TEXT,
+    updatedAt INTEGER NOT NULL
+  )`,
+    `CREATE INDEX IF NOT EXISTS billing_subscriptions_customer_idx ON billing_subscriptions (customerId)`,
+  ],
 };
 
 const postgresDDLByTable: Record<InternalTableName, string[]> = {
@@ -158,6 +218,66 @@ const postgresDDLByTable: Record<InternalTableName, string[]> = {
     PRIMARY KEY ("identifier", "token")
   )`,
   ],
+  auth_passkeys: [
+    `CREATE TABLE IF NOT EXISTS auth_passkeys (
+    "id" TEXT PRIMARY KEY NOT NULL,
+    "userId" TEXT NOT NULL,
+    "webauthnUserId" TEXT NOT NULL,
+    "publicKey" TEXT NOT NULL,
+    "counter" BIGINT NOT NULL,
+    "transports" JSONB,
+    "deviceType" TEXT,
+    "backedUp" BOOLEAN,
+    "name" TEXT,
+    "createdAt" TIMESTAMP NOT NULL,
+    "lastUsedAt" TIMESTAMP
+  )`,
+    `CREATE INDEX IF NOT EXISTS auth_passkey_userId_idx ON auth_passkeys ("userId")`,
+  ],
+  billing_credit_entries: [
+    `CREATE TABLE IF NOT EXISTS billing_credit_entries (
+    "id" TEXT PRIMARY KEY NOT NULL,
+    "account" TEXT NOT NULL,
+    "seq" BIGINT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "delta" BIGINT NOT NULL,
+    "balanceAfter" BIGINT NOT NULL,
+    "reason" TEXT,
+    "metadata" JSONB,
+    "idempotencyKey" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL
+  )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS billing_credit_entries_account_seq_uq ON billing_credit_entries ("account", "seq")`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS billing_credit_entries_account_idem_uq ON billing_credit_entries ("account", "idempotencyKey")`,
+  ],
+  billing_credit_balances: [
+    `CREATE TABLE IF NOT EXISTS billing_credit_balances (
+    "account" TEXT PRIMARY KEY NOT NULL,
+    "balance" BIGINT NOT NULL,
+    "version" BIGINT NOT NULL,
+    "updatedAt" TIMESTAMP(3) NOT NULL
+  )`,
+  ],
+  billing_subscriptions: [
+    `CREATE TABLE IF NOT EXISTS billing_subscriptions (
+    "id" TEXT PRIMARY KEY NOT NULL,
+    "provider" TEXT NOT NULL,
+    "customerId" TEXT NOT NULL,
+    "account" TEXT,
+    "status" TEXT NOT NULL,
+    "priceId" TEXT,
+    "productId" TEXT,
+    "quantity" BIGINT,
+    "currentPeriodStart" TIMESTAMP(3),
+    "currentPeriodEnd" TIMESTAMP(3),
+    "cancelAtPeriodEnd" BOOLEAN,
+    "trialEndsAt" TIMESTAMP(3),
+    "metadata" JSONB,
+    "source" TEXT,
+    "updatedAt" TIMESTAMP(3) NOT NULL
+  )`,
+    `CREATE INDEX IF NOT EXISTS billing_subscriptions_customer_idx ON billing_subscriptions ("customerId")`,
+  ],
 };
 
 const builtinDDL = (dialect: Dialect): string[] => {
@@ -171,11 +291,13 @@ interface DrizzleColumn {
   notNull?: boolean;
   primary?: boolean;
   dataType?: string;
+  columnType?: string;
 }
 
 const sqlType = (column: DrizzleColumn, dialect: Dialect): string => {
   const dataType = column.dataType ?? "string";
   if (dialect === "postgresql") {
+    if (column.columnType?.includes("BigInt")) return "BIGINT";
     switch (dataType) {
       case "number":
         return "INTEGER";
@@ -233,6 +355,30 @@ const generateTableDDL = (
   return `CREATE TABLE IF NOT EXISTS ${quote(tableName, dialect)} (\n    ${defs.join(",\n    ")}\n  )`;
 };
 
+// The credits ledger relies on these unique indexes for its optimistic
+// concurrency (account, seq) and idempotency (account, idempotencyKey)
+// guarantees, so they are reconstructed for overridden tables too.
+const overrideIndexDDL = (
+  resolver: TableResolver<string>,
+  canonical: InternalTableName,
+  dialect: Dialect
+): string[] => {
+  const tableName = getTableName(resolver.table as never);
+  const q = (name: string): string => quote(name, dialect);
+  const on = (...keys: string[]): string =>
+    `${q(tableName)} (${keys.map((k) => q(resolver.dbName(k))).join(", ")})`;
+  if (canonical === "billing_credit_entries") {
+    return [
+      `CREATE UNIQUE INDEX IF NOT EXISTS ${tableName}_account_seq_uq ON ${on("account", "seq")}`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS ${tableName}_account_idem_uq ON ${on("account", "idempotencyKey")}`,
+    ];
+  }
+  if (canonical === "billing_subscriptions") {
+    return [`CREATE INDEX IF NOT EXISTS ${tableName}_customer_idx ON ${on("customerId")}`];
+  }
+  return [];
+};
+
 const isBuiltin = (resolver: TableResolver<string>, builtin: unknown): boolean =>
   (resolver.table as unknown) === builtin;
 
@@ -252,6 +398,10 @@ export const migrateInternal = async (
         getTableName(schema.accounts.table as never),
         getTableName(schema.apiKeys.table as never),
         getTableName(schema.verificationTokens.table as never),
+        getTableName(schema.passkeys.table as never),
+        getTableName(schema.creditEntries.table as never),
+        getTableName(schema.creditBalances.table as never),
+        getTableName(schema.billingSubscriptions.table as never),
       ],
       statements: 0,
       skipped: true,
@@ -307,6 +457,30 @@ export const migrateInternal = async (
       canonical: "auth_verification_tokens",
       label: "verificationTokens",
     },
+    {
+      resolver: schema.passkeys,
+      builtin: builtins.authPasskeys,
+      canonical: "auth_passkeys",
+      label: "passkeys",
+    },
+    {
+      resolver: schema.creditEntries,
+      builtin: builtins.billingCreditEntries,
+      canonical: "billing_credit_entries",
+      label: "creditEntries",
+    },
+    {
+      resolver: schema.creditBalances,
+      builtin: builtins.billingCreditBalances,
+      canonical: "billing_credit_balances",
+      label: "creditBalances",
+    },
+    {
+      resolver: schema.billingSubscriptions,
+      builtin: builtins.billingSubscriptions,
+      canonical: "billing_subscriptions",
+      label: "billingSubscriptions",
+    },
   ];
 
   const statements: string[] = [];
@@ -317,6 +491,7 @@ export const migrateInternal = async (
       tables.push(entry.canonical);
     } else {
       statements.push(generateTableDDL(entry.resolver, entry.label, dialect));
+      statements.push(...overrideIndexDDL(entry.resolver, entry.canonical, dialect));
       tables.push(getTableName(entry.resolver.table as never));
     }
   }

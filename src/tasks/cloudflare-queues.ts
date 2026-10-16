@@ -3,12 +3,14 @@ import { Task, TaskContext, TaskDefinition, ScheduleOptions } from "./types";
 import { TaskRegistry } from "./scheduler";
 import { createTaskStorage } from "./storage";
 import { createDeadLetterQueue, DeadLetterQueueOptions } from "./dlq";
-import { calculateBackoff, shouldRetry } from "./retry";
+import { resolveRetryDelay, shouldRetry } from "./retry";
 import {
   createIdempotencyStore,
   DEFAULT_IDEMPOTENCY_RETENTION_MS,
 } from "./idempotency";
 import { DEFAULT_RESULT_TTL_MS } from "./worker";
+
+const MAX_QUEUE_DELAY_SECONDS = 12 * 60 * 60;
 
 export interface QueueSendOptions {
   delaySeconds?: number;
@@ -282,13 +284,15 @@ export const createQueueConsumer = (
     } catch (error) {
       const err = error as Error;
       if (shouldRetry(err, attemptNumber, maxAttempts, retryConfig)) {
-        const backoff = calculateBackoff(attemptNumber, retryConfig);
+        const backoff = resolveRetryDelay(err, attemptNumber, retryConfig);
         await storage.updateStatus(task.id, "running", "scheduled", {
           attempt: attemptNumber,
           lastError: err.message,
           workerId: undefined,
         });
-        message.retry({ delaySeconds: Math.ceil(backoff / 1000) });
+        message.retry({
+          delaySeconds: Math.min(MAX_QUEUE_DELAY_SECONDS, Math.ceil(backoff / 1000)),
+        });
       } else {
         await dlq.add({ ...task, attempt: attemptNumber }, err.message);
         message.ack();

@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, unlink, stat, readFile, writeFile, access, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, unlink, stat, readFile, writeFile, access, rm, open, readdir } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import {
   StorageAdapter,
   FileMetadata,
@@ -10,7 +10,13 @@ import {
   PresignedUrlOptions,
   PresignedUploadResult,
   LocalStorageConfig,
+  ListObjectsOptions,
+  ListObjectsResult,
+  StoredObjectInfo,
 } from "./types";
+import { paginateKeys } from "./list";
+
+const METADATA_SUFFIX = ".meta.json";
 
 interface LocalFileMetadata {
   filename: string;
@@ -37,7 +43,7 @@ export class LocalStorageAdapter implements StorageAdapter {
   }
 
   private getMetadataPath(key: string): string {
-    return join(this.basePath, `${key}.meta.json`);
+    return join(this.basePath, `${key}${METADATA_SUFFIX}`);
   }
 
   private async ensureDirectory(filePath: string): Promise<void> {
@@ -123,6 +129,53 @@ export class LocalStorageAdapter implements StorageAdapter {
       }
       throw error;
     }
+  }
+
+  async readRange(key: string, offset: number, length: number): Promise<Buffer> {
+    let handle;
+    try {
+      handle = await open(this.getFilePath(key), "r");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(`File not found: ${key}`);
+      }
+      throw error;
+    }
+    try {
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await handle.read(buffer, 0, length, offset);
+      return buffer.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async list(options: ListObjectsOptions = {}): Promise<ListObjectsResult> {
+    const objects: StoredObjectInfo[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
+      for (const entry of entries) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(full);
+        } else if (entry.isFile() && !entry.name.endsWith(METADATA_SUFFIX)) {
+          const stats = await stat(full);
+          objects.push({
+            key: relative(this.basePath, full).split(sep).join("/"),
+            size: stats.size,
+            lastModified: stats.mtime,
+          });
+        }
+      }
+    };
+    await walk(this.basePath);
+    return paginateKeys(objects, options);
   }
 
   async delete(key: string): Promise<void> {

@@ -77,8 +77,38 @@ useAuth({
 
 Adds:
 
-- `POST /password/forgot` — `{ email }` → issues a token via `sendToken`; **always** returns `{ success: true }` (no email enumeration).
+- `POST /password/forgot` — `{ email }` → issues a token via `sendToken` (or `composeEmail`); **always** returns `{ success: true }` (no email enumeration). A delivery failure is reported to `email.onDeliveryError` (default: a `console.error` without the address or token) and never changes the response, so a provider outage can't reveal which addresses have accounts.
 - `POST /password/reset` — `{ email, token, password }` → hashes the new password with the built-in [scrypt hasher](./passwords.md) and calls `resetPassword`. When `logoutEverywhere` is set and the adapter implements `invalidateUserSessions`, all of the user's sessions are revoked.
+
+## Sending the emails
+
+Each flow takes either a callback (`sendToken` / `sendLink`) that sends the email yourself, or `composeEmail`, which returns an `EmailMessage` that Covara sends through `email.adapter` (default: the [global email adapter](../platform/email.md)). The composed path passes an idempotency key derived from the token's SHA-256 (`auth:<flow>:<hex>`), so a retried send never delivers the same token twice.
+
+```typescript
+import { createEmail, durableEmail, createResendAdapter } from "covara/email";
+
+useAuth({
+  adapter,
+  email: {
+    adapter: durableEmail(createResendAdapter({ apiKey: env.RESEND_API_KEY }), { queue: scheduler }),
+    onDeliveryError: (error, { flow }) => metrics.increment(`auth.email.${flow}.failed`),
+  },
+  passwordReset: {
+    store,
+    resetPassword,
+    findUserByEmail,
+    composeEmail: ({ identifier, token }) => {
+      const { html, text } = createEmail()
+        .heading("Reset your password")
+        .button("Reset password", `https://app.com/reset?token=${token}`)
+        .build();
+      return { from: "noreply@app.com", to: identifier, subject: "Reset your password", html, text };
+    },
+  },
+});
+```
+
+`/password/forgot` and `/magic-link/request` swallow delivery errors (they must answer identically for known and unknown addresses); `/verify/request` still surfaces them as a `500`. With a [durable email adapter](../platform/email.md#durable-delivery) the request only enqueues the message, so a slow or failing provider affects neither the response nor its latency. `useAuth` throws at setup if a flow has neither a callback nor `composeEmail`.
 
 ## Token stores
 

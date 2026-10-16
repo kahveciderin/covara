@@ -2,10 +2,12 @@ import {
   EmailAdapter,
   EmailAttachment,
   EmailMessage,
+  SendEmailOptions,
   SendEmailResult,
   formatAddress,
   normalizeRecipients,
 } from "./types";
+import { EmailDeliveryError, isPermanentStatus, parseRetryAfter } from "./errors";
 
 export interface ResendAdapterConfig {
   apiKey: string;
@@ -107,11 +109,29 @@ export class ResendAdapter implements EmailAdapter {
     this.apiKey = config.apiKey;
   }
 
-  private headers(): Record<string, string> {
-    return {
+  private headers(options?: SendEmailOptions): Record<string, string> {
+    const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
       "Content-Type": "application/json",
     };
+    if (options?.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
+    return headers;
+  }
+
+  private async post(url: string, body: unknown, options?: SendEmailOptions): Promise<Response> {
+    try {
+      return await fetch(url, {
+        method: "POST",
+        headers: this.headers(options),
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new EmailDeliveryError(`resend: request failed: ${detail}`, {
+        provider: this.provider,
+        cause: error,
+      });
+    }
   }
 
   private async fail(response: Response): Promise<never> {
@@ -121,17 +141,19 @@ export class ResendAdapter implements EmailAdapter {
     } catch {
       detail = "";
     }
-    throw new Error(
-      `resend: send failed with status ${response.status}${detail ? `: ${detail}` : ""}`
+    throw new EmailDeliveryError(
+      `resend: send failed with status ${response.status}${detail ? `: ${detail}` : ""}`,
+      {
+        provider: this.provider,
+        status: response.status,
+        permanent: isPermanentStatus(response.status),
+        retryAfterMs: parseRetryAfter(response.headers?.get?.("retry-after")),
+      }
     );
   }
 
-  async send(message: EmailMessage): Promise<SendEmailResult> {
-    const response = await fetch(RESEND_SEND_URL, {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(toPayload(message)),
-    });
+  async send(message: EmailMessage, options?: SendEmailOptions): Promise<SendEmailResult> {
+    const response = await this.post(RESEND_SEND_URL, toPayload(message), options);
 
     if (!response.ok) return this.fail(response);
 
@@ -139,12 +161,11 @@ export class ResendAdapter implements EmailAdapter {
     return { id: data.id, provider: this.provider };
   }
 
-  async sendBatch(messages: EmailMessage[]): Promise<SendEmailResult[]> {
-    const response = await fetch(RESEND_BATCH_URL, {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(messages.map(toPayload)),
-    });
+  async sendBatch(
+    messages: EmailMessage[],
+    options?: SendEmailOptions
+  ): Promise<SendEmailResult[]> {
+    const response = await this.post(RESEND_BATCH_URL, messages.map(toPayload), options);
 
     if (!response.ok) return this.fail(response);
 

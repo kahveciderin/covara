@@ -7,6 +7,15 @@ import type { InvalidateTarget } from "./query-cache";
 import { captchaController, loadCaptchaWidget, type CaptchaChallenge } from "./captcha";
 import { csrfHeaders, needsCsrfToken, type CsrfConfig } from "./csrf";
 import { describeErrorBody } from "./errors";
+import {
+  createPasskeyCredential,
+  getPasskeyCredential,
+  type LoginWithPasskeyOptions,
+  type PasskeyCreationOptionsJSON,
+  type PasskeyInfo,
+  type PasskeyRequestOptionsJSON,
+  type RegisterPasskeyOptions,
+} from "./passkey";
 
 export type LiveStatus = "loading" | "live" | "reconnecting" | "offline" | "error";
 
@@ -558,6 +567,8 @@ export interface UseAuthOptions {
   socialBasePath?: string;
   /** Session auth route prefix (mounted server-side, default `/api/auth`). */
   authBasePath?: string;
+  /** Passkey route prefix inside `authBasePath` (default `/passkey`). */
+  passkeyPath?: string;
   /**
    * CSRF double-submit (default on): login/signup/logout/verification echo the
    * server's CSRF cookie in a header, as `useAuth({ csrf: true })` requires.
@@ -588,6 +599,13 @@ export interface UseAuthResult<TUser = unknown> {
    * session cookie and redirects back. Browser-only.
    */
   signInWith: (provider: string) => void;
+  /** Add a passkey to the signed-in account. Browser-only (WebAuthn). */
+  registerPasskey: (options?: RegisterPasskeyOptions) => Promise<PasskeyInfo>;
+  /**
+   * Sign in with a passkey; usernameless unless `email` is given. Pass
+   * `mediation: "conditional"` for passkey autofill. Refreshes `user` on success.
+   */
+  loginWithPasskey: (options?: LoginWithPasskeyOptions) => Promise<void>;
 }
 
 /**
@@ -840,12 +858,16 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
   const authBase = options.authBasePath ?? "/api/auth";
 
   const postAuth = useCallback(
-    async (path: string, body?: unknown): Promise<unknown> => {
+    async (path: string, body?: unknown, authed = false): Promise<unknown> => {
       await ensureCsrfToken();
       const res = await fetch(`${baseUrl}${authBase}${path}`, {
         method: "POST",
         credentials: "include",
-        headers: { "content-type": "application/json", ...csrfHeaders("POST", options.csrf) },
+        headers: {
+          "content-type": "application/json",
+          ...csrfHeaders("POST", options.csrf),
+          ...(authed ? getAuthHeaders() : {}),
+        },
         body: body ? JSON.stringify(body) : undefined,
       });
       if (!res.ok) {
@@ -860,7 +882,7 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
       }
       return res.json().catch(() => ({}));
     },
-    [baseUrl, authBase, options.csrf, ensureCsrfToken]
+    [baseUrl, authBase, options.csrf, ensureCsrfToken, getAuthHeaders]
   );
 
   // Capture a JWT access token from a login/signup response (jwtSession) so the
@@ -925,6 +947,38 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
     [client, baseUrl, options.socialBasePath]
   );
 
+  const passkeyPath = options.passkeyPath ?? "/passkey";
+
+  const registerPasskey = useCallback(
+    async (passkeyOptions: RegisterPasskeyOptions = {}): Promise<PasskeyInfo> => {
+      const creation = (await postAuth(`${passkeyPath}/register/options`, {}, true)) as PasskeyCreationOptionsJSON;
+      const response = await createPasskeyCredential(creation, { signal: passkeyOptions.signal });
+      const body = (await postAuth(
+        `${passkeyPath}/register/verify`,
+        { response, name: passkeyOptions.name },
+        true
+      )) as { passkey: PasskeyInfo };
+      return body.passkey;
+    },
+    [postAuth, passkeyPath]
+  );
+
+  const loginWithPasskey = useCallback(
+    async (passkeyOptions: LoginWithPasskeyOptions = {}) => {
+      const request = (await postAuth(
+        `${passkeyPath}/login/options`,
+        passkeyOptions.email ? { email: passkeyOptions.email } : {}
+      )) as PasskeyRequestOptionsJSON;
+      const response = await getPasskeyCredential(request, {
+        signal: passkeyOptions.signal,
+        mediation: passkeyOptions.mediation,
+      });
+      captureToken(await postAuth(`${passkeyPath}/login/verify`, { response }));
+      await checkAuth();
+    },
+    [postAuth, passkeyPath, captureToken, checkAuth]
+  );
+
   useEffect(() => {
     if (effectiveStrategy === "jwt" && client?.jwt) {
       const unsubscribe = client.jwt.subscribe((state) => {
@@ -979,6 +1033,8 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
     requestEmailVerification,
     confirmEmail,
     signInWith,
+    registerPasskey,
+    loginWithPasskey,
   };
 }
 
@@ -1167,6 +1223,11 @@ export type {
   UploadedFile,
   UploadProgress,
   FileUploadOptions,
+  ResumableUploadOptions,
+  ResumableUploadHandle,
+  ResumableUploadSession,
+  ResumableUploadStatus,
+  ResumeStore,
 } from "./react-files";
 
 export {

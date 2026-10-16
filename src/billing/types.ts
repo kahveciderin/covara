@@ -103,7 +103,21 @@ export interface BillingEvent {
   metadata?: Record<string, unknown>;
   amount?: number;
   currency?: string;
+  // "reconcile" for events synthesized by billing.reconcile() from provider
+  // state; webhook deliveries leave it unset or "webhook".
+  source?: "webhook" | "reconcile";
   raw: unknown;
+}
+
+export interface SubscriptionPage {
+  subscriptions: BillingSubscription[];
+  // Opaque provider cursor for the next page; absent on the last page.
+  nextCursor?: string;
+}
+
+export interface ListSubscriptionsPageOptions {
+  cursor?: string;
+  limit?: number;
 }
 
 export interface BillingAdapter {
@@ -115,7 +129,10 @@ export interface BillingAdapter {
   createCheckout(input: CreateCheckoutInput): Promise<CheckoutSession>;
 
   getSubscription(id: string): Promise<BillingSubscription | null>;
+  // Every subscription for the customer, following provider pagination.
   listSubscriptions(customerId: string): Promise<BillingSubscription[]>;
+  // One page of every subscription on the account (used by reconcileAll).
+  listAllSubscriptions?(options?: ListSubscriptionsPageOptions): Promise<SubscriptionPage>;
   cancelSubscription(
     id: string,
     options?: { atPeriodEnd?: boolean }

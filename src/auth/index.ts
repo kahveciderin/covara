@@ -5,6 +5,13 @@ export * from "./rsql";
 export * from "./scope";
 export * from "./middleware";
 export * from "./routes";
+export { createAuthEmailDispatcher } from "./email-delivery";
+export type {
+  AuthEmailFlow,
+  AuthEmailParams,
+  AuthEmailComposer,
+  AuthEmailOptions,
+} from "./email-delivery";
 export {
   createCsrfMiddleware,
   issueCsrfToken,
@@ -106,6 +113,27 @@ export {
   createKvSocialStateStore,
 } from "./social";
 export type { SocialAuthOptions, SocialStateStore } from "./social";
+export {
+  createPasskeyRouter,
+  InMemoryPasskeyStore,
+  KVPasskeyStore,
+  createKVPasskeyStore,
+  InMemoryPasskeyChallengeStore,
+  createKVPasskeyChallengeStore,
+} from "./passkey";
+export type {
+  PasskeyAuthOptions,
+  PasskeySummary,
+  PasskeyUserVerification,
+  PasskeyCounterRegression,
+  PasskeyStore,
+  StoredPasskey,
+  PasskeyUpdate,
+  PasskeyDeviceType,
+  PasskeyChallenge,
+  PasskeyChallengePurpose,
+  PasskeyChallengeStore,
+} from "./passkey";
 export { cookieSession, jwtSession, fromAuthAdapter } from "./session";
 export type {
   SessionStrategy,
@@ -132,10 +160,13 @@ export {
   createRedisSessionStore,
   DrizzleSessionStore,
   createDrizzleSessionStore,
+  DrizzlePasskeyStore,
+  createDrizzlePasskeyStore,
 } from "./stores";
 export type {
   KVSessionStoreOptions,
   RedisSessionStoreOptions,
   DrizzleSessionStoreOptions,
+  DrizzlePasskeyStoreOptions,
   SessionsTableColumns,
 } from "./stores";

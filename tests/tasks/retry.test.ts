@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { calculateBackoff, shouldRetry } from "@/tasks/retry";
+import { calculateBackoff, shouldRetry, resolveRetryDelay } from "@/tasks/retry";
 import { RetryConfig } from "@/tasks/types";
 
 describe("calculateBackoff", () => {
@@ -230,5 +230,34 @@ describe("shouldRetry", () => {
       expect(shouldRetry(notFound, 1, 3, config)).toBe(false);
       expect(shouldRetry(serverError, 1, 3, config)).toBe(true);
     });
+  });
+});
+
+describe("resolveRetryDelay", () => {
+  it("falls back to calculateBackoff without an override", () => {
+    const delay = resolveRetryDelay(new Error("x"), 1, { initialDelayMs: 1000, backoff: "fixed" });
+    expect(delay).toBeGreaterThanOrEqual(1100);
+    expect(delay).toBeLessThanOrEqual(1200);
+  });
+
+  it("uses retryDelayMs when it returns a value", () => {
+    const config: RetryConfig = { retryDelayMs: (_error, attempt) => attempt * 500 };
+    expect(resolveRetryDelay(new Error("x"), 3, config)).toBe(1500);
+  });
+
+  it("falls back when retryDelayMs returns undefined, a negative, or a non-finite value", () => {
+    for (const value of [undefined, -1, NaN, Infinity]) {
+      const delay = resolveRetryDelay(new Error("x"), 1, {
+        initialDelayMs: 100,
+        backoff: "fixed",
+        retryDelayMs: () => value,
+      });
+      expect(delay).toBeGreaterThanOrEqual(110);
+      expect(delay).toBeLessThanOrEqual(120);
+    }
+  });
+
+  it("allows a zero-delay override", () => {
+    expect(resolveRetryDelay(new Error("x"), 1, { retryDelayMs: () => 0 })).toBe(0);
   });
 });

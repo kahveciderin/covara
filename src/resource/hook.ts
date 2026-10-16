@@ -91,6 +91,7 @@ import {
 } from "./error";
 import {
   createScopeResolver,
+  warnUnscopedOperations,
   combineScopes,
   scopeToStoredFilter,
   Operation,
@@ -291,6 +292,7 @@ export const useResource = <TConfig extends TableConfig>(
   });
 
   const scopeResolver = createScopeResolver(config.auth, resourceName);
+  warnUnscopedOperations(scopeResolver, resourceName);
 
   const baseInsertSchema = createInsertSchema(schema);
   const updateSchema = createUpdateSchema(schema);

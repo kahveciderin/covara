@@ -2,6 +2,7 @@ import { ScopeConfig, ScopeFunction, CompiledScope, UserContext } from "@/resour
 import { allScope } from "./rsql";
 import { UnauthorizedError, ForbiddenError } from "@/resource/error";
 import { DENY_ALL_FILTER } from "@/resource/filter";
+import { readEnv } from "@/server/env";
 
 export type Operation = "read" | "create" | "update" | "delete" | "subscribe";
 
@@ -22,6 +23,12 @@ export class ScopeResolver {
     }
 
     return this.config.public[operation] === true;
+  }
+
+  unscopedOperations(): Operation[] {
+    return OPERATIONS.filter(
+      (operation) => !this.isPublic(operation) && !this.getScopeFunction(operation)
+    );
   }
 
   private getScopeFunction(operation: Operation): ScopeFunction | undefined {
@@ -80,6 +87,26 @@ export class ScopeResolver {
     return scope;
   }
 }
+
+const OPERATIONS: Operation[] = ["read", "create", "update", "delete", "subscribe"];
+
+const warnedUnscopedResources = new Set<string>();
+
+export const warnUnscopedOperations = (resolver: ScopeResolver, resourceName: string): void => {
+  if (readEnv("NODE_ENV") === "test" || warnedUnscopedResources.has(resourceName)) return;
+  const unscoped = resolver.unscopedOperations();
+  if (unscoped.length === 0) return;
+  warnedUnscopedResources.add(resourceName);
+  console.warn(
+    `[covara] Resource "${resourceName}" has no auth scope for: ${unscoped.join(", ")}. ` +
+      `Any signed-in user can perform these operations on every row. ` +
+      `Declare a scope (e.g. ownerOnly()), mark the operation public, or use allScope() to make unrestricted access explicit.`
+  );
+};
+
+export const resetUnscopedWarnings = (): void => {
+  warnedUnscopedResources.clear();
+};
 
 export const createScopeResolver = (
   config: ScopeConfig | undefined,

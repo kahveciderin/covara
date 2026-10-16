@@ -144,6 +144,23 @@ export type {
 } from "./auth/passport-bridge";
 export { createKvSocialStateStore } from "./auth/social";
 export type { SocialAuthOptions, SocialStateStore } from "./auth/social";
+export {
+  InMemoryPasskeyStore,
+  KVPasskeyStore,
+  createKVPasskeyStore,
+  InMemoryPasskeyChallengeStore,
+  createKVPasskeyChallengeStore,
+} from "./auth/passkey";
+export type {
+  PasskeyAuthOptions,
+  PasskeySummary,
+  PasskeyStore,
+  StoredPasskey,
+  PasskeyChallengeStore,
+  PasskeyCounterRegression,
+} from "./auth/passkey";
+export { DrizzlePasskeyStore, createDrizzlePasskeyStore } from "./auth/stores/drizzle-passkeys";
+export type { DrizzlePasskeyStoreOptions } from "./auth/stores/drizzle-passkeys";
 export { cookieSession, jwtSession, fromAuthAdapter } from "./auth/session";
 export type {
   SessionStrategy,
@@ -183,6 +200,12 @@ export type {
 } from "./auth";
 export { useAuth, createAuthRoutes } from "./auth/routes";
 export type { UseAuthOptions, AuthRouterResult, AuthUser } from "./auth/routes";
+export type {
+  AuthEmailFlow,
+  AuthEmailParams,
+  AuthEmailComposer,
+  AuthEmailOptions,
+} from "./auth/email-delivery";
 export { InMemorySessionStore } from "./auth/types";
 export type {
   AuthCredentials,
@@ -516,6 +539,18 @@ export {
   R2BindingAdapter,
   R2S3Adapter,
   validateUpload,
+  supportsMultipart,
+  readObjectHead,
+  sniffContentType,
+  resolveContentType,
+  isActiveContentType,
+  drainBlobDeletions,
+  sweepOrphanedBlobs,
+  runStorageMaintenance,
+  startStorageMaintenance,
+  stopStorageMaintenance,
+  defineStorageMaintenanceTask,
+  getBlobDeletionStats,
 } from "./storage";
 export type {
   StorageAdapter,
@@ -531,8 +566,24 @@ export type {
   R2S3Config,
   R2BindingConfig,
   R2Bucket,
+  R2MultipartUpload,
   UploadValidationOptions,
   UploadValidationInput,
+  StoredObjectInfo,
+  ListObjectsOptions,
+  ListObjectsResult,
+  MultipartPart,
+  MultipartLimits,
+  MultipartStorageAdapter,
+  ContentSniffingPolicy,
+  SniffResult,
+  ContentTypeDecision,
+  BlobDeletionConfig,
+  BlobDeletionDrainResult,
+  SweepOptions,
+  SweepResult,
+  StorageMaintenanceOptions,
+  ResumableUploadConfig,
 } from "./storage";
 export { useFileResource } from "./storage/resource";
 export type { FileResourceConfig, FileRecord, FileTableSchema } from "./storage/resource";
@@ -569,11 +620,16 @@ export {
   authAccounts,
   authApiKeys,
   authVerificationTokens,
+  authPasskeys,
   INTERNAL_TABLE_NAMES,
   SESSION_KEYS,
   ACCOUNT_KEYS,
   API_KEY_KEYS,
   VERIFICATION_KEYS,
+  PASSKEY_KEYS,
+  CREDIT_ENTRY_KEYS,
+  CREDIT_BALANCE_KEYS,
+  BILLING_SUBSCRIPTION_KEYS,
   defineInternalSchema,
   makeIdentityResolver,
 } from "./db";
@@ -590,6 +646,10 @@ export type {
   AccountKey,
   ApiKeyKey,
   VerificationKey,
+  PasskeyKey,
+  CreditEntryKey,
+  CreditBalanceKey,
+  BillingSubscriptionKey,
   TableResolver,
   InternalTableOverride,
   InternalSchemaInput,
@@ -609,6 +669,12 @@ export {
   createResendAdapter,
   createCloudflareEmailAdapter,
   buildMimeMessage,
+  createDurableEmailAdapter,
+  durableEmail,
+  EmailDeliveryError,
+  isPermanentEmailError,
+  isRetryableEmailError,
+  parseRetryAfter,
 } from "./email";
 export type {
   EmailAdapter,
@@ -616,6 +682,12 @@ export type {
   EmailAddress,
   EmailAttachment,
   SendEmailResult,
+  SendEmailOptions,
+  DurableEmailAdapter,
+  DurableEmailOptions,
+  EmailDeliveryFailure,
+  EmailTaskInput,
+  EmailTaskQueue,
   EmailTheme,
   BuiltEmail,
 } from "./email";
@@ -628,6 +700,15 @@ export {
   clearGlobalBilling,
   createBilling,
   createCreditsLedger,
+  createDrizzleCreditsLedger,
+  CreditsIdempotencyConflictError,
+  createKVSubscriptionStore,
+  createDrizzleSubscriptionStore,
+  createBillingReconcileTask,
+  summarizeReconcileReport,
+  diffSubscriptions,
+  BillingWebhookSignatureError,
+  BillingWebhookInFlightError,
   createBillingRouter,
   createStripeAdapter,
   createLemonSqueezyAdapter,
@@ -650,6 +731,29 @@ export type {
   BillingEventType,
   CreditsLedger,
   CreditEntry,
+  CreditEntryKind,
+  CreditMutationOptions,
+  CreditConsumeOptions,
+  CreditConsumeResult,
+  CreditHistoryPage,
+  KVCreditsLedgerOptions,
+  DrizzleCreditsLedgerOptions,
+  BillingSubscriptionStore,
+  StoredSubscription,
+  DrizzleSubscriptionStoreOptions,
+  SubscriptionPage,
+  ListSubscriptionsPageOptions,
+  BillingReconcileReport,
+  BillingReconcileDrift,
+  BillingReconcileError,
+  ReconcileOptions,
+  ReconcileAllOptions,
+  ReconcileRetryOptions,
+  ReconcileDriftKind,
+  ReconcileOutcome,
+  BillingReconcileTask,
+  BillingReconcileTaskOptions,
+  BillingReconcileSummary,
   BillingRouterOptions,
 } from "./billing";
 export type {
