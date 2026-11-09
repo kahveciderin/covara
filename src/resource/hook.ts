@@ -19,6 +19,11 @@ import z, { ZodError } from "zod";
 import { v4 as uuidv4 } from "uuid";
 
 import { createResourceFilter } from "./filter";
+import {
+  resolveQueryableFields,
+  assertQueryableFields,
+  registerQueryableFields,
+} from "./field-policy";
 import { recordCreate, recordUpdate, recordDelete, changelog } from "./changelog";
 import {
   createSubscription,
@@ -276,6 +281,30 @@ export const useResource = <TConfig extends TableConfig>(
         "Relation paths are not allowed in filter queries"
       );
     }
+  };
+
+  const queryable = resolveQueryableFields(config.fields, config.filter);
+  registerQueryableFields(resourceName, queryable);
+  const userFilterer = queryable.filter
+    ? createResourceFilter(schema, config.customOperators ?? {}, {
+        allowedFields: queryable.filter,
+      })
+    : null;
+  // Untrusted filters may only reference filterable (by default: readable)
+  // columns. Trusted auth scopes go through `filterer` and are unrestricted.
+  const assertFilterableFields = (filterQuery: string | undefined): void => {
+    if (!userFilterer || !filterQuery || filterQuery.trim() === "") return;
+    userFilterer.compile(filterQuery);
+  };
+  const assertAggregationFields = (
+    params: ReturnType<typeof parseAggregationParams>
+  ): void => {
+    assertQueryableFields(queryable.groupBy, params.groupBy, "groupBy");
+    assertQueryableFields(
+      queryable.metrics,
+      [...params.sum, ...params.avg, ...params.min, ...params.max],
+      "metric"
+    );
   };
 
   // Resource cursor signing secret overrides the global one; an explicit `null`
@@ -546,6 +575,7 @@ export const useResource = <TConfig extends TableConfig>(
     // The scope (developer-authored) may traverse relation paths; the user filter
     // may not — reject a join in user input so a client can't probe other tables.
     rejectRelationPathFilter(filterQuery);
+    if (additionalFilter === undefined) assertFilterableFields(filterQuery);
     const combinedFilter = combineScopes(scope, filterQuery);
 
     let base: SQL<unknown> | undefined;
@@ -948,6 +978,7 @@ export const useResource = <TConfig extends TableConfig>(
     if (filterQuery.trim() !== "" && filterer.compile(filterQuery).requiresJoin()) {
       throw new FilterParseError("Relation paths are not allowed in filter queries");
     }
+    assertFilterableFields(filterQuery);
     // A relation-path (join) scope can only be enforced live via the periodic
     // scope recheck (it can't be matched against rows in memory). If the recheck
     // is disabled the subscription would never reconcile, so fail fast instead of
@@ -1264,8 +1295,9 @@ export const useResource = <TConfig extends TableConfig>(
   };
 
   router.get("/aggregate", async (c) => {
-    const filter = await applyFilters(c, "read");
     const params = parseAggregationParams(c.req.query() as Record<string, unknown>);
+    assertAggregationFields(params);
+    const filter = await applyFilters(c, "read");
     return c.json(await runAggregate(filter, params));
   });
 
@@ -1288,10 +1320,12 @@ export const useResource = <TConfig extends TableConfig>(
     c: Context,
     params: MuxSubscribeParams
   ): Promise<PreparedAggregate> => {
-    const filterSql = await applyFilters(c, "read", params.filter);
+    assertFilterableFields(params.filter);
     const aggParams = parseAggregationParams(
       (params.aggregateQuery ?? {}) as Record<string, unknown>
     );
+    assertAggregationFields(aggParams);
+    const filterSql = await applyFilters(c, "read", params.filter);
     const readScope = await resolveScope(c, "read");
     const matcherFilter = combineScopes(readScope, params.filter ?? "");
     const matcher =
@@ -1606,6 +1640,8 @@ export const useResource = <TConfig extends TableConfig>(
           return new Set(rows.map((row) => String(row.id)));
         },
         maskItem: readableSet || computedFields ? (item) => maskReadable(item) : undefined,
+        assertFilterable: assertFilterableFields,
+        readableFields: config.fields?.readable,
       }
     );
 
@@ -1722,6 +1758,11 @@ export const useResource = <TConfig extends TableConfig>(
     const includeSpecs = resolveIncludeSpecs(c.req.query("include"));
 
     const orderByFields = parseOrderBy(paginationParams.orderBy);
+    assertQueryableFields(
+      queryable.sort,
+      orderByFields.map((f) => f.field),
+      "sort"
+    );
 
     let query = db.select().from(schema);
 

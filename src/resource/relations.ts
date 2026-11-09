@@ -15,6 +15,7 @@ import { SQLiteTable, getTableConfig as sqliteTableConfig } from "drizzle-orm/sq
 import { PgTable, getTableConfig as pgTableConfig } from "drizzle-orm/pg-core";
 import { DrizzleDatabase, CustomOperator, UserContext } from "./types";
 import { createResourceFilter } from "./filter";
+import { getQueryableFields } from "./field-policy";
 import { getResourceScopeResolver } from "@/ui/schema-registry";
 
 // Rows returned by drizzle's `db.select()` are keyed by the schema's JS property
@@ -365,13 +366,19 @@ export class RelationLoader<TConfig extends TableConfig> {
 
     if (!filterExpr) return condition;
 
-    let filter = this.filterCache.get(filterExpr);
+    // The include filter is user input: it may only reference the target
+    // resource's filterable columns, or it becomes an oracle for hidden ones.
+    const targetName = getTableName(targetSchema);
+    const allowedFields = getQueryableFields(targetName)?.filter ?? undefined;
+    const cacheKey = `${targetName}\u0000${filterExpr}`;
+    let filter = this.filterCache.get(cacheKey);
     if (!filter) {
       filter = createResourceFilter(
         targetSchema,
-        this.config.customOperators ?? {}
+        this.config.customOperators ?? {},
+        allowedFields ? { allowedFields } : undefined
       );
-      this.filterCache.set(filterExpr, filter);
+      this.filterCache.set(cacheKey, filter);
     }
 
     return and(condition, filter.convert(filterExpr)) as SQLWrapper;

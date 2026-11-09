@@ -78,6 +78,7 @@
 - **Universal application**: Masking applies to list, get, create, update, batch, and search responses, plus every subscription event (`existing`, `added`, `changed`) and the initial subscription snapshot
 - **No client bypass**: A hidden column cannot be recovered via `?select=` or by subscribing — masking is enforced server-side after projection
 - **Column-only**: Only table columns are stripped; relation keys, computed values, and internal markers (`_etag`, `_optimisticId`) pass through
+- **No query oracle**: A column hidden by `fields.readable` cannot be referenced by any client-supplied query input — `?filter=` (every endpoint that takes one, including subscribe, search, batch update/delete and `?include=` relation filters), `?orderBy=`, or aggregate `groupBy`/metrics — unless explicitly listed in `fields.filterable` / `sortable` / `aggregatable`; such requests fail with `400`. With `readable` set, search does not match or highlight hidden columns by default. Trusted auth scopes are exempt
 
 ### Scope Combination (Fail-Closed)
 - **Empty scope denies on every path**: An empty resolved scope (`emptyScope()`, an empty `` rsql`` ``, or `and()`/`or()` that reduces to empty) is an explicit deny. It is enforced identically for reads and writes: `combineScopes` emits an internal deny sentinel that converts to `1 = 0` in SQL and `false` in memory, so `GET /`, `GET /:id`, `/count`, `/aggregate`, `/search`, and live `subscribe` matching all return nothing, and writes return `403`. It never degrades to an absent `WHERE` clause (every row)

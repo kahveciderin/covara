@@ -226,7 +226,20 @@ export interface SearchHandlerOptions {
   // search hits, which can't be matched in memory.
   enforceScopeIds?: (scopeExpr: string, ids: string[]) => Promise<Set<string>>;
   maskItem?: (item: Record<string, unknown>) => Record<string, unknown>;
+  // Rejects a user filter referencing non-filterable (e.g. hidden) columns.
+  assertFilterable?: (filter: string | undefined) => void;
+  // `fields.readable`: when set, hidden columns are neither searched by default
+  // nor surfaced through highlights (either would leak their content).
+  readableFields?: string[];
 }
+
+const pickReadableHighlights = (
+  highlights: Record<string, string[]>,
+  readable: string[] | undefined
+): Record<string, string[]> =>
+  readable
+    ? Object.fromEntries(Object.entries(highlights).filter(([field]) => readable.includes(field)))
+    : highlights;
 
 export const createSearchHandler = (
   config: SearchConfig,
@@ -245,6 +258,8 @@ export const createSearchHandler = (
     if (!query) {
       throw new ValidationError("Missing query parameter 'q'");
     }
+
+    options?.assertFilterable?.(c.req.query("filter"));
 
     let authScope: string | null = null;
     if (options) {
@@ -275,6 +290,8 @@ export const createSearchHandler = (
             .map(([field, cfg]) => [field, cfg.weight!])
         );
       }
+    } else if (options?.readableFields) {
+      fields = options.readableFields;
     }
 
     const highlightEnabled = c.req.query("highlight") === "true";
@@ -354,7 +371,7 @@ export const createSearchHandler = (
         ? Object.fromEntries(
             result.hits
               .filter((h) => h.highlights && itemIds.has(String(h.id)))
-              .map((h) => [h.id, h.highlights])
+              .map((h) => [h.id, pickReadableHighlights(h.highlights!, options?.readableFields)])
           )
         : undefined;
 

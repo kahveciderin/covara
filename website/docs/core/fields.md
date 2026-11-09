@@ -65,12 +65,18 @@ hooks: {
 
 See [Secure queries](../auth/secure-queries.md) for the broader pattern.
 
-## Filter & sort allowlists
+## Filter, sort & aggregate allowlists
 
-- `fields.filterable` — only these columns may appear in [`?filter=`](./filtering.md); others return a `400 FilterParseError`.
+- `fields.filterable` — only these columns may appear in a client-supplied filter: [`?filter=`](./filtering.md) on list, `/count`, `/aggregate`, `/subscribe`, `/aggregate/subscribe`, `/search`, `PATCH /batch` and `DELETE /batch`, and `filter:` inside an [`?include=`](./relations.md) spec (checked against the *target* resource's policy). Others return `400`.
 - `fields.sortable` — only these columns may appear in `?orderBy=`.
+- `fields.aggregatable.groupBy` / `.metrics` — only these columns may appear in `groupBy=` / `sum`/`avg`/`min`/`max`.
+- `filter.allowedFields` further narrows the filterable set.
 
-Use these to prevent clients from filtering/sorting on sensitive or unindexed columns.
+**Hidden columns are not queryable by default.** When `readable` is set, each of these lists defaults to `readable`. A column that is never returned must also not be filterable, sortable or aggregatable — otherwise the API is an oracle for it (`?filter=email=="someone@example.com"` reveals whether an account exists; `?orderBy=passwordHash` or `min=passwordHash` leaks the hash bit by bit). With `readable` set, `/search` also only searches readable columns (unless `search.fields` is set) and never returns highlights for hidden ones.
+
+To deliberately make a hidden column queryable, list it explicitly (e.g. `filterable: [usersTable.name, usersTable.email]`). Note a sortable column's values are carried in pagination cursors.
+
+Trusted [auth scopes](../auth/scopes.md) are not subject to these lists, so a scope like ``rsql`ownerId==${user.id}` `` keeps working when `ownerId` is hidden.
 
 ## `strictInput`
 
