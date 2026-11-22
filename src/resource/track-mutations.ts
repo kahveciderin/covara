@@ -1,4 +1,4 @@
-import { Table, getTableName, AnyColumn, SQL } from "drizzle-orm";
+import { Table, getTableName, AnyColumn, SQL, inArray } from "drizzle-orm";
 import { changelog, recordCreate, recordUpdate, recordDelete } from "./changelog";
 import { ChangelogEntry, DrizzleDatabase, CustomOperator } from "./types";
 import { getGlobalKV, hasGlobalKV } from "../kv";
@@ -10,6 +10,7 @@ import {
   invalidateResourceSubscriptions,
 } from "./subscription";
 import { createResourceFilter, Filter } from "./filter";
+import { columnPropertyKey } from "./column-ref";
 
 export interface TableRegistration {
   table: Table<any>;
@@ -128,6 +129,108 @@ function detectMutation(sql: string): { type: "create" | "update" | "delete"; ta
   return null;
 }
 
+// D1 allows 100 bound parameters per statement.
+const READ_BACK_CHUNK = 90;
+
+// Without RETURNING each driver reports a summary in its own shape: postgres-js
+// an EMPTY array carrying `count`, pg `rowCount`, PGlite `affectedRows`, libsql
+// `rowsAffected`, better-sqlite3 `changes`, D1 `meta.changes`.
+function affectedCount(result: any, hasReturning: boolean): number | undefined {
+  if (hasReturning && Array.isArray(result)) return result.length;
+  if (!result || typeof result !== "object") return undefined;
+  const count = [
+    result.count,
+    result.rowCount,
+    result.affectedRows,
+    result.rowsAffected,
+    result.changes,
+    result.meta?.changes,
+  ].find((value) => typeof value === "number" || typeof value === "bigint");
+  return count === undefined ? undefined : Number(count);
+}
+
+// The plain primary-key value of every row, or null if any lacks one (generated
+// by the database, or a SQL expression).
+function rowIds(rows: unknown, idKey: string): unknown[] | null {
+  if (!Array.isArray(rows)) return null;
+  const ids: unknown[] = [];
+  for (const row of rows) {
+    const id = row?.[idKey];
+    if (id === undefined || id === null || typeof id.getSQL === "function") return null;
+    ids.push(id);
+  }
+  return ids;
+}
+
+async function readBack(
+  context: TrackingContext,
+  tableInfo: TableInfo,
+  ids: unknown[]
+): Promise<Record<string, unknown>[] | null> {
+  const rows: Record<string, unknown>[] = [];
+  try {
+    for (let i = 0; i < ids.length; i += READ_BACK_CHUNK) {
+      const chunk = await context.db
+        .select()
+        .from(tableInfo.table)
+        .where(inArray(tableInfo.idColumn, ids.slice(i, i + READ_BACK_CHUNK) as any));
+      rows.push(...(chunk as Record<string, unknown>[]));
+    }
+  } catch {
+    // The write itself succeeded; the caller falls back to an invalidate.
+    return null;
+  }
+  return rows.length === 0 && ids.length > 0 ? null : rows;
+}
+
+// A write whose rows can't be identified: subscribers refetch.
+async function emitInvalidate(
+  context: TrackingContext,
+  tableInfo: TableInfo,
+  type: "create" | "update" | "delete",
+  reason: string
+): Promise<ChangelogEntry> {
+  const entry = await changelog.append({
+    resource: tableInfo.resourceName,
+    type,
+    objectId: "*",
+    object: undefined,
+    previousObject: undefined,
+    timestamp: Date.now(),
+  });
+  if (context.config.pushToSubscriptions !== false) {
+    await invalidateResourceSubscriptions(tableInfo.resourceName, reason);
+  }
+  return entry;
+}
+
+async function trackUnidentifiedWrite(
+  context: TrackingContext,
+  tableInfo: TableInfo,
+  type: "create" | "update" | "delete"
+): Promise<void> {
+  await runOrDefer(context, async () => {
+    if (context.config.cache?.enabled) {
+      await invalidateTableCache(tableInfo.resourceName);
+    }
+    const entry = await emitInvalidate(context, tableInfo, type, "untracked-rows-mutation");
+    if (context.config.onMutation) {
+      await context.config.onMutation(entry);
+    }
+  });
+}
+
+// QueryPromise implements these on the raw builder, which would skip tracking.
+function trackedPromiseMethod(prop: string | symbol, target: any, query: any) {
+  if (prop === "catch" || prop === "finally") {
+    return (handler: any) => (Promise.resolve(query) as any)[prop](handler);
+  }
+  if (prop === "execute") {
+    return (...args: any[]) => (args.length > 0 ? target.execute(...args) : Promise.resolve(query));
+  }
+  return undefined;
+}
+
 function wrapInsertBuilder(
   builder: any,
   tableInfo: TableInfo,
@@ -152,6 +255,7 @@ function wrapInsertBuilder(
 
 interface InsertState {
   hasReturning: boolean;
+  returnsFullRows?: boolean;
   hasConflictHandler: boolean;
 }
 
@@ -163,13 +267,17 @@ function wrapInsertBase(
   state: InsertState = { hasReturning: false, hasConflictHandler: false }
 ): any {
   return new Proxy(base, {
-    get(target, prop) {
+    get(target, prop, query) {
+      const promiseMethod = trackedPromiseMethod(prop, target, query);
+      if (promiseMethod) return promiseMethod;
+
       if (prop === "returning") {
         return (fields?: any) => {
           const result = fields ? target.returning(fields) : target.returning();
           return wrapInsertBase(result, tableInfo, context, insertValues, {
             ...state,
             hasReturning: true,
+            returnsFullRows: !fields,
           });
         };
       }
@@ -190,25 +298,34 @@ function wrapInsertBase(
             const result = await target;
 
             if (context.trackingEnabled) {
-              const items = Array.isArray(result) ? result : (result ? [result] : []);
+              const { idColumnName } = tableInfo;
+              const affected = affectedCount(result, state.hasReturning);
+              const returnedIds = state.hasReturning ? rowIds(result, idColumnName) : null;
+
+              let items: Record<string, unknown>[] | null = [];
+              if (affected !== 0) {
+                if (state.returnsFullRows && returnedIds) {
+                  items = result;
+                } else {
+                  // Through a conflict handler the values don't say what was written.
+                  const ids =
+                    returnedIds ??
+                    (state.hasConflictHandler
+                      ? null
+                      : rowIds(Array.isArray(insertValues) ? insertValues : [insertValues], idColumnName));
+                  items = ids && (await readBack(context, tableInfo, ids));
+                }
+              }
+
+              if (!items) {
+                await trackUnidentifiedWrite(context, tableInfo, "create");
+                return resolve ? resolve(result) : result;
+              }
 
               await runOrDefer(context, async () => {
-                // Only record mutations if we got results or if there's no conflict handler
-                // With a conflict handler and no results, the insert was a no-op
-                if (items.length === 0 && state.hasReturning === false && !state.hasConflictHandler) {
-                  const insertArray = Array.isArray(insertValues) ? insertValues : [insertValues];
-                  for (const item of insertArray) {
-                    const id = item[tableInfo.idColumnName];
-                    if (id !== undefined) {
-                      const entry = await recordCreate(tableInfo.resourceName, String(id), item);
-                      if (context.config.onMutation) {
-                        await context.config.onMutation(entry);
-                      }
-                    }
-                  }
-                } else if (items.length > 0) {
+                if (items.length > 0) {
                   for (const item of items) {
-                    const id = String(item[tableInfo.idColumnName]);
+                    const id = String(item[idColumnName]);
                     const entry = await recordCreate(tableInfo.resourceName, id, item);
                     if (context.config.onMutation) {
                       await context.config.onMutation(entry);
@@ -220,7 +337,7 @@ function wrapInsertBase(
                       tableInfo.resourceName,
                       tableInfo.filter,
                       items,
-                      tableInfo.idColumnName
+                      idColumnName
                     );
                   }
                 }
@@ -273,6 +390,7 @@ function wrapUpdateBuilder(
 interface UpdateState {
   whereClause?: SQL<unknown>;
   hasReturning: boolean;
+  returnsFullRows?: boolean;
 }
 
 function wrapUpdateBase(
@@ -283,7 +401,10 @@ function wrapUpdateBase(
   state: UpdateState = { hasReturning: false }
 ): any {
   return new Proxy(base, {
-    get(target, prop) {
+    get(target, prop, query) {
+      const promiseMethod = trackedPromiseMethod(prop, target, query);
+      if (promiseMethod) return promiseMethod;
+
       if (prop === "where") {
         return (condition: SQL<unknown>) => {
           const result = target.where(condition);
@@ -300,6 +421,7 @@ function wrapUpdateBase(
           return wrapUpdateBase(result, tableInfo, context, updateValues, {
             ...state,
             hasReturning: true,
+            returnsFullRows: !fields,
           });
         };
       }
@@ -318,17 +440,34 @@ function wrapUpdateBase(
             const result = await target;
 
             if (context.trackingEnabled) {
-              // With .returning() the driver yields the updated rows. Without it,
-              // the driver yields a result-summary object (e.g. { rowsAffected })
-              // that has no row data, so derive the affected rows from the
-              // pre-mutation SELECT (mirroring the delete path) and overlay the
-              // update values. This keeps empty updates from recording entries and
-              // avoids a bogus objectId "undefined" entry.
-              const items = Array.isArray(result)
-                ? result
-                : state.hasReturning
-                  ? (result ? [result] : [])
-                  : previousItems.map((prev) => ({ ...prev, ...updateValues }));
+              // The driver's result only holds rows after .returning(). Otherwise
+              // the pre-mutation SELECT names the affected rows, and they are read
+              // back so SQL expressions and $onUpdate columns have their real values.
+              const { idColumnName } = tableInfo;
+              const affected = affectedCount(result, state.hasReturning);
+              const returnedIds = state.hasReturning ? rowIds(result, idColumnName) : null;
+
+              let items: Record<string, unknown>[] | null = [];
+              if (affected !== 0) {
+                if (state.returnsFullRows && returnedIds) {
+                  items = result;
+                } else {
+                  let ids = returnedIds;
+                  if (!ids && state.whereClause && context.config.capturePreviousState !== false) {
+                    const newId = updateValues?.[idColumnName];
+                    ids = rowIds(
+                      newId === undefined || previousItems.length === 0 ? previousItems : [updateValues],
+                      idColumnName
+                    );
+                  }
+                  items = ids && (await readBack(context, tableInfo, ids));
+                }
+              }
+
+              if (!items) {
+                await trackUnidentifiedWrite(context, tableInfo, "update");
+                return resolve ? resolve(result) : result;
+              }
 
               await runOrDefer(context, async () => {
                 for (const item of items) {
@@ -376,6 +515,7 @@ function wrapUpdateBase(
 interface DeleteState {
   whereClause?: SQL<unknown>;
   hasReturning: boolean;
+  returnsFullRows?: boolean;
 }
 
 function wrapDeleteBuilder(
@@ -385,7 +525,10 @@ function wrapDeleteBuilder(
   state: DeleteState = { hasReturning: false }
 ): any {
   return new Proxy(builder, {
-    get(target, prop) {
+    get(target, prop, query) {
+      const promiseMethod = trackedPromiseMethod(prop, target, query);
+      if (promiseMethod) return promiseMethod;
+
       if (prop === "where") {
         return (condition: SQL<unknown>) => {
           const result = target.where(condition);
@@ -402,6 +545,7 @@ function wrapDeleteBuilder(
           return wrapDeleteBuilder(result, tableInfo, context, {
             ...state,
             hasReturning: true,
+            returnsFullRows: !fields,
           });
         };
       }
@@ -417,6 +561,15 @@ function wrapDeleteBuilder(
             const result = await target;
 
             if (context.trackingEnabled) {
+              if (!state.whereClause && affectedCount(result, state.hasReturning) !== 0) {
+                if (state.returnsFullRows && rowIds(result, tableInfo.idColumnName)) {
+                  itemsToDelete = result;
+                } else {
+                  await trackUnidentifiedWrite(context, tableInfo, "delete");
+                  return resolve ? resolve(result) : result;
+                }
+              }
+
               await runOrDefer(context, async () => {
                 const deletedIds: string[] = [];
 
@@ -604,24 +757,14 @@ function recordDetectedMutation(
   if (!tableInfo) return;
 
   return runOrDefer(context, async () => {
-    await changelog.append({
-      resource: tableInfo.resourceName,
-      type: mutationInfo.type,
-      objectId: "*",
-      object: undefined,
-      previousObject: undefined,
-      timestamp: Date.now(),
-    });
-    if (context.config.onRawSqlMutation) {
-      await context.config.onRawSqlMutation(tableInfo.resourceName, mutationInfo.type);
-    }
     if (context.config.cache?.enabled) {
       await invalidateTableCache(tableInfo.resourceName);
     }
     // Row-level details are unknown for raw SQL, so notify subscribers to
     // refetch rather than sending a precise added/changed/removed event.
-    if (context.config.pushToSubscriptions !== false) {
-      await invalidateResourceSubscriptions(tableInfo.resourceName, "raw-sql-mutation");
+    await emitInvalidate(context, tableInfo, mutationInfo.type, "raw-sql-mutation");
+    if (context.config.onRawSqlMutation) {
+      await context.config.onRawSqlMutation(tableInfo.resourceName, mutationInfo.type);
     }
   });
 }
@@ -686,33 +829,7 @@ function wrapRawSql(
     const result = await target[method](query);
 
     if (context.trackingEnabled) {
-      const sqlString = extractSqlString(query);
-      const mutationInfo = detectMutation(sqlString);
-
-      if (mutationInfo) {
-        const tableInfo = context.registryByName.get(mutationInfo.tableName);
-
-        if (tableInfo) {
-          await runOrDefer(context, async () => {
-            await changelog.append({
-              resource: tableInfo.resourceName,
-              type: mutationInfo.type,
-              objectId: "*",
-              object: undefined,
-              previousObject: undefined,
-              timestamp: Date.now(),
-            });
-
-            if (context.config.onRawSqlMutation) {
-              await context.config.onRawSqlMutation(tableInfo.resourceName, mutationInfo.type);
-            }
-
-            if (context.config.cache?.enabled) {
-              await invalidateTableCache(tableInfo.resourceName);
-            }
-          });
-        }
-      }
+      await recordDetectedMutation(extractSqlString(query), context);
     }
 
     return result;
@@ -834,7 +951,7 @@ export function trackMutations<TDb extends DrizzleDatabase>(
       table: registration.table,
       resourceName,
       idColumn: registration.id,
-      idColumnName: registration.id.name,
+      idColumnName: columnPropertyKey(registration.table, registration.id),
       filter,
     };
 

@@ -21,6 +21,7 @@ import {
 interface RedisClient {
   connect?(): Promise<void>;
   quit(): Promise<string>;
+  disconnect?(): void;
   status?: string;
   get(key: string): Promise<string | null>;
   set(key: string, value: string, ...args: unknown[]): Promise<string | null>;
@@ -95,6 +96,22 @@ interface RedisMulti {
 
 type SubscriptionCallback = (message: string, channel: string) => void;
 
+// ioredis throws if connect() is called on a client that is already connecting,
+// connected or reconnecting. Such a client gets there by itself.
+const CONNECTABLE_STATUSES = new Set(["wait", "close", "end"]);
+
+const connectClient = async (client: RedisClient): Promise<void> => {
+  if (!client.connect) return;
+  if (client.status && !CONNECTABLE_STATUSES.has(client.status)) return;
+  await client.connect();
+};
+
+const closeClient = async (client: RedisClient): Promise<void> => {
+  // QUIT would queue behind the reconnect loop of a client that isn't ready.
+  if (client.status && client.status !== "ready" && client.disconnect) client.disconnect();
+  else await client.quit();
+};
+
 export class RedisKVStore implements KVAdapter {
   private client: RedisClient;
   private subClient: RedisClient | null = null;
@@ -117,16 +134,14 @@ export class RedisKVStore implements KVAdapter {
   }
 
   async connect(): Promise<void> {
-    if (this.client.connect) {
-      await this.client.connect();
-    }
+    await connectClient(this.client);
     this.connected = true;
   }
 
   async disconnect(): Promise<void> {
-    await this.client.quit();
+    await closeClient(this.client);
     if (this.subClient) {
-      await this.subClient.quit();
+      await closeClient(this.subClient);
     }
     this.connected = false;
   }
@@ -367,10 +382,6 @@ export class RedisKVStore implements KVAdapter {
   private async ensureSubClient(): Promise<RedisClient> {
     if (!this.subClient) {
       this.subClient = this.client.duplicate();
-      if (this.subClient.connect) {
-        await this.subClient.connect();
-      }
-
       this.subClient.on("message", (...args: unknown[]) => {
         const [channel, message] = args as [string, string];
         const callbacks = this.subscriptionCallbacks.get(channel);
@@ -390,6 +401,8 @@ export class RedisKVStore implements KVAdapter {
           }
         }
       });
+
+      await connectClient(this.subClient);
     }
     return this.subClient;
   }
@@ -595,21 +608,27 @@ export const createRedisKVFromConfig = async (
     );
   }
 
+  const options = {
+    // `connect()` is called by createKV, and rejects if Redis is unreachable.
+    lazyConnect: true,
+    maxRetriesPerRequest: config.maxRetries ?? 3,
+    retryStrategy: (times: number) => {
+      if (config.maxRetries && times > config.maxRetries) {
+        return null;
+      }
+      return config.retryDelay ?? Math.min(times * 50, 2000);
+    },
+    ...(config.tls && { tls: {} }),
+  };
+
   const client = config.url
-    ? new Redis(config.url)
+    ? new Redis(config.url, options)
     : new Redis({
+        ...options,
         host: config.host ?? "localhost",
         port: config.port ?? 6379,
         password: config.password,
         db: config.db ?? 0,
-        tls: config.tls ? {} : undefined,
-        maxRetriesPerRequest: config.maxRetries ?? 3,
-        retryStrategy: (times: number) => {
-          if (config.maxRetries && times > config.maxRetries) {
-            return null;
-          }
-          return config.retryDelay ?? Math.min(times * 50, 2000);
-        },
       });
 
   return new RedisKVStore(client as unknown as RedisClient, prefix);

@@ -5,7 +5,7 @@
 ### Execution Semantics
 - **At-least-once execution**: Every scheduled task will be attempted at least once (unless cancelled)
 - **Idempotency key respect**: Tasks with the same `idempotencyKey` run the handler at most once within `idempotencyRetentionMs` (default 24h); subsequent executions return the stored result. Requires a shared KV store to hold across workers/instances
-- **Concurrency cap**: `maxConcurrency` is enforced via a distributed counter — at most N instances of a task type run concurrently across the fleet; a worker that can't reserve a slot leaves the task for another
+- **Concurrency cap**: `maxConcurrency` is enforced via leased slots in KV — at most N instances of a task type run concurrently across the fleet; a worker that can't reserve a slot leaves the task for another. A slot is renewed by its holder and expires within `lockTtlMs` (default 30s) if the holder dies, so a crash can never disable a task type
 - **State machine validity**: Tasks only transition through valid states:
   ```
   scheduled → claimed → running → success|failed|retry
@@ -23,7 +23,9 @@
 
 ### Claim/Lease
 - **Exclusive execution**: Only one worker executes a task at a time (via claim mechanism)
-- **Claim expiration**: If worker dies, claim expires after timeout, allowing reclaim
+- **Claim expiration**: If worker dies, claim expires after `lockTtlMs`, and any running worker on the same KV reclaims the task (it checks at start and every 5s)
+- **A lost run spends an attempt**: a task reclaimed while `running` is retried with `attempt + 1`, or dead-lettered if none remain (so `maxAttempts: 1` is never rerun after a crash, and a task that crashes its process can't loop forever). A task lost before it started, or requeued by `worker.stop()`, spends none
+- **Live tasks are not reclaimed**: the lock is renewed at least three times per TTL, whatever `heartbeatMs` is. A worker that loses its lock to another does not requeue the task
 - **No dual execution**: CAS operations prevent split-brain dual execution
 
 ### Recurring Tasks
@@ -54,8 +56,9 @@
 - ❌ **Clock accuracy**: System depends on reasonable clock accuracy (±seconds, not milliseconds)
 
 ### Execution (What We Don't Promise)
+- ❌ **Cap across a lease loss**: a process blocked or partitioned from KV for longer than the lease can briefly run alongside its replacement, as can workers older than 0.17.3 during a rolling upgrade (they don't see the leases)
 - ❌ **Exactly-once**: Delivery is at-least-once. `idempotencyKey` gives effectively-once execution within the retention window when a shared KV is configured, but without an idempotency key (or with a memory KV that isn't shared) a task may run more than once
-- ❌ **Concurrency cap without shared KV**: `maxConcurrency` enforcement relies on the shared counter; with the per-process memory KV it only bounds a single instance
+- ❌ **Concurrency cap without shared KV**: `maxConcurrency` enforcement relies on shared slot keys; with the per-process memory KV it only bounds a single instance
 - ❌ **Execution duration limits**: Tasks can run indefinitely (unless timeout configured)
 - ❌ **Permanent result persistence**: Completed task records (including results) are retained only until `resultExpiresAt` (`resultTtlMs`, default 24h), then removed on the next read; they are not kept forever
 
@@ -66,10 +69,10 @@
 ## Failure Modes
 
 ### Worker Crash During Execution
-- Task remains in `claimed` or `running` state
-- Claim expires after timeout
-- Another worker reclaims and retries
-- `runCount` is incremented for retry tracking
+- Task remains `running` (or `pending`/`scheduled` if it died between claim and start), listed as in flight
+- Claim and concurrency slot expire after `lockTtlMs`
+- Another worker reclaims it, within 5s of that
+- `attempt` is incremented; with none left the task goes to the DLQ ("Worker lost during execution")
 
 ### Database Unavailable
 - Task scheduling fails (reported to caller)
@@ -92,6 +95,7 @@
 - `tests/invariants/task-state-machine.test.ts` - State machine invariants
 - `tests/invariants/distributed-correctness.test.ts` - Distributed scenarios
 - `tests/tasks/worker.test.ts` - Worker behavior
+- `tests/tasks/crash-recovery.test.ts` - Killed workers, leases, reclaim
 - `tests/tasks/scheduler.test.ts` - Scheduling
 - `tests/tasks/retry.test.ts` - Retry logic
 - `tests/tasks/dlq.test.ts` - Dead letter queue

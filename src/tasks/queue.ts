@@ -10,9 +10,17 @@ const getQueueKey = (priority: number): string => {
   return `covara:tasks:queue:${bucket}`;
 };
 
+// Tasks between being claimed and being settled, so a claim whose worker died
+// can be found again.
+export const INFLIGHT_KEY = "covara:tasks:inflight";
+
 export interface TaskQueue {
   add(taskId: string, priority: number, scheduledFor: number): Promise<void>;
-  claimNext(workerId: string, taskTypes?: string[]): Promise<Task | null>;
+  claimNext(
+    workerId: string,
+    taskTypes?: string[],
+    lockTtlSeconds?: number
+  ): Promise<Task | null>;
   remove(taskId: string, priority: number): Promise<void>;
   getQueueDepth(priority?: number): Promise<number>;
   getScheduledTasks(limit?: number): Promise<string[]>;
@@ -34,7 +42,8 @@ export const createTaskQueue = (kv: KVAdapter): TaskQueue => {
 
     async claimNext(
       workerId: string,
-      taskTypes?: string[]
+      taskTypes?: string[],
+      lockTtlSeconds?: number
     ): Promise<Task | null> {
       const now = Date.now();
 
@@ -46,7 +55,7 @@ export const createTaskQueue = (kv: KVAdapter): TaskQueue => {
         });
 
         for (const taskId of taskIds) {
-          const acquired = await lock.acquire(taskId, workerId);
+          const acquired = await lock.acquire(taskId, workerId, lockTtlSeconds);
           if (!acquired) continue;
 
           const task = await storage.get(taskId);
@@ -67,6 +76,7 @@ export const createTaskQueue = (kv: KVAdapter): TaskQueue => {
             continue;
           }
 
+          await kv.zadd(INFLIGHT_KEY, now, taskId);
           await kv.zrem(queueKey, taskId);
           return task;
         }

@@ -8,11 +8,11 @@ import {
   StopOptions,
 } from "./types";
 import { createTaskLock } from "./lock";
-import { createTaskQueue } from "./queue";
+import { createTaskQueue, INFLIGHT_KEY } from "./queue";
 import { createTaskStorage } from "./storage";
 import { createDeadLetterQueue } from "./dlq";
 import { resolveRetryDelay, shouldRetry } from "./retry";
-import { createConcurrencyLimiter } from "./concurrency";
+import { createSlotLeases, ReleaseSlot } from "./concurrency";
 import {
   createIdempotencyStore,
   DEFAULT_IDEMPOTENCY_RETENTION_MS,
@@ -27,6 +27,8 @@ import {
 
 const WORKERS_KEY = "covara:tasks:workers";
 const NOTIFY_CHANNEL = "covara:tasks:notify";
+const RUNNING_INDEX_KEY = "covara:tasks:status:running";
+const RECLAIM_INTERVAL_MS = 5000;
 
 export const DEFAULT_RESULT_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -56,8 +58,9 @@ export const createTaskWorker = (
   const workerId = config.id ?? `worker-${crypto.randomUUID().slice(0, 8)}`;
   const concurrency = config.concurrency ?? 5;
   const pollInterval = config.pollIntervalMs ?? 1000;
-  const lockTtl = Math.ceil((config.lockTtlMs ?? 30000) / 1000);
-  const heartbeatInterval = config.heartbeatMs ?? 10000;
+  const lockTtl = Math.max(1, Math.ceil((config.lockTtlMs ?? 30000) / 1000));
+  // A lock that lapses under a live task would get it reclaimed and run twice.
+  const heartbeatInterval = Math.min(config.heartbeatMs ?? 10000, (lockTtl * 1000) / 3);
 
   const trackedDb = dbConfig
     ? isTrackedDb(dbConfig.db)
@@ -68,7 +71,7 @@ export const createTaskWorker = (
   const lock = createTaskLock(kv);
   const queue = createTaskQueue(kv);
   const storage = createTaskStorage(kv);
-  const concurrencyLimiter = createConcurrencyLimiter(kv);
+  const slots = createSlotLeases(kv, lockTtl * 1000);
   const idempotencyStore = createIdempotencyStore(kv);
 
   let running = false;
@@ -79,6 +82,9 @@ export const createTaskWorker = (
   const startTime = Date.now();
   const activeTasks = new Map<string, AbortController>();
   const forceStopped = new Set<string>();
+  const heldSlots = new Map<string, ReleaseSlot>();
+  let reclaimTimer: ReturnType<typeof setInterval> | undefined;
+  let reclaiming = false;
 
   const requeue = async (task: Task): Promise<string> => {
     await storage.store(task);
@@ -102,7 +108,7 @@ export const createTaskWorker = (
       const backoff = resolveRetryDelay(error, nextAttempt, retryConfig);
       const scheduledFor = Date.now() + backoff;
 
-      await storage.updateStatus(task.id, "running", "scheduled", {
+      await storage.updateStatus(task.id, task.status, "scheduled", {
         attempt: nextAttempt,
         scheduledFor,
         lastError: error.message,
@@ -119,10 +125,12 @@ export const createTaskWorker = (
   const processTask = async (
     task: Task,
     definition: TaskDefinition,
-    reservedConcurrency: boolean
+    releaseSlot: ReleaseSlot | undefined
   ): Promise<void> => {
     const controller = new AbortController();
     activeTasks.set(task.id, controller);
+    if (releaseSlot) heldSlots.set(task.id, releaseSlot);
+    let current = task;
 
     const idempotencyKey = task.idempotencyKey;
     const retentionMs =
@@ -131,10 +139,14 @@ export const createTaskWorker = (
     const resultExpiresAt = Date.now() + resultTtlMs;
 
     const heartbeat = setInterval(async () => {
-      await storage.setHeartbeat(task.id, Date.now());
-      const extended = await lock.extend(task.id, workerId, lockTtl);
-      if (!extended) {
-        controller.abort();
+      try {
+        await storage.setHeartbeat(task.id, Date.now());
+        const extended = await lock.extend(task.id, workerId, lockTtl);
+        if (!extended) {
+          controller.abort();
+        }
+      } catch (error) {
+        console.error(`Task ${task.id} heartbeat failed:`, error);
       }
     }, heartbeatInterval);
 
@@ -152,12 +164,15 @@ export const createTaskWorker = (
         }
       }
 
+      if (forceStopped.has(task.id)) return;
+
       const startedAt = Date.now();
       await storage.updateStatus(task.id, task.status, "running", {
         workerId,
         startedAt,
         lastHeartbeatAt: startedAt,
       });
+      current = { ...task, status: "running" };
 
       const ctx: TaskContext = {
         taskId: task.id,
@@ -208,63 +223,155 @@ export const createTaskWorker = (
       if (forceStopped.has(task.id)) return;
 
       if (controller.signal.aborted) {
+        // Someone else holding the lock means the task is theirs now.
+        if (!(await lock.acquire(task.id, workerId, lockTtl))) return;
         await storage.updateStatus(task.id, "running", "scheduled", {
           lastError: "Worker lost lock",
           workerId: undefined,
         });
         await queue.add(task.id, task.priority, Date.now());
       } else {
-        await handleTaskError(task, error as Error, definition);
+        await handleTaskError(current, error as Error, definition);
       }
     } finally {
       clearInterval(heartbeat);
+      // stop() does its own cleanup, and must requeue before the claim is dropped.
+      const stopped = forceStopped.delete(task.id);
       activeTasks.delete(task.id);
-      forceStopped.delete(task.id);
-      if (reservedConcurrency) {
-        await concurrencyLimiter.release(task.name);
+      heldSlots.delete(task.id);
+      await releaseSlot?.();
+      if (!stopped) {
+        if (await lock.isHeld(task.id, workerId)) await kv.zrem(INFLIGHT_KEY, task.id);
+        await lock.release(task.id, workerId);
       }
-      await lock.release(task.id, workerId);
     }
   };
 
-  const poll = async (): Promise<void> => {
-    while (running && !draining && !paused) {
-      if (activeTasks.size >= concurrency) {
-        await sleep(100);
-        continue;
-      }
+  const unclaim = async (task: Task): Promise<void> => {
+    await queue.add(task.id, task.priority, Date.now());
+    await kv.zrem(INFLIGHT_KEY, task.id);
+    await lock.release(task.id, workerId);
+  };
 
-      const task = await queue.claimNext(workerId, config.taskTypes);
-      if (!task) {
+  const pollOnce = async (): Promise<void> => {
+    if (activeTasks.size >= concurrency) {
+      await sleep(100);
+      return;
+    }
+
+    const task = await queue.claimNext(workerId, config.taskTypes, lockTtl);
+    if (!task) {
+      await sleep(pollInterval);
+      return;
+    }
+
+    const definition = registry.get(task.name);
+    if (!definition) {
+      await dlq.add(task, `Unknown task type: ${task.name}`);
+      failedCount++;
+      await kv.zrem(INFLIGHT_KEY, task.id);
+      await lock.release(task.id, workerId);
+      return;
+    }
+
+    let releaseSlot: ReleaseSlot | undefined;
+    if (definition.maxConcurrency && definition.maxConcurrency > 0) {
+      releaseSlot = (await slots.acquire(task.name, definition.maxConcurrency)) ?? undefined;
+      if (!releaseSlot) {
+        await unclaim(task);
         await sleep(pollInterval);
+        return;
+      }
+    }
+
+    // stop() or drain() may have been called while the claim was in flight.
+    if (!running || draining) {
+      await releaseSlot?.();
+      await unclaim(task);
+      return;
+    }
+
+    processTask(task, definition, releaseSlot).catch((err) =>
+      console.error(`Task ${task.id} error:`, err)
+    );
+  };
+
+  const poll = async (): Promise<void> => {
+    while (running && !draining) {
+      if (paused) {
+        await sleep(Math.min(100, pollInterval));
         continue;
       }
+      try {
+        await pollOnce();
+      } catch (error) {
+        console.error(`Task worker ${workerId} poll failed:`, error);
+        await sleep(pollInterval);
+      }
+    }
+  };
 
-      const definition = registry.get(task.name);
-      if (!definition) {
-        await dlq.add(task, `Unknown task type: ${task.name}`);
-        failedCount++;
-        await lock.release(task.id, workerId);
-        continue;
+  // An in-flight task whose lock has expired lost its worker. Holding that lock
+  // while requeueing is what keeps two reclaimers, or a reclaimer and a live
+  // worker, from both acting on it.
+  const reclaimTask = async (taskId: string): Promise<void> => {
+    const reclaimer = `${workerId}:reclaim`;
+    if (!(await lock.acquire(taskId, reclaimer, lockTtl))) return;
+    try {
+      const task = await storage.get(taskId);
+
+      if (task?.status === "running") {
+        // No workerId: owned by the Cloudflare Queues consumer, which retries it.
+        if (!task.workerId) return;
+        const attempt = task.attempt + 1;
+        const reason = "Worker lost during execution";
+        if (attempt >= task.maxAttempts) {
+          await dlq.add({ ...task, attempt }, reason);
+          failedCount++;
+        } else {
+          const scheduledFor = Date.now();
+          await storage.updateStatus(taskId, "running", "scheduled", {
+            attempt,
+            scheduledFor,
+            lastError: reason,
+            workerId: undefined,
+          });
+          await queue.add(taskId, task.priority, scheduledFor);
+        }
+      } else {
+        if (task?.status === "pending" || task?.status === "scheduled") {
+          await queue.add(taskId, task.priority, task.scheduledFor);
+        }
+        await kv.srem(RUNNING_INDEX_KEY, taskId);
       }
 
-      let reservedConcurrency = false;
-      if (definition.maxConcurrency && definition.maxConcurrency > 0) {
-        reservedConcurrency = await concurrencyLimiter.tryReserve(
-          task.name,
-          definition.maxConcurrency
-        );
-        if (!reservedConcurrency) {
-          await lock.release(task.id, workerId);
-          await queue.add(task.id, task.priority, Date.now());
-          await sleep(pollInterval);
-          continue;
+      await kv.zrem(INFLIGHT_KEY, taskId);
+    } finally {
+      await lock.release(taskId, reclaimer);
+    }
+  };
+
+  const reclaimLostTasks = async (): Promise<void> => {
+    if (reclaiming) return;
+    reclaiming = true;
+    try {
+      const candidates = new Set([
+        ...(await kv.zrange(INFLIGHT_KEY, 0, -1)),
+        ...(await kv.smembers(RUNNING_INDEX_KEY)),
+      ]);
+      for (const taskId of candidates) {
+        if (!running) break;
+        if (activeTasks.has(taskId)) continue;
+        try {
+          await reclaimTask(taskId);
+        } catch (error) {
+          console.error(`Task ${taskId} reclaim failed:`, error);
         }
       }
-
-      processTask(task, definition, reservedConcurrency).catch((err) =>
-        console.error(`Task ${task.id} error:`, err)
-      );
+    } catch (error) {
+      console.error(`Task worker ${workerId} reclaim failed:`, error);
+    } finally {
+      reclaiming = false;
     }
   };
 
@@ -283,6 +390,14 @@ export const createTaskWorker = (
       }
 
       poll();
+
+      void reclaimLostTasks();
+      clearInterval(reclaimTimer);
+      reclaimTimer = setInterval(
+        () => void reclaimLostTasks(),
+        Math.min(RECLAIM_INTERVAL_MS, lockTtl * 1000)
+      );
+      (reclaimTimer as { unref?: () => void }).unref?.();
     },
 
     async drain(timeoutMs: number = 30000): Promise<void> {
@@ -304,20 +419,32 @@ export const createTaskWorker = (
 
       running = false;
       draining = false;
+      clearInterval(reclaimTimer);
 
-      for (const [taskId, controller] of activeTasks) {
+      // A snapshot: aborting lets each task's own cleanup shrink both maps.
+      for (const [taskId, controller] of [...activeTasks]) {
+        if (!activeTasks.has(taskId)) continue;
+        const releaseSlot = heldSlots.get(taskId);
         forceStopped.add(taskId);
         controller.abort();
-        await storage.updateStatus(taskId, "running", "scheduled", {
-          workerId: undefined,
-        });
         const task = await storage.get(taskId);
-        if (task) {
-          await queue.add(taskId, task.priority, Date.now());
+        // Not if it finished meanwhile, or another worker has taken it over.
+        if (task && (await lock.isHeld(taskId, workerId))) {
+          if (task.status === "running") {
+            await storage.updateStatus(taskId, "running", "scheduled", {
+              workerId: undefined,
+            });
+          }
+          if (["running", "pending", "scheduled"].includes(task.status)) {
+            await queue.add(taskId, task.priority, Date.now());
+          }
+          await kv.zrem(INFLIGHT_KEY, taskId);
         }
+        await releaseSlot?.();
         await lock.release(taskId, workerId);
       }
       activeTasks.clear();
+      heldSlots.clear();
 
       try {
         await kv.unsubscribe(NOTIFY_CHANNEL);

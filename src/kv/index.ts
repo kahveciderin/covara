@@ -97,7 +97,13 @@ export const createKV = async (config: KVConfig): Promise<KVAdapter> => {
     kv = createMemoryKV(config.prefix);
   }
 
-  await kv.connect();
+  try {
+    await kv.connect();
+  } catch (error) {
+    // The caller never gets a handle to stop this client's retry loop with.
+    await kv.disconnect().catch(() => {});
+    throw error;
+  }
   return kv;
 };
 

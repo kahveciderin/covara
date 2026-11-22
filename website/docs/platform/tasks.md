@@ -101,7 +101,20 @@ While running, the worker writes a heartbeat (`lastHeartbeatAt`, default every 1
 ### Idempotency & concurrency (enforced)
 
 - **Idempotency:** when `idempotencyKey` is set, the first successful completion is recorded in KV. A second execution with the same key within `idempotencyRetentionMs` (default 24h) short-circuits and returns the stored result. Use a distributed KV so this holds across workers.
-- **Concurrency:** `maxConcurrency` is enforced via a distributed counter — workers reserve a slot before running and release on completion; over-cap tasks wait for free capacity.
+- **Concurrency:** `maxConcurrency` is enforced via leased slots — workers reserve a slot before running, renew it while they work, and release it on completion or `stop()`; over-cap tasks wait for free capacity.
+
+### Crashes and restarts
+
+If a worker is killed mid-task, its lock and slot expire within `lockTtlMs` (default 30s). Any worker then requeues the task with one attempt spent, or sends it to the DLQ if none are left. A task with `maxAttempts: 1` is therefore not rerun after a crash.
+
+Covara installs no signal handlers for workers. To hand tasks back immediately on deploy, stop them yourself; `stop()` requeues without spending an attempt:
+
+```typescript
+process.on("SIGTERM", async () => {
+  await Promise.all(workers.map((w) => w.stop({ drain: true, timeoutMs: 8000 })));
+  process.exit(0);
+});
+```
 
 ### Result TTL
 

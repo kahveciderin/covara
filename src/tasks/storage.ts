@@ -38,6 +38,15 @@ const serializeTask = (task: Task): Record<string, string> => {
   return result;
 };
 
+// Results written before 0.17.3 stored strings unencoded.
+const parseResult = (raw: string): unknown => {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+};
+
 const deserializeTask = (data: Record<string, string>): Task => ({
   id: data.id,
   name: data.name,
@@ -52,7 +61,7 @@ const deserializeTask = (data: Record<string, string>): Task => ({
   ...(data.completedAt && { completedAt: parseInt(data.completedAt, 10) }),
   ...(data.workerId && { workerId: data.workerId }),
   ...(data.lastError && { lastError: data.lastError }),
-  ...(data.result && { result: JSON.parse(data.result) }),
+  ...(data.result && { result: parseResult(data.result) }),
   ...(data.idempotencyKey && { idempotencyKey: data.idempotencyKey }),
   ...(data.recurring && { recurring: JSON.parse(data.recurring) }),
   ...(data.progress && { progress: JSON.parse(data.progress) }),
@@ -161,7 +170,7 @@ export const createTaskStorage = (kv: KVAdapter): TaskStorage => ({
         continue;
       }
       const serialized =
-        typeof value === "object" ? JSON.stringify(value) : String(value);
+        key === "result" || typeof value === "object" ? JSON.stringify(value) : String(value);
       multi.hset(`${TASK_DATA_PREFIX}${taskId}`, key, serialized);
     }
     multi.hset(`${TASK_DATA_PREFIX}${taskId}`, "status", newStatus);
