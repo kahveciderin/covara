@@ -224,6 +224,7 @@ export const createQueueConsumer = (
 
     await storage.store({ ...task, status: "running", startedAt: Date.now() });
 
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       if (idempotencyKey) {
         const completed = await idempotencyStore.getCompleted(idempotencyKey);
@@ -257,9 +258,9 @@ export const createQueueConsumer = (
       };
 
       const timeoutMs = definition.timeout ?? 30000;
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Task timeout")), timeoutMs)
-      );
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Task timeout")), timeoutMs);
+      });
 
       const result = await Promise.race([
         definition.handler(ctx, payload.input),
@@ -297,6 +298,8 @@ export const createQueueConsumer = (
         await dlq.add({ ...task, attempt: attemptNumber }, err.message);
         message.ack();
       }
+    } finally {
+      clearTimeout(timeout);
     }
   };
 

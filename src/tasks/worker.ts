@@ -83,6 +83,9 @@ export const createTaskWorker = (
   const activeTasks = new Map<string, AbortController>();
   const forceStopped = new Set<string>();
   const heldSlots = new Map<string, ReleaseSlot>();
+  // A task's own timers: stop() must clear them even if its handler never settles,
+  // or they keep the process alive.
+  const taskTimers = new Map<string, () => void>();
   let reclaimTimer: ReturnType<typeof setInterval> | undefined;
   let reclaiming = false;
 
@@ -193,9 +196,14 @@ export const createTaskWorker = (
       };
 
       const timeoutMs = definition.timeout ?? 30000;
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Task timeout")), timeoutMs)
-      );
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Task timeout")), timeoutMs);
+      });
+      taskTimers.set(task.id, () => {
+        clearInterval(heartbeat);
+        clearTimeout(timeout);
+      });
 
       const result = await Promise.race([
         definition.handler(ctx, task.input),
@@ -235,6 +243,8 @@ export const createTaskWorker = (
       }
     } finally {
       clearInterval(heartbeat);
+      taskTimers.get(task.id)?.();
+      taskTimers.delete(task.id);
       // stop() does its own cleanup, and must requeue before the claim is dropped.
       const stopped = forceStopped.delete(task.id);
       activeTasks.delete(task.id);
@@ -427,6 +437,8 @@ export const createTaskWorker = (
         const releaseSlot = heldSlots.get(taskId);
         forceStopped.add(taskId);
         controller.abort();
+        taskTimers.get(taskId)?.();
+        taskTimers.delete(taskId);
         const task = await storage.get(taskId);
         // Not if it finished meanwhile, or another worker has taken it over.
         if (task && (await lock.isHeld(taskId, workerId))) {
