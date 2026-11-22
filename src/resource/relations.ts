@@ -8,6 +8,7 @@ import {
   AnyColumn,
   getTableColumns,
   getTableName,
+  getTableUniqueName,
   inArray,
   is,
 } from "drizzle-orm";
@@ -16,7 +17,8 @@ import { PgTable, getTableConfig as pgTableConfig } from "drizzle-orm/pg-core";
 import { DrizzleDatabase, CustomOperator, UserContext } from "./types";
 import { createResourceFilter } from "./filter";
 import { getQueryableFields } from "./field-policy";
-import { getResourceScopeResolver } from "@/ui/schema-registry";
+import { getResourceSchema, getResourceScopeResolver } from "@/ui/schema-registry";
+import { FilterParseError } from "./error";
 
 // Rows returned by drizzle's `db.select()` are keyed by the schema's JS property
 // name, but column metadata (`foreignKey.name`, `references.name`,
@@ -83,13 +85,20 @@ const relationNameFromForeignKey = (columnName: string): string => {
   return stripped.length > 0 ? stripped : columnName;
 };
 
+// pgSchema("auth").table("users") is not the registered public "users".
+const sameTable = (a: Table<TableConfig>, b: Table<TableConfig>): boolean =>
+  getTableUniqueName(a) === getTableUniqueName(b);
+
 // Derive a RelationsConfig from foreign keys: `belongsTo` from this table's own
 // FKs, and `hasMany` from other registered tables whose FKs reference this one.
 // Only single-column FKs to registered resources are discovered (no guessing);
 // the result reuses the same scope-enforced loader as explicit relations.
+// `includeUnregistered` is only for trusted scope traversal, which never returns
+// the target's rows.
 export const discoverRelations = (
   sourceSchema: Table<TableConfig>,
-  registry: Map<string, { schema: Table<TableConfig> }>
+  registry: Map<string, { schema: Table<TableConfig> }>,
+  options: { includeUnregistered?: boolean } = {}
 ): RelationsConfig => {
   const discovered: RelationsConfig = {};
   const sourceName = getTableName(sourceSchema);
@@ -97,6 +106,10 @@ export const discoverRelations = (
   for (const fk of readForeignKeys(sourceSchema)) {
     const ref = fk.reference();
     if (ref.columns.length !== 1 || ref.foreignColumns.length !== 1) continue;
+    if (!options.includeUnregistered) {
+      const registered = registry.get(getTableName(ref.foreignTable));
+      if (!registered || !sameTable(registered.schema, ref.foreignTable)) continue;
+    }
     const name = relationNameFromForeignKey(ref.columns[0].name);
     if (discovered[name]) continue;
     discovered[name] = {
@@ -114,7 +127,7 @@ export const discoverRelations = (
     for (const fk of readForeignKeys(other)) {
       const ref = fk.reference();
       if (ref.columns.length !== 1 || ref.foreignColumns.length !== 1) continue;
-      if (getTableName(ref.foreignTable) !== sourceName) continue;
+      if (!sameTable(ref.foreignTable, sourceSchema)) continue;
       const name = getTableName(other);
       if (discovered[name]) continue;
       discovered[name] = {
@@ -354,8 +367,69 @@ export class RelationLoader<TConfig extends TableConfig> {
     return specs;
   }
 
+  // The registered resource whose policies govern this relation. The table is
+  // authoritative; `relation.resource` covers aliases and is only a fallback,
+  // since a mistyped name must not switch the policies off.
+  private targetResource(relation: RelationConfig<TConfig, TableConfig>) {
+    const byTable = getResourceSchema(getTableName(relation.schema));
+    if (byTable && sameTable(byTable.schema, relation.schema)) return byTable;
+    return getResourceSchema(relation.resource);
+  }
+
+  // Nested includes join on the target's own primary key, which for hasMany is
+  // not the column `references` points at.
+  private nestedIdColumn(relation: RelationConfig<TConfig, TableConfig>): string {
+    return this.targetResource(relation)?.idColumn.name ?? relation.references.name ?? "id";
+  }
+
+  private visibleColumns(
+    relation: RelationConfig<TConfig, TableConfig>,
+    include: IncludeSpec,
+    ctx: RelationLoadContext
+  ): Set<string> {
+    let keys = Object.keys(getTableColumns(relation.schema));
+    const narrow = (allowed: string[] | undefined) => {
+      if (allowed) keys = keys.filter((key) => allowed.includes(key));
+    };
+    narrow(relation.defaultSelect);
+    if (ctx.enforceScope) narrow(this.targetResource(relation)?.config.fields?.readable);
+    narrow(include.select);
+    return new Set(keys);
+  }
+
+  // What to query: the visible columns plus the key rows are matched on. Nested
+  // includes join on columns that may be hidden, so they need the whole row;
+  // `project` strips it afterwards.
+  private queryColumns(
+    relation: RelationConfig<TConfig, TableConfig>,
+    include: IncludeSpec,
+    visible: Set<string>
+  ): Record<string, AnyColumn> {
+    const columns = getTableColumns(relation.schema) as Record<string, AnyColumn>;
+    if (include.nested?.length) return columns;
+    const needed = new Set(visible);
+    if (relation.type === "belongsTo") {
+      needed.add(jsKeyForColumnName(relation.schema, relation.references.name));
+    }
+    const picked = Object.entries(columns).filter(([key]) => needed.has(key));
+    return picked.length > 0 ? Object.fromEntries(picked) : columns;
+  }
+
+  private project(
+    relation: RelationConfig<TConfig, TableConfig>,
+    visible: Set<string>,
+    value: unknown
+  ): unknown {
+    if (Array.isArray(value)) return value.map((row) => this.project(relation, visible, row));
+    if (value === null || typeof value !== "object") return value ?? null;
+    const columns = getTableColumns(relation.schema);
+    return Object.fromEntries(
+      Object.entries(value).filter(([key]) => visible.has(key) || !Object.prototype.hasOwnProperty.call(columns, key))
+    );
+  }
+
   private buildRelationWhere(
-    targetSchema: Table<TableConfig>,
+    relation: RelationConfig<TConfig, TableConfig>,
     filterExpr: string | undefined,
     baseCondition: SQLWrapper,
     scopeCondition?: SQLWrapper | null
@@ -368,9 +442,13 @@ export class RelationLoader<TConfig extends TableConfig> {
 
     // The include filter is user input: it may only reference the target
     // resource's filterable columns, or it becomes an oracle for hidden ones.
-    const targetName = getTableName(targetSchema);
-    const allowedFields = getQueryableFields(targetName)?.filter ?? undefined;
-    const cacheKey = `${targetName}\u0000${filterExpr}`;
+    // An unregistered target has no policy, so `defaultSelect` is the allowlist.
+    const targetSchema = relation.schema;
+    const target = this.targetResource(relation);
+    const allowedFields = target
+      ? (getQueryableFields(target.name)?.filter ?? undefined)
+      : relation.defaultSelect;
+    const cacheKey = JSON.stringify([getTableUniqueName(targetSchema), allowedFields, filterExpr]);
     let filter = this.filterCache.get(cacheKey);
     if (!filter) {
       filter = createResourceFilter(
@@ -379,6 +457,9 @@ export class RelationLoader<TConfig extends TableConfig> {
         allowedFields ? { allowedFields } : undefined
       );
       this.filterCache.set(cacheKey, filter);
+    }
+    if (filter.compile(filterExpr).requiresJoin()) {
+      throw new FilterParseError("Relation paths are not allowed in filter queries");
     }
 
     return and(condition, filter.convert(filterExpr)) as SQLWrapper;
@@ -396,7 +477,8 @@ export class RelationLoader<TConfig extends TableConfig> {
     ctx: RelationLoadContext
   ): Promise<SQLWrapper | null | "DENY"> {
     if (!ctx.enforceScope) return null;
-    const resolver = getResourceScopeResolver(relation.resource);
+    const target = this.targetResource(relation);
+    const resolver = target ? getResourceScopeResolver(target.name) : null;
     if (!resolver) return null;
     if (resolver.isPublic("read")) return null;
     let scope;
@@ -502,7 +584,6 @@ export class RelationLoader<TConfig extends TableConfig> {
     ctx: RelationLoadContext
   ): Promise<unknown> {
     const targetSchema = relation.schema;
-    const targetColumns = getTableColumns(targetSchema);
 
     const isCollection =
       relation.type === "hasMany" || relation.type === "manyToMany";
@@ -510,13 +591,8 @@ export class RelationLoader<TConfig extends TableConfig> {
     const sc = await this.scopeCondition(relation, ctx);
     if (sc === "DENY") return isCollection ? [] : null;
 
-    const selectColumns = include.select
-      ? Object.fromEntries(
-          include.select
-            .filter((f) => f in targetColumns)
-            .map((f) => [f, targetColumns[f]])
-        )
-      : targetColumns;
+    const visible = this.visibleColumns(relation, include, ctx);
+    const selectColumns = this.queryColumns(relation, include, visible);
 
     let query = this.db.select(selectColumns).from(targetSchema);
 
@@ -532,7 +608,7 @@ export class RelationLoader<TConfig extends TableConfig> {
         if (fkValue == null) return null;
         query = query.where(
           this.buildRelationWhere(
-            targetSchema,
+            relation,
             include.filter,
             eq(relation.references, fkValue as never),
             sc
@@ -545,7 +621,7 @@ export class RelationLoader<TConfig extends TableConfig> {
         const sourceId = item[this.srcKey(idColumn)];
         query = query.where(
           this.buildRelationWhere(
-            targetSchema,
+            relation,
             include.filter,
             eq(relation.foreignKey, sourceId as never),
             sc
@@ -567,7 +643,7 @@ export class RelationLoader<TConfig extends TableConfig> {
           )
           .where(
             this.buildRelationWhere(
-              targetSchema,
+              relation,
               include.filter,
               eq(relation.through.sourceKey, sourceId as never),
               sc
@@ -593,7 +669,9 @@ export class RelationLoader<TConfig extends TableConfig> {
 
     const results = await query;
 
-    if (include.nested && include.nested.length > 0) {
+    let related: unknown = isCollection ? results : (results[0] ?? null);
+
+    if (related && include.nested && include.nested.length > 0) {
       const targetResource = this.resourceRegistry.get(relation.resource);
       if (targetResource?.config.relations) {
         const nestedLoader = new RelationLoader(
@@ -604,37 +682,27 @@ export class RelationLoader<TConfig extends TableConfig> {
           this.config
         );
 
-        const targetIdColumn =
-          (
-            relation.references as AnyColumn & { name: string }
-          ).name ?? "id";
+        const targetIdColumn = this.nestedIdColumn(relation);
 
-        if (relation.type === "hasMany" || relation.type === "manyToMany") {
-          return nestedLoader.loadRelationsForItems(
-            results as Record<string, unknown>[],
-            include.nested,
-            targetIdColumn,
-            depth + 1,
-            ctx
-          );
-        } else {
-          return results[0]
-            ? nestedLoader.loadRelationsForItem(
-                results[0] as Record<string, unknown>,
-                include.nested,
-                targetIdColumn,
-                depth + 1,
-                ctx
-              )
-            : null;
-        }
+        related = isCollection
+          ? await nestedLoader.loadRelationsForItems(
+              related as Record<string, unknown>[],
+              include.nested,
+              targetIdColumn,
+              depth + 1,
+              ctx
+            )
+          : await nestedLoader.loadRelationsForItem(
+              related as Record<string, unknown>,
+              include.nested,
+              targetIdColumn,
+              depth + 1,
+              ctx
+            );
       }
     }
 
-    if (relation.type === "hasMany" || relation.type === "manyToMany") {
-      return results;
-    }
-    return results[0] ?? null;
+    return this.project(relation, visible, related);
   }
 
   private async batchLoadRelation(
@@ -647,7 +715,6 @@ export class RelationLoader<TConfig extends TableConfig> {
   ): Promise<Map<string, unknown>> {
     const result = new Map<string, unknown>();
     const targetSchema = relation.schema;
-    const targetColumns = getTableColumns(targetSchema);
 
     const sc = await this.scopeCondition(relation, ctx);
     if (sc === "DENY") return result;
@@ -656,13 +723,8 @@ export class RelationLoader<TConfig extends TableConfig> {
     const sourceIds = items.map((item) => item[idKey]).filter((id) => id != null);
     if (sourceIds.length === 0) return result;
 
-    const selectColumns = include.select
-      ? Object.fromEntries(
-          include.select
-            .filter((f) => f in targetColumns)
-            .map((f) => [f, targetColumns[f]])
-        )
-      : targetColumns;
+    const visible = this.visibleColumns(relation, include, ctx);
+    const selectColumns = this.queryColumns(relation, include, visible);
 
     switch (relation.type) {
       case "belongsTo": {
@@ -687,7 +749,7 @@ export class RelationLoader<TConfig extends TableConfig> {
           .from(targetSchema)
           .where(
             this.buildRelationWhere(
-              targetSchema,
+              relation,
               include.filter,
               inArray(relation.references, fkValues as never[]),
               sc
@@ -730,7 +792,7 @@ export class RelationLoader<TConfig extends TableConfig> {
               .from(targetSchema)
               .where(
                 this.buildRelationWhere(
-                  targetSchema,
+                  relation,
                   include.filter,
                   eq(relation.foreignKey, sourceId as never),
                   sc
@@ -761,7 +823,7 @@ export class RelationLoader<TConfig extends TableConfig> {
           .from(targetSchema)
           .where(
             this.buildRelationWhere(
-              targetSchema,
+              relation,
               include.filter,
               inArray(relation.foreignKey, sourceIds as never[]),
               sc
@@ -809,7 +871,7 @@ export class RelationLoader<TConfig extends TableConfig> {
               )
               .where(
                 this.buildRelationWhere(
-                  targetSchema,
+                  relation,
                   include.filter,
                   eq(relation.through.sourceKey, sourceId as never),
                   sc
@@ -841,7 +903,7 @@ export class RelationLoader<TConfig extends TableConfig> {
           )
           .where(
             this.buildRelationWhere(
-              targetSchema,
+              relation,
               include.filter,
               inArray(relation.through.sourceKey, sourceIds as never[]),
               sc
@@ -874,8 +936,7 @@ export class RelationLoader<TConfig extends TableConfig> {
           this.config
         );
 
-        const targetIdColumn =
-          (relation.references as AnyColumn & { name: string }).name ?? "id";
+        const targetIdColumn = this.nestedIdColumn(relation);
 
         for (const [sourceId, related] of result) {
           if (Array.isArray(related)) {
@@ -899,6 +960,10 @@ export class RelationLoader<TConfig extends TableConfig> {
           }
         }
       }
+    }
+
+    for (const [sourceId, related] of result) {
+      result.set(sourceId, this.project(relation, visible, related));
     }
 
     return result;

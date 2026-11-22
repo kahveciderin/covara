@@ -709,12 +709,15 @@ const readAttachmentPatterns = (socket: WebSocketLike): string[] => {
 const createWebSocketResponse = (client: WebSocketLike): Response => {
   const init = { status: 101, webSocket: client } as ResponseInit;
   try {
-    // workerd accepts status 101 with a webSocket; Node's Response does not,
-    // so fall back to a structurally compatible object for non-CF runtimes
-    return new Response(null, init);
+    // workerd accepts status 101 with a webSocket; Node's Response throws, and
+    // the one @hono/node-server installs silently drops the socket, so fall
+    // back to a structurally compatible object for non-CF runtimes
+    const response = new Response(null, init);
+    if ((response as unknown as { webSocket?: WebSocketLike }).webSocket) return response;
   } catch {
-    return { status: 101, ok: false, webSocket: client } as unknown as Response;
+    // not workerd
   }
+  return { status: 101, ok: false, webSocket: client } as unknown as Response;
 };
 
 const jsonResponse = (body: unknown, status: number): Response =>

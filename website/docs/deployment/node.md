@@ -38,7 +38,8 @@ By default `startServer` installs `SIGTERM`/`SIGINT` handlers that drain the ins
 
 1. Flips readiness so [`/readyz`](../platform/health.md) returns `503` — load balancers and Kubernetes readiness probes stop routing new traffic here.
 2. Closes long-lived [SSE subscriptions](../realtime/subscriptions.md) cleanly so clients reconnect to a healthy instance instead of seeing a dropped socket.
-3. Waits a bounded drain window (`drainTimeoutMs`, default 10s) before closing the listener and exiting.
+3. Waits up to 5s for background writes (session activity stamps) to settle, and starts no new ones. If you manage shutdown yourself, `await beginShutdown()` before closing your database.
+4. Waits a bounded drain window (`drainTimeoutMs`, default 10s) before closing the listener and exiting.
 
 ```typescript
 await startServer(app, {

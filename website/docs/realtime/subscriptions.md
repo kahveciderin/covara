@@ -192,6 +192,8 @@ useResource(todos, {
 
 Subscriptions respect [auth scopes](../auth/scopes.md) (`auth.subscribe`). If a user's auth expires, the server sends `invalidate` with reason `"Authentication expired"`.
 
+With a relation-path scope, writes to the resource's rows are matched with a SQL query and delivered immediately; see [relation-path scopes](../auth/scopes.md#subscriptions-with-relation-path-scopes).
+
 A subscription's scope is otherwise resolved once at connect. To catch **out-of-band** permission changes (e.g. losing org membership without any row mutation), each subscription periodically re-resolves its scope every `sse.scopeRecheckMs` (default 30s, `0` disables) and emits `removed`/`added` for rows that left/entered scope. This reflects changes the scope resolver recomputes on each call (e.g. resolvers that query current membership/roles); a resolver reading only static fields off the connect-time user still requires a reconnect. See the [subscriptions contract](../contracts/subscriptions.md#scope-changes).
 
 ## Cross-instance fan-out

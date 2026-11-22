@@ -51,6 +51,10 @@ Content-Type: application/json
 - Returns the created row (`201`), read-masked with [computed fields](./fields.md#computed-fields) applied.
 - With [`nestedWrites`](./nested-writes.md), embedded relation objects are created in the same transaction.
 
+### Dates in request bodies
+
+`timestamp`/`date` columns in Date mode accept ISO 8601 strings on every write route: a date (`2026-11-22`, midnight UTC) or a date-time with an offset (`2026-11-22T10:00:00Z`, `2026-11-22T13:00:00+03:00`). A date-time without an offset is rejected with `400`, because it would mean a different instant on differently configured servers.
+
 ## Update (partial) — `PATCH /:id`
 
 Updates only the provided fields.

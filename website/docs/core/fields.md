@@ -41,6 +41,8 @@ fields: {
 }
 ```
 
+A row embedded through `?include=` is masked with **its own resource's** `readable` list, at every nesting level.
+
 Only **table columns** are masked. [Relation keys](./relations.md) (loaded via `?include=`), [computed values](#computed-fields), and internal markers like `_etag`/`_optimisticId` always pass through, so includes keep working. See the [auth contract](../contracts/auth.md) for the guarantee.
 
 ## Write enforcement — `fields.writable` (mass-assignment protection) {#write-enforcement-fieldswritable-mass-assignment-protection}
@@ -51,9 +53,11 @@ This stops a malicious client from setting protected columns (e.g. `role`, `isAd
 
 **Exemptions:**
 
-- The **primary key** (`id`) is never stripped.
+- The **primary key** may be supplied on **create** (client-generated ids, upsert keys). On **update** (`PATCH`, `PUT`, `PATCH /batch`) it is stripped unless `writable` lists it explicitly, even if it is also in `generatedFields`. To keep clients from choosing ids, set the id in `onBeforeCreate`.
 - Columns in [`generatedFields`](#generated-fields) are never stripped.
 - Non-column keys (relation payloads for [nested writes](./nested-writes.md), etc.) always pass through — only real table columns are subject to the allowlist.
+
+An update left with no columns after stripping (and after hooks) writes nothing and returns the unchanged row.
 
 Stripping happens **before** hooks run, so a server-side `onBeforeCreate`/`onBeforeUpdate` can still set a protected field itself:
 

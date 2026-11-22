@@ -22,6 +22,7 @@ import type { ResourceConfig, LifecycleHooks, ProcedureContext } from "@/resourc
 import { normalizeResourceConfig, columnPropertyKey, type ResourceConfigInput } from "@/resource/column-ref";
 import { useResource } from "@/resource/hook";
 import { createScopeResolver } from "@/auth/scope";
+import { assertCapabilities } from "@/resource/capabilities";
 import { executeBeforeCreate, executeAfterCreate } from "@/resource/procedures";
 import { recordCreate } from "@/resource/changelog";
 import { pushInsertsToSubscriptions } from "@/resource/subscription";
@@ -302,6 +303,7 @@ export const useFileResource = <TConfig extends TableConfig>(
 
   // Mirrors the resource hook's scope gate: impersonation/bypass aware.
   const requireCreate = async (c: Context): Promise<void> => {
+    assertCapabilities(config.capabilities, resourceName, "enableCreate");
     if (c.get("impersonatedId")) {
       await scopeResolver.requirePermission("create", getUser(c));
       return;
@@ -472,6 +474,7 @@ export const useFileResource = <TConfig extends TableConfig>(
 
   // --- Confirm a presigned upload ---
   router.post("/:id/confirm", async (c) => {
+    assertCapabilities(config.capabilities, resourceName, "enableCreate");
     const fileId = c.req.param("id");
     const file = await findFile(fileId);
     if (!file) throw new NotFoundError("File", fileId);
@@ -543,6 +546,7 @@ export const useFileResource = <TConfig extends TableConfig>(
 
   // --- Batch delete by ids (preserves the {ids} contract) ---
   router.delete("/batch", async (c) => {
+    assertCapabilities(config.capabilities, resourceName, "enableBatch", "enableDelete");
     const { ids } = (await readJsonBody(c)) as { ids: string[] };
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
       throw new ValidationError("ids array is required");

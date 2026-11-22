@@ -1,5 +1,5 @@
 import { getTableColumns, Table, TableConfig } from "drizzle-orm";
-import { ValidationError } from "./error";
+import { ValidationError, OperationDisabledError } from "./error";
 import { FieldPolicies, ResourceCapabilities } from "./types";
 
 export type FieldOperation =
@@ -216,6 +216,18 @@ export const validateCapabilityOrThrow = (
         suggestion: `Enable ${capability} in the resource configuration`,
       }
     );
+  }
+};
+
+export const assertCapabilities = (
+  capabilities: ResourceCapabilities | undefined,
+  resourceName: string,
+  ...required: (keyof ResourceCapabilities)[]
+): void => {
+  for (const capability of required) {
+    if (!isCapabilityEnabled(capabilities, capability)) {
+      throw new OperationDisabledError(resourceName, capability);
+    }
   }
 };
 

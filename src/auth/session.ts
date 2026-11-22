@@ -13,6 +13,7 @@ import { createUserContext } from "./adapter";
 import { UserContext } from "@/resource/types";
 import { readJsonBody } from "@/server/request";
 import { isProduction } from "@/server/env";
+import { createSessionActivityRecorder } from "./session-activity";
 
 // The user shape a strategy hydrates from a stored reference (session.userId /
 // token sub). Matches what `getUserById` returns across the adapters.
@@ -59,8 +60,6 @@ export interface SessionStrategy {
   readonly sessionStore?: SessionStore;
 }
 
-const ACTIVITY_THROTTLE_MS = 60_000;
-
 export interface CookieSessionOptions {
   getUserById: (id: string) => Promise<SessionUser | null>;
   store?: SessionStore;
@@ -88,18 +87,10 @@ export const cookieSession = (options: CookieSessionOptions): SessionStrategy =>
       ? options.getUserContext(user, session)
       : createUserContext(user, session);
 
+  const activity = createSessionActivityRecorder(store);
   const readSession = async (sessionId: string): Promise<SessionData | null> => {
     const session = await store.get(sessionId);
-    if (session) {
-      const now = Date.now();
-      const last =
-        typeof session.data?.lastActiveAt === "number" ? session.data.lastActiveAt : 0;
-      const remaining = session.expiresAt.getTime() - now;
-      if (now - last >= ACTIVITY_THROTTLE_MS && remaining > 0) {
-        session.data = { ...session.data, lastActiveAt: now };
-        void store.set(session.id, session, remaining).catch(() => {});
-      }
-    }
+    if (session) activity.record(session);
     return session;
   };
 
@@ -139,7 +130,10 @@ export const cookieSession = (options: CookieSessionOptions): SessionStrategy =>
     async issue(c, userId, meta) {
       // Rotate: drop any prior session this cookie referenced.
       const prior = getCookie(c, cookieName);
-      if (prior) await store.delete(prior);
+      if (prior) {
+        await activity.settle(prior);
+        await store.delete(prior);
+      }
 
       const session = await createSession(userId, meta);
       const user = await options.getUserById(userId);
@@ -159,11 +153,15 @@ export const cookieSession = (options: CookieSessionOptions): SessionStrategy =>
 
     async logout(c) {
       const sessionId = getCookie(c, cookieName);
-      if (sessionId) await store.delete(sessionId);
+      if (sessionId) {
+        await activity.settle(sessionId);
+        await store.delete(sessionId);
+      }
       deleteCookie(c, cookieName, { path: cookieOptions.path });
     },
 
     async invalidateUserSessions(userId, exceptSessionId) {
+      await activity.settle();
       if (!exceptSessionId && store.deleteByUser) {
         await store.deleteByUser(userId);
         return;

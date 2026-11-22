@@ -14,6 +14,7 @@ export const ERROR_TYPES = {
   FILTER_PARSE_ERROR: `${ERROR_TYPE_BASE}/filter-parse-error`,
   UNAUTHORIZED: `${ERROR_TYPE_BASE}/unauthorized`,
   FORBIDDEN: `${ERROR_TYPE_BASE}/forbidden`,
+  OPERATION_DISABLED: `${ERROR_TYPE_BASE}/operation-disabled`,
   CONFLICT: `${ERROR_TYPE_BASE}/conflict`,
   PRECONDITION_FAILED: `${ERROR_TYPE_BASE}/precondition-failed`,
   BATCH_LIMIT_EXCEEDED: `${ERROR_TYPE_BASE}/batch-limit-exceeded`,
@@ -110,6 +111,16 @@ export class ValidationError extends ResourceError {
   constructor(message: string, details?: unknown) {
     super(message, 400, "VALIDATION_ERROR", details);
     this.name = "ValidationError";
+  }
+}
+
+export class OperationDisabledError extends ResourceError {
+  constructor(resource: string, capability: string) {
+    super(`This operation is disabled on ${resource}`, 405, "OPERATION_DISABLED", {
+      resource,
+      capability,
+    });
+    this.name = "OperationDisabledError";
   }
 }
 

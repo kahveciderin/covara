@@ -198,7 +198,12 @@ export const normalizeResourceConfig = <
     const relations: Record<string, unknown> = {};
     for (const [name, relation] of Object.entries(config.relations)) {
       relations[name] = relation.defaultSelect
-        ? { ...relation, defaultSelect: resolveMany(relation.defaultSelect) }
+        ? {
+            ...relation,
+            defaultSelect: relation.defaultSelect.map(
+              makePropertyResolver(relation.schema as Table<TableConfig> | undefined)
+            ),
+          }
         : relation;
     }
     out.relations = relations;

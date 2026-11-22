@@ -228,6 +228,10 @@ export interface SearchHandlerOptions {
   maskItem?: (item: Record<string, unknown>) => Record<string, unknown>;
   // Rejects a user filter referencing non-filterable (e.g. hidden) columns.
   assertFilterable?: (filter: string | undefined) => void;
+  // True when `assertFilterable` restricts fields. The filter must then be
+  // evaluated by the parser that validated it: the lenient one below can be made
+  // to read a hidden column out of what that parser saw as a string literal.
+  filterRestricted?: boolean;
   // `fields.readable`: when set, hidden columns are neither searched by default
   // nor surfaced through highlights (either would leak their content).
   readableFields?: string[];
@@ -357,6 +361,8 @@ export const createSearchHandler = (
             );
           }
         }
+      } else if (options?.filterRestricted && userFilter?.trim()) {
+        items = items.filter((item) => options.filterer.execute(userFilter, item));
       } else if (userFilter) {
         const filter = parseSimpleFilter(userFilter);
         if (filter) {

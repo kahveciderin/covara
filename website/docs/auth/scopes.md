@@ -31,7 +31,11 @@ useResource(postsTable, {
 | `` rsql`<expr>` `` | Allow only rows matching the expression. |
 | ``` rsql`` ``` (empty) / `emptyScope()` | Deny — no rows. |
 
-Operations: `read`, `create`, `update`, `delete`, `subscribe`. Omit one to deny it (unless `public` grants it).
+Operations: `read`, `create`, `update`, `delete`, `subscribe`. Omitting one does **not** deny it: any signed-in user is then allowed on every row (see the warning below). Return `emptyScope()` to deny.
+
+:::caution Scopes select rows, they don't validate written values
+`update` and `delete` scopes choose which **existing** rows may be written. The row that results from an update is not re-checked, and a `create` scope is only checked for being non-empty, not matched against the inserted row. Protect ownership and tenant columns with [`fields.writable`](../core/fields.md) and set or validate them in `onBeforeCreate`/`onBeforeUpdate`.
+:::
 
 :::info Empty scope fails closed on every operation
 An empty scope is an explicit **deny** and is enforced uniformly: reads (`GET /`, `GET /:id`, `/count`, `/aggregate`, `/search`) return no rows, live `subscribe` streams match nothing, and writes return `403`. It never degrades to "no `WHERE` clause" (which would return every row), and a client-supplied `?filter=` cannot widen it — the user's filter is dropped, not applied. Returning `emptyScope()` (or an empty `` rsql`` ``) is the safe, correct way to say "this user sees nothing." Note that an *unconfigured* operation resolves to `allScope()`, not empty, so deny requires an explicit empty scope.
@@ -142,7 +146,9 @@ A relation path is only allowed in a **trusted, developer-authored scope**. A re
 
 ### Subscriptions with relation-path scopes
 
-A join can't be evaluated against a single changelog row in memory, so a relation-path `subscribe` scope is enforced **eventually-consistently**: the periodic scope recheck (`sse.scopeRecheckMs`, default 30s) re-runs the join as SQL and emits `added`/`removed` as membership changes. Initial `existing` events and the read path are always exact and immediate; only mid-subscription membership changes wait for the next recheck. Because the recheck is the only enforcement path, a relation-path `subscribe` scope requires `sse.scopeRecheckMs > 0` — configuring `0` is rejected at subscribe time.
+A join can't be evaluated against a single row in memory, so when the resource's own rows change, Covara runs the scope as SQL on just those rows and immediately emits `added`, `changed` or `removed`. This costs one query per distinct subscriber scope and filter on each write. If the query fails, the affected subscriber gets `invalidate` and the write still succeeds.
+
+Changes made only in the **joined** tables (e.g. membership) are **eventually consistent**: the periodic scope recheck (`sse.scopeRecheckMs`, default 30s) re-runs the join as SQL and emits `added`/`removed` as membership changes. Initial `existing` events and the read path are always exact and immediate; only mid-subscription membership changes wait for the next recheck. Because the recheck is the only thing that notices those, a relation-path `subscribe` scope requires `sse.scopeRecheckMs > 0` — configuring `0` is rejected at subscribe time.
 
 ## How enforcement works
 

@@ -12,6 +12,7 @@ import {
   isNull,
   getTableColumns,
   inArray,
+  sql,
 } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { createInsertSchema, createUpdateSchema } from "drizzle-zod";
@@ -19,6 +20,8 @@ import z, { ZodError } from "zod";
 import { v4 as uuidv4 } from "uuid";
 
 import { createResourceFilter } from "./filter";
+import { assertCapabilities, isCapabilityEnabled } from "./capabilities";
+import { createDateInputParser } from "./input";
 import {
   resolveQueryableFields,
   assertQueryableFields,
@@ -38,6 +41,8 @@ import {
   applyScopeChange,
   registerKnownIds,
   registerResourceMask,
+  registerJoinMatcher,
+  getRelevantObjectIds,
   registerAggregateWatcher,
   whenHandlerFanoutReady,
   takeRenderer,
@@ -80,6 +85,7 @@ import {
   LifecycleHooks,
   ProcedureContext,
   DrizzleTransaction,
+  ResourceCapabilities,
   UserContext,
 } from "./types";
 import { createSearchHandler, SearchHandlerOptions } from "./search";
@@ -133,6 +139,9 @@ const DEFAULT_BATCH_LIMITS = {
   delete: 100,
 };
 
+// D1 allows 100 bound parameters per statement, shared with the scope's own.
+const JOIN_MATCH_CHUNK = 30;
+
 const DEFAULT_PAGINATION = {
   defaultLimit: 20,
   maxLimit: 100,
@@ -179,7 +188,9 @@ export const useResource = <TConfig extends TableConfig>(
   registerResourceRelations(resourceName, () => {
     if (!resolvedRelationsMemo) {
       resolvedRelationsMemo = {
-        ...discoverRelations(schema as Table<TableConfig>, resourceRegistry),
+        ...discoverRelations(schema as Table<TableConfig>, resourceRegistry, {
+          includeUnregistered: true,
+        }),
         ...((config.relations ?? {}) as RelationsConfig),
       };
     }
@@ -187,14 +198,18 @@ export const useResource = <TConfig extends TableConfig>(
   });
 
   // Default capabilities: all enabled unless explicitly disabled
+  const enabled = (capability: keyof ResourceCapabilities) =>
+    isCapabilityEnabled(config.capabilities, capability);
   const capabilities = {
-    enableCreate: config.capabilities?.enableCreate ?? true,
-    enableUpdate: config.capabilities?.enableUpdate ?? true,
-    enableDelete: config.capabilities?.enableDelete ?? true,
-    enableSubscribe: config.capabilities?.enableSubscribe ?? true,
-    enableAggregations: config.capabilities?.enableAggregations ?? true,
-    enableBatch: config.capabilities?.enableBatch ?? !!config.batch,
+    enableCreate: enabled("enableCreate"),
+    enableUpdate: enabled("enableUpdate"),
+    enableDelete: enabled("enableDelete"),
+    enableSubscribe: enabled("enableSubscribe"),
+    enableAggregations: enabled("enableAggregations"),
+    enableBatch: enabled("enableBatch"),
   };
+  const requireCapabilities = (...required: (keyof ResourceCapabilities)[]) =>
+    assertCapabilities(capabilities, resourceName, ...required);
 
   registerResourceSchema(resourceName, schema as Table<TableConfig>, db, config.id, {
     relations: config.relations as RelationsConfig | undefined,
@@ -232,10 +247,20 @@ export const useResource = <TConfig extends TableConfig>(
       ): Promise<T[]> => {
         const includeSpecs = parseInclude(include);
         if (includeSpecs.length === 0) return items;
-        return relationLoader.loadRelationsForItems(items, includeSpecs, idColumnName, 0, {
-          user,
-          enforceScope: true,
-        }) as Promise<T[]>;
+        try {
+          return (await relationLoader.loadRelationsForItems(items, includeSpecs, idColumnName, 0, {
+            user,
+            enforceScope: true,
+          })) as T[];
+        } catch (error) {
+          // This runs inside the writer's request: one subscriber's bad include
+          // must not fail someone else's committed write.
+          getLogger().warn("Subscription include failed", {
+            resource: resourceName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return items;
+        }
       }
     : undefined;
 
@@ -365,9 +390,11 @@ export const useResource = <TConfig extends TableConfig>(
       return fieldError;
     });
 
+  const parseDates = createDateInputParser(schema);
+
   const parseInsert = (data: unknown) => {
     try {
-      return insertSchema.parse(data) as InferInsertModel<Table<TConfig>>;
+      return insertSchema.parse(parseDates(data)) as InferInsertModel<Table<TConfig>>;
     } catch (error) {
       if (error instanceof ZodError) {
         throw new ValidationError("Validation failed", { errors: formatInsertError(error) });
@@ -378,7 +405,11 @@ export const useResource = <TConfig extends TableConfig>(
 
   const parseMultiInsert = (data: unknown) => {
     try {
-      return z.object({ items: z.array(insertSchema) }).parse(data) as {
+      const items = (data as { items?: unknown } | null)?.items;
+      const body = Array.isArray(items)
+        ? { ...(data as object), items: items.map(parseDates) }
+        : data;
+      return z.object({ items: z.array(insertSchema) }).parse(body) as {
         items: InferInsertModel<Table<TConfig>>[];
       };
     } catch (error) {
@@ -391,7 +422,7 @@ export const useResource = <TConfig extends TableConfig>(
 
   const parseUpdate = (data: unknown) => {
     try {
-      return strictUpdateSchema.parse(data) as Partial<
+      return strictUpdateSchema.parse(parseDates(data)) as Partial<
         InferSelectModel<Table<TConfig>>
       >;
     } catch (error) {
@@ -477,8 +508,8 @@ export const useResource = <TConfig extends TableConfig>(
   // to client input BEFORE lifecycle hooks, so server-side hooks can still set
   // protected fields. Non-column keys (relation payloads) pass through.
   const writableSet = config.fields?.writable ? new Set(config.fields.writable) : null;
-  // The primary key and generated fields are managed by the framework/DB, not
-  // by mass-assignment policy — never strip them even if absent from `writable`.
+  // The primary key (which a create may choose) and generated fields survive
+  // the allowlist. Updates additionally strip the key: see `applyWritableUpdate`.
   const writableExempt = new Set<string>([idColumnName, ...(config.generatedFields ?? [])]);
   const applyWritable = <T extends Record<string, unknown>>(data: T): T => {
     if (!writableSet || data === null || typeof data !== "object") return data;
@@ -489,6 +520,16 @@ export const useResource = <TConfig extends TableConfig>(
     }
     return out as T;
   };
+
+  const applyWritableUpdate = <T extends Record<string, unknown>>(data: T): T => {
+    if (!writableSet || writableSet.has(idColumnName)) return applyWritable(data);
+    const out: Record<string, unknown> = { ...applyWritable(data) };
+    delete out[idColumnName];
+    return out as T;
+  };
+  // Drizzle throws on an empty SET, which is what stripping can leave behind.
+  const hasChanges = (data: object): boolean =>
+    Object.values(data).some((value) => value !== undefined);
 
   const applyVersionBump = (
     existing: Record<string, unknown>,
@@ -596,6 +637,31 @@ export const useResource = <TConfig extends TableConfig>(
     return base;
   };
 
+  // The path segment is bound as a value and never parsed as filter syntax.
+  // Both sides are parenthesized because a custom operator may emit a bare OR.
+  const applyIdFilter = async (c: Context, operation: Operation, id: string) => {
+    const scoped = await applyFilters(c, operation, "");
+    return and(sql`${config.id} = ${id}`, scoped && sql`(${scoped})`);
+  };
+
+  registerJoinMatcher(resourceName, async (filterExpr, changed) => {
+    // A cached select would predate the write being matched.
+    const reader = isTrackedDb(db) ? db._originalDb : db;
+    const where = excludeSoftDeleted(filterer.convert(filterExpr) as SQL<unknown>);
+    const ids = changed.map((row) => row[idColumnName]).filter((id) => id != null);
+    const matched = new Map<string, Record<string, unknown>>();
+    for (let i = 0; i < ids.length; i += JOIN_MATCH_CHUNK) {
+      const rows = (await reader
+        .select()
+        .from(schema)
+        .where(
+          and(inArray(config.id, ids.slice(i, i + JOIN_MATCH_CHUNK) as any), sql`(${where})`)
+        )) as Record<string, unknown>[];
+      for (const row of rows) matched.set(String(row[idColumnName]), row);
+    }
+    return matched;
+  });
+
   if (rateLimitMiddleware) {
     router.use("*", rateLimitMiddleware);
   }
@@ -613,6 +679,7 @@ export const useResource = <TConfig extends TableConfig>(
 
   if (batchConfig.create && batchConfig.create > 0) {
     router.post("/batch", async (c) => {
+      requireCapabilities("enableBatch", "enableCreate");
       await requireScope(c, "create");
 
       const data = parseMultiInsert(await readJsonBody(c));
@@ -657,6 +724,7 @@ export const useResource = <TConfig extends TableConfig>(
     // Bulk upsert: insert-or-update by primary key. New rows run create hooks +
     // emit added events; existing rows run update hooks + emit changed events.
     router.post("/batch/upsert", async (c) => {
+      requireCapabilities("enableBatch", "enableCreate", "enableUpdate");
       await requireScope(c, "create");
       await requireScope(c, "update");
 
@@ -667,6 +735,11 @@ export const useResource = <TConfig extends TableConfig>(
 
       const ctx = createProcedureContext(c);
 
+      // An existing row may only be overwritten inside the caller's update scope.
+      const updateScope = combineScopes(await resolveScope(c, "update"));
+      const updateWhere =
+        updateScope === "*" ? undefined : sql`(${filterer.convert(updateScope)})`;
+
       const loadPrev = async (
         runner: DrizzleTransaction | typeof db
       ): Promise<Map<string, Record<string, unknown>>> => {
@@ -676,6 +749,17 @@ export const useResource = <TConfig extends TableConfig>(
         const existing = ids.length
           ? ((await runner.select().from(schema).where(inArray(config.id, ids as any))) as unknown as Record<string, unknown>[])
           : [];
+        if (updateWhere && existing.length > 0) {
+          const writable = (await runner
+            .select()
+            .from(schema)
+            .where(and(inArray(config.id, ids as any), updateWhere))) as unknown as Record<string, unknown>[];
+          const writableIds = new Set(writable.map((row) => String(row[idColumnName])));
+          for (const row of existing) {
+            const id = String(row[idColumnName]);
+            if (!writableIds.has(id)) throw new NotFoundError(resourceName, id);
+          }
+        }
         return new Map(existing.map((e) => [String(e[idColumnName]), e]));
       };
 
@@ -698,7 +782,9 @@ export const useResource = <TConfig extends TableConfig>(
           stmt: runner
             .insert(schema)
             .values(hookData as any)
-            .onConflictDoUpdate({ target: config.id, set: setObj as any })
+            // Also guards the conflicts the lookup can't see: a concurrent
+            // insert, or a hook that changed the key.
+            .onConflictDoUpdate({ target: config.id, set: setObj as any, setWhere: updateWhere })
             .returning(),
         };
       };
@@ -713,7 +799,11 @@ export const useResource = <TConfig extends TableConfig>(
           // Interleave hook -> insert per item (a hook may observe prior upserts).
           for (const rawItem of data.items) {
             const { stmt } = await buildUpsert(tx, rawItem, prev);
-            out.push(((await stmt) as any[])[0] as Record<string, unknown>);
+            const row = ((await stmt) as any[])[0] as Record<string, unknown> | undefined;
+            if (!row) {
+              throw new NotFoundError(resourceName, String((rawItem as any)[idColumnName]));
+            }
+            out.push(row);
           }
           return { upserted: out, previousMap: prev };
         }));
@@ -724,7 +814,7 @@ export const useResource = <TConfig extends TableConfig>(
         const built: any[] = [];
         for (const rawItem of data.items) built.push((await buildUpsert(db, rawItem, previousMap)).stmt);
         const results = built.length ? await (db as any).batch(built) : [];
-        upserted = (results as any[]).map((r) => (r as any[])[0] as Record<string, unknown>);
+        upserted = (results as any[]).flatMap((r) => (r as Record<string, unknown>[]).slice(0, 1));
       }
 
       for (const item of upserted) {
@@ -755,8 +845,9 @@ export const useResource = <TConfig extends TableConfig>(
 
   if (batchConfig.update && batchConfig.update > 0) {
     router.patch("/batch", async (c) => {
+      requireCapabilities("enableBatch", "enableUpdate");
       const filter = await applyFilters(c, "update");
-      const data = parseUpdate(await readJsonBody(c));
+      const data = applyWritableUpdate(parseUpdate(await readJsonBody(c)) as Record<string, unknown>);
 
       const result = await txRunner.run(async (tx: DrizzleTransaction) => {
         const beforeItems = (await tx.select().from(schema).where(filter)) as unknown as Record<string, unknown>[];
@@ -767,7 +858,7 @@ export const useResource = <TConfig extends TableConfig>(
 
         const ctx = createProcedureContext(c);
 
-        let processedData = data;
+        let processedData = data as any;
         for (const item of beforeItems) {
           processedData = await executeBeforeUpdate(
             hooks,
@@ -777,13 +868,17 @@ export const useResource = <TConfig extends TableConfig>(
           );
         }
 
+        const previousMap = new Map<string, Record<string, unknown>>();
+        if (!hasChanges(processedData)) {
+          return { count: 0, items: [] as Record<string, unknown>[], previousMap };
+        }
+
         await tx.update(schema).set(processedData).where(filter);
 
         // Select by IDs, not by original filter, since the update may have changed fields used in the filter
         const ids = beforeItems.map((item) => item[idColumnName]);
         const afterItems = (await tx.select().from(schema).where(inArray(config.id, ids as any))) as unknown as Record<string, unknown>[];
 
-        const previousMap = new Map<string, Record<string, unknown>>();
         for (let i = 0; i < beforeItems.length; i++) {
           const before = beforeItems[i]!;
           const after = afterItems[i]!;
@@ -818,6 +913,7 @@ export const useResource = <TConfig extends TableConfig>(
 
   if (batchConfig.delete && batchConfig.delete > 0) {
     router.delete("/batch", async (c) => {
+      requireCapabilities("enableBatch", "enableDelete");
       const filter = await applyFilters(c, "delete");
 
       const result = await txRunner.run(async (tx: DrizzleTransaction) => {
@@ -1061,6 +1157,7 @@ export const useResource = <TConfig extends TableConfig>(
             ? (filterer.convert(combinedFilter) as SQL<unknown>)
             : undefined;
         const matchFilter = excludeSoftDeleted(baseFilter);
+        const heldBefore = await getRelevantObjectIds(subscriptionId);
         const items = await db.select().from(schema).where(matchFilter);
 
         await applyScopeChange(
@@ -1068,7 +1165,8 @@ export const useResource = <TConfig extends TableConfig>(
           freshStr,
           items as Record<string, unknown>[],
           idColumnName,
-          subscriptionRelationLoader
+          subscriptionRelationLoader,
+          heldBefore
         );
       } catch {
         // Best effort: a transient scope-resolve/query error must not tear down
@@ -1169,6 +1267,7 @@ export const useResource = <TConfig extends TableConfig>(
   };
 
   router.get("/subscribe", async (c) => {
+    requireCapabilities("enableSubscribe");
     const user = getUser(c);
     const filterQuery = c.req.query("filter") ?? "";
     // Validate before any stream side-effects so a bad filter/scope becomes a
@@ -1295,6 +1394,7 @@ export const useResource = <TConfig extends TableConfig>(
   };
 
   router.get("/aggregate", async (c) => {
+    requireCapabilities("enableAggregations");
     const params = parseAggregationParams(c.req.query() as Record<string, unknown>);
     assertAggregationFields(params);
     const filter = await applyFilters(c, "read");
@@ -1420,6 +1520,7 @@ export const useResource = <TConfig extends TableConfig>(
   };
 
   router.get("/aggregate/subscribe", async (c) => {
+    requireCapabilities("enableAggregations", "enableSubscribe");
     const user = getUser(c);
     const muxParams: MuxSubscribeParams = {
       filter: c.req.query("filter"),
@@ -1477,6 +1578,12 @@ export const useResource = <TConfig extends TableConfig>(
     const user = getUser(c);
     const userId = user?.id ?? "anonymous";
     const clientIP = getClientIP(c);
+
+    const required: (keyof ResourceCapabilities)[] =
+      kind === "aggregate" ? ["enableAggregations", "enableSubscribe"] : ["enableSubscribe"];
+    if (!required.every(enabled)) {
+      return { ok: false, status: 405, detail: `This operation is disabled on ${resourceName}` };
+    }
 
     let begin: (sink: SubscriptionSink) => Promise<SubscribeHandle>;
     try {
@@ -1641,6 +1748,7 @@ export const useResource = <TConfig extends TableConfig>(
         },
         maskItem: readableSet || computedFields ? (item) => maskReadable(item) : undefined,
         assertFilterable: assertFilterableFields,
+        filterRestricted: userFilterer !== null,
         readableFields: config.fields?.readable,
       }
     );
@@ -1652,6 +1760,7 @@ export const useResource = <TConfig extends TableConfig>(
   const nestedWritesEnabled = config.nestedWrites === true && !!relationsConfig;
 
   router.post("/", async (c) => {
+    requireCapabilities("enableCreate");
     await requireScope(c, "create");
 
     const ctx = createProcedureContext(c);
@@ -1685,7 +1794,10 @@ export const useResource = <TConfig extends TableConfig>(
             !Array.isArray(value)
           ) {
             const parent = (
-              (await tx.insert(relation.schema).values(value as any).returning()) as any[]
+              (await tx
+                .insert(relation.schema)
+                .values(createDateInputParser(relation.schema)(value) as any)
+                .returning()) as any[]
             )[0];
             mainBody[relation.foreignKey.name] = parent[relation.references.name];
           }
@@ -1702,7 +1814,10 @@ export const useResource = <TConfig extends TableConfig>(
             for (const child of children) {
               await tx
                 .insert(relation.schema)
-                .values({ ...(child as object), [relation.foreignKey.name]: parentRef } as any)
+                .values({
+                  ...(createDateInputParser(relation.schema)(child) as object),
+                  [relation.foreignKey.name]: parentRef,
+                } as any)
                 .returning();
             }
           }
@@ -1837,7 +1952,7 @@ export const useResource = <TConfig extends TableConfig>(
 
   router.get("/:id", async (c) => {
     const id = c.req.param("id");
-    const filter = await applyFilters(c, "read", `${idColumnName}=="${id}"`);
+    const filter = await applyIdFilter(c, "read", id);
     const selectFields = parseSelect(c.req.query("select"));
     const includeSpecs = resolveIncludeSpecs(c.req.query("include"));
 
@@ -1880,8 +1995,9 @@ export const useResource = <TConfig extends TableConfig>(
   });
 
   router.put("/:id", async (c) => {
+    requireCapabilities("enableUpdate");
     const id = c.req.param("id");
-    const filter = await applyFilters(c, "update", `${idColumnName}=="${id}"`);
+    const filter = await applyIdFilter(c, "update", id);
 
     const existingResult = await db.select().from(schema).where(filter);
     const existing = (existingResult as any[])[0];
@@ -1894,10 +2010,14 @@ export const useResource = <TConfig extends TableConfig>(
     }
 
     const ctx = createProcedureContext(c);
-    const data = applyWritable(parseInsert(await readJsonBody(c)) as Record<string, unknown>);
+    const data = applyWritableUpdate(parseInsert(await readJsonBody(c)) as Record<string, unknown>);
 
     let updateData = await executeBeforeUpdate(hooks, ctx, id, data as any);
     updateData = applyVersionBump(existing, updateData as Record<string, unknown>) as typeof updateData;
+    if (!hasChanges(updateData as object)) {
+      if (etagConfig) setETagHeader(c, existing, etagConfig);
+      return c.json(maskReadable(existing as Record<string, unknown>));
+    }
 
     const casPredicate = c.req.header("if-match") ? buildCasPredicate(existing) : undefined;
     const updateResult = await db
@@ -1934,8 +2054,9 @@ export const useResource = <TConfig extends TableConfig>(
   });
 
   router.patch("/:id", async (c) => {
+    requireCapabilities("enableUpdate");
     const id = c.req.param("id");
-    const filter = await applyFilters(c, "update", `${idColumnName}=="${id}"`);
+    const filter = await applyIdFilter(c, "update", id);
 
     const existingResult = await db.select().from(schema).where(filter);
     const existing = (existingResult as any[])[0];
@@ -1948,10 +2069,14 @@ export const useResource = <TConfig extends TableConfig>(
     }
 
     const ctx = createProcedureContext(c);
-    let data = applyWritable(parseUpdate(await readJsonBody(c)) as Record<string, unknown>) as any;
+    let data = applyWritableUpdate(parseUpdate(await readJsonBody(c)) as Record<string, unknown>) as any;
 
     data = await executeBeforeUpdate(hooks, ctx, id, data);
     data = applyVersionBump(existing, data as Record<string, unknown>) as typeof data;
+    if (!hasChanges(data as object)) {
+      if (etagConfig) setETagHeader(c, existing, etagConfig);
+      return c.json(maskReadable(existing as Record<string, unknown>));
+    }
 
     const casPredicate = c.req.header("if-match") ? buildCasPredicate(existing) : undefined;
     const updateResult = await db
@@ -1988,8 +2113,9 @@ export const useResource = <TConfig extends TableConfig>(
   });
 
   router.delete("/:id", async (c) => {
+    requireCapabilities("enableDelete");
     const id = c.req.param("id");
-    const filter = await applyFilters(c, "delete", `${idColumnName}=="${id}"`);
+    const filter = await applyIdFilter(c, "delete", id);
 
     const existingResult = await db.select().from(schema).where(filter);
     const existing = (existingResult as any[])[0];

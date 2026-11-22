@@ -51,10 +51,17 @@
 - **Credential privacy & ownership**: the WebAuthn user handle is random (never the user id/email) and stable per user; list/rename/delete only ever touch the caller's own credentials (another user's id is `404`); public keys are never returned by the API
 
 ### Field-Level Write Enforcement (mass-assignment protection)
-- **Enforced allowlist**: when `fields.writable` is configured, any table column not in the list is stripped from create/update bodies (single, batch, and `POST /batch/upsert`) before hooks and the database see it
-- **Exemptions**: the primary key and `generatedFields` are never stripped; non-column keys (relation payloads) pass through
+- **Enforced allowlist**: when `fields.writable` is configured, any table column not in the list is stripped from create/update bodies (single, `PUT`, batch create, batch update, and `POST /batch/upsert`) before hooks and the database see it
+- **Primary key**: accepted on create; on update it is stripped unless explicitly listed in `writable`, even when it is a generated field
+- **Exemptions**: other `generatedFields` are never stripped; non-column keys (relation payloads) pass through
 - **Hook precedence**: stripping happens before lifecycle hooks, so a server-side hook can still set protected fields
 - **strictInput**: with `strictInput: true`, unknown fields are rejected with `422` instead of being silently ignored
+
+### Operation Enforcement
+- **Capabilities are enforced**: a disabled capability returns `405` on every route of that resource performing the operation (single, batch, upsert, file routes, standalone and multiplexed subscriptions), before the body is read or anything is written. Procedures and nested writes from another resource are outside this guarantee
+- **Path ids are literals**: a `/:id` segment is bound as a SQL value and never parsed as filter syntax
+- **Upsert honors update scope**: `POST /batch/upsert` cannot overwrite an existing row outside the caller's update scope; the request fails with `404`
+- **Written values are not scope-checked**: scopes select existing rows; inserted and resulting rows are not matched against the create/update scope
 
 ### Password Storage
 - **Scrypt hashing**: `hashPassword` derives a self-describing `scrypt$N=..,r=..,p=..$salt$hash` string with a per-hash random salt
@@ -66,7 +73,7 @@
 - **Logout invalidation**: All session tokens invalidated on logout
 - **Bulk invalidation**: Adapters may implement `invalidateUserSessions(userId, exceptSessionId?)`; password reset uses it when `logoutEverywhere` is set
 - **Indexed bulk invalidation**: When the session store implements the per-user index (`getByUser`/`deleteByUser` — the Redis, Drizzle, and in-memory stores all do), bulk invalidation touches only that user's sessions; the scan-all `getAll()` path is a fallback for stores without the index
-- **Session activity metadata**: Login/signup store the client IP and user agent in `session.data` (`ipAddress`, `userAgent`); session use stamps `session.data.lastActiveAt`, throttled to at most one persisted write per minute per session and fire-and-forget (activity tracking never blocks or fails auth)
+- **Session activity metadata**: Login/signup store the client IP and user agent in `session.data` (`ipAddress`, `userAgent`); session use stamps `session.data.lastActiveAt`, throttled to at most one persisted write per minute per session and not awaited by the request (activity tracking never blocks or fails auth). `beginShutdown()` starts no new activity writes and resolves once pending ones settle (max 5s); logout and revocation wait for a pending write so it cannot recreate the session
 - **Cookie security**: HttpOnly, Secure (in production), SameSite attributes set
 
 ### Multi-Tenant
@@ -77,6 +84,7 @@
 - **Allowlist semantics**: When `fields.readable` is configured on a resource, only the listed table columns may appear in any response
 - **Universal application**: Masking applies to list, get, create, update, batch, and search responses, plus every subscription event (`existing`, `added`, `changed`) and the initial subscription snapshot
 - **No client bypass**: A hidden column cannot be recovered via `?select=` or by subscribing — masking is enforced server-side after projection
+- **Applies through includes**: an included row is masked by its own resource's allowlist at every nesting level, intersected with the relation's `defaultSelect` and the client's `select:`
 - **Column-only**: Only table columns are stripped; relation keys, computed values, and internal markers (`_etag`, `_optimisticId`) pass through
 - **No query oracle**: A column hidden by `fields.readable` cannot be referenced by any client-supplied query input — `?filter=` (every endpoint that takes one, including subscribe, search, batch update/delete and `?include=` relation filters), `?orderBy=`, or aggregate `groupBy`/metrics — unless explicitly listed in `fields.filterable` / `sortable` / `aggregatable`; such requests fail with `400`. With `readable` set, search does not match or highlight hidden columns by default. Trusted auth scopes are exempt
 
@@ -90,7 +98,9 @@
 - **Included relations respect target scope**: On the read path (`GET /` and `GET /:id` with `?include=`), each included relation AND-s the target resource's `read` scope (resolved for the effective/impersonated user) into its query — a relation cannot return rows the user could not read directly
 - **Deny semantics**: A user denied read on the target resource yields `null` (`belongsTo`/`hasOne`) or an empty array (`hasMany`/`manyToMany`) for that relation; out-of-scope rows are filtered, not just hidden
 - **Applies to discovered relations**: Auto-discovered (`autoRelations`) relations use the same enforced loader as explicit ones
-- **Unregistered targets**: Relations to tables not registered as resources have no scope to enforce (no resolver) — these are an explicit author choice
+- **Target found by table**: scope and field policy come from the resource registered for the relation's table, falling back to `relation.resource`
+- **Discovery needs registration**: `autoRelations` never makes an unregistered table includable
+- **Unregistered targets**: Explicit relations to tables not registered as resources have no scope to enforce (no resolver) — these are an explicit author choice, limited by `defaultSelect` when set (for returned and filterable columns)
 - **Applies to subscriptions**: Relations embedded in subscription events (`existing`, `added`, `changed`) are scope-filtered **per subscriber** — the subscriber's user is captured at subscribe time, and on every push the target resource's `read` scope is resolved for that user and AND-ed into the included relation, with the same deny semantics as the read path. A subscriber can never receive related rows it could not read directly. Relations are loaded per subscriber rather than shared across them (cost scales with subscriber count; loads are deduplicated per subscriber within a single push)
 
 ### Relation-Path (Join) Scopes
@@ -98,7 +108,7 @@
 - **Trusted scopes only**: Relation paths are accepted only in developer-authored auth scopes. A relation path in an untrusted user-supplied `?filter=` (read, count, aggregate, subscribe, search) is rejected with `400` — including paths through auto-discovered relations — so a client cannot join into other tables to infer their contents
 - **Resolution & bounds**: Each hop resolves against the resource's resolved relations (explicit ∪ auto-discovered). Unknown relation/column, a cyclic (table-revisiting) path, or a path beyond 5 hops is a `FilterParseError`. Interpolated values are bound parameters, never string-interpolated, so the join is injection-safe
 - **Read/query paths are exact**: list, `GET /:id`, count, aggregate, and batch enforce the join as SQL immediately
-- **Subscriptions are eventually-consistent**: live per-row matching is skipped for join scopes; the periodic scope recheck (`sse.scopeRecheckMs`) re-runs the join as SQL and reconciles `added`/`removed`. A join `subscribe` scope therefore requires `scopeRecheckMs > 0` (rejected otherwise); catchup on reconnect invalidates so the client refetches under the SQL-enforced scope
+- **Subscriptions match row writes as SQL**: changed rows are matched immediately by query. Changes in joined tables are eventually consistent: the periodic scope recheck (`sse.scopeRecheckMs`) re-runs the join as SQL and reconciles `added`/`removed`. A join `subscribe` scope therefore requires `scopeRecheckMs > 0` (rejected otherwise); catchup on reconnect invalidates so the client refetches under the SQL-enforced scope
 - **Search hits are DB-intersected**: when the read scope is a join, search post-filtering intersects hit ids against the scope run as SQL rather than matching in memory
 
 ### Internal Schema & Stores

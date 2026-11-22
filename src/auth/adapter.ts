@@ -9,14 +9,17 @@ import {
   InMemorySessionStore,
 } from "./types";
 import { UserContext } from "@/resource/types";
+import { createSessionActivityRecorder } from "./session-activity";
 
 export abstract class BaseAuthAdapter implements AuthAdapter {
   abstract name: string;
   readonly sessionStore: SessionStore;
   protected sessionTtlMs: number;
+  private activity: ReturnType<typeof createSessionActivityRecorder>;
 
   constructor(options: { sessionStore?: SessionStore; sessionTtlMs?: number } = {}) {
     this.sessionStore = options.sessionStore ?? new InMemorySessionStore();
+    this.activity = createSessionActivityRecorder(this.sessionStore);
     this.sessionTtlMs = options.sessionTtlMs ?? 24 * 60 * 60 * 1000;
   }
 
@@ -54,30 +57,15 @@ export abstract class BaseAuthAdapter implements AuthAdapter {
   async getSession(token: string): Promise<SessionData | null> {
     const session = await this.sessionStore.get(token);
     if (session) {
-      void this.recordSessionActivity(session);
+      // Stamps lastActiveAt for the admin UI: throttled, and never awaited here
+      // so it adds no latency to requests.
+      this.activity.record(session);
     }
     return session;
   }
 
-  // Stamp session.data.lastActiveAt so the admin UI can show when a session
-  // was last used. Throttled to one persisted write per minute per session and
-  // fire-and-forget, so it adds no latency or write amplification to requests.
-  private async recordSessionActivity(session: SessionData): Promise<void> {
-    const now = Date.now();
-    const last =
-      typeof session.data?.lastActiveAt === "number" ? session.data.lastActiveAt : 0;
-    if (now - last < 60_000) return;
-    const remainingTtl = session.expiresAt.getTime() - now;
-    if (remainingTtl <= 0) return;
-    session.data = { ...session.data, lastActiveAt: now };
-    try {
-      await this.sessionStore.set(session.id, session, remainingTtl);
-    } catch {
-      // best effort — activity tracking must never break auth
-    }
-  }
-
   async invalidateSession(token: string): Promise<void> {
+    await this.activity.settle(token);
     await this.sessionStore.delete(token);
   }
 
@@ -102,6 +90,7 @@ export abstract class BaseAuthAdapter implements AuthAdapter {
   }
 
   async invalidateUserSessions(userId: string, exceptSessionId?: string): Promise<void> {
+    await this.activity.settle();
     // Prefer the store's per-user index (Redis/Drizzle stores maintain one) so
     // this never scans every user's sessions to log out one user.
     if (!exceptSessionId && this.sessionStore.deleteByUser) {

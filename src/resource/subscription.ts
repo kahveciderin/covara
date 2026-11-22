@@ -68,6 +68,52 @@ export const registerResourceMask = (
   resourceMaskers.set(resource, mask);
 };
 
+// Finds, by SQL, which changed rows a relation-path filter matches. Returns the
+// database's current row so the payload is exactly what the scope was checked on.
+export type JoinMatcher = (
+  filterExpr: string,
+  items: Record<string, unknown>[]
+) => Promise<Map<string, Record<string, unknown>>>;
+
+const joinMatchers = new Map<string, JoinMatcher>();
+const JOIN_MATCH_TIMEOUT_MS = 5000;
+
+export const registerJoinMatcher = (resource: string, matcher: JoinMatcher): void => {
+  joinMatchers.set(resource, matcher);
+};
+
+// One query per distinct scope + filter in a push. `undefined` = this process
+// can't evaluate the join (the scope recheck reconciles); `null` = the query
+// failed, or is waiting on a connection held by the caller's open transaction.
+const createPushJoinMatcher = (resource: string, items: Record<string, unknown>[]) => {
+  const results = new Map<string, Map<string, Record<string, unknown>> | null>();
+  return async (
+    subscription: Subscription
+  ): Promise<Map<string, Record<string, unknown>> | null | undefined> => {
+    const matcher = joinMatchers.get(resource);
+    if (!matcher) return undefined;
+    const expr = subscriptionFilterExpr(subscription);
+    if (results.has(expr)) return results.get(expr);
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let result: Map<string, Record<string, unknown>> | null;
+    try {
+      result = await Promise.race([
+        matcher(expr, items),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), JOIN_MATCH_TIMEOUT_MS);
+        }),
+      ]);
+    } catch {
+      result = null;
+    } finally {
+      clearTimeout(timer);
+    }
+    results.set(expr, result);
+    return result;
+  };
+};
+
 const maskForResource = <T extends Record<string, unknown>>(resource: string, item: T): T => {
   const mask = resourceMaskers.get(resource);
   return mask ? (mask(item) as T) : item;
@@ -365,6 +411,9 @@ const loadRelevantObjects = async (subscriptionId: string): Promise<Set<string>>
   return localRelevantObjects.get(subscriptionId) ?? new Set();
 };
 
+export const getRelevantObjectIds = async (subscriptionId: string): Promise<Set<string>> =>
+  new Set(await loadRelevantObjects(subscriptionId));
+
 // Save a relevant object ID to KV or local storage (exported for testing)
 export const addRelevantObject = async (subscriptionId: string, objectId: string): Promise<void> => {
   const kv = getKV();
@@ -659,6 +708,16 @@ const getAllSubscriptions = async (): Promise<Map<string, Subscription>> => {
   return new Map(localSubscriptions);
 };
 
+const subscriptionFilterExpr = (subscription: Subscription): string => {
+  // An empty scope is an explicit deny: it must match no rows regardless of
+  // the subscriber's own filter, so the deny sentinel wins over everything.
+  if (subscription.scopeFilter === DENY_ALL_FILTER) return DENY_ALL_FILTER;
+  if (!subscription.scopeFilter) return subscription.filter;
+  return subscription.filter
+    ? `(${subscription.filter});(${subscription.scopeFilter})`
+    : subscription.scopeFilter;
+};
+
 const getCompiledFilter = (
   subscription: Subscription,
   filterFactory: Filter
@@ -667,17 +726,7 @@ const getCompiledFilter = (
   let compiled = compiledFiltersCache.get(cacheKey);
 
   if (!compiled) {
-    let filterExpr = subscription.filter;
-    // An empty scope is an explicit deny: it must match no rows regardless of
-    // the subscriber's own filter, so the deny sentinel wins over everything.
-    if (subscription.scopeFilter === DENY_ALL_FILTER) {
-      filterExpr = DENY_ALL_FILTER;
-    } else if (subscription.scopeFilter) {
-      filterExpr = filterExpr
-        ? `(${filterExpr});(${subscription.scopeFilter})`
-        : subscription.scopeFilter;
-    }
-    compiled = filterFactory.compile(filterExpr);
+    compiled = filterFactory.compile(subscriptionFilterExpr(subscription));
     compiledFiltersCache.set(cacheKey, compiled);
   }
 
@@ -987,6 +1036,8 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
     return itemWithRelations;
   };
 
+  const matchJoin = createPushJoinMatcher(resource, items as Record<string, unknown>[]);
+
   for (const [subId, subscription] of allSubs) {
     if (subscription.resource !== resource) continue;
 
@@ -1001,13 +1052,21 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
     const compiled = getCompiledFilter(subscription, filterFactory);
 
     // Relation-path (join) scopes can't be matched against a single row in
-    // memory. Live matching is skipped; the periodic scope recheck (which runs
-    // the join as SQL) reconciles additions/removals for these subscriptions.
-    if (compiled.requiresJoin()) continue;
+    // memory, so the changed rows are matched as SQL.
+    const joined = compiled.requiresJoin() ? await matchJoin(subscription) : false;
+    if (joined === undefined) continue;
+    if (joined === null) {
+      await sendInvalidateEvent(subId, "Could not evaluate relation scope - please refetch");
+      continue;
+    }
 
-    for (const item of items) {
-      const matches = compiled.execute(item);
-      if (!matches) continue;
+    for (const written of items) {
+      const item = joined
+        ? (joined.get(String(written[idColumn])) as T | undefined)
+        : compiled.execute(written)
+          ? written
+          : undefined;
+      if (!item) continue;
 
       const id = String(item[idColumn]);
       await addRelevantObject(subId, id);
@@ -1067,6 +1126,8 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
     return itemWithRelations;
   };
 
+  const matchJoin = createPushJoinMatcher(resource, items as Record<string, unknown>[]);
+
   for (const [subId, subscription] of allSubs) {
     if (subscription.resource !== resource) continue;
 
@@ -1080,14 +1141,20 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
 
     const compiled = getCompiledFilter(subscription, filterFactory);
 
-    // See pushInserts: join scopes reconcile via the periodic scope recheck, not
-    // live in-memory matching.
-    if (compiled.requiresJoin()) continue;
+    // See pushInserts.
+    const joined = compiled.requiresJoin() ? await matchJoin(subscription) : false;
+    if (joined === undefined) continue;
+    if (joined === null) {
+      await sendInvalidateEvent(subId, "Could not evaluate relation scope - please refetch");
+      continue;
+    }
 
-    for (const item of items) {
-      const id = String(item[idColumn]);
+    for (const written of items) {
+      const id = String(written[idColumn]);
       const wasRelevant = await isObjectRelevant(subId, id);
-      const isRelevant = compiled.execute(item);
+      const current = joined ? (joined.get(id) as T | undefined) : undefined;
+      const item = current ?? written;
+      const isRelevant = joined ? !!current : compiled.execute(written);
 
       if (isRelevant && !wasRelevant) {
         await addRelevantObject(subId, id);
@@ -1326,7 +1393,10 @@ export const applyScopeChange = async <T extends Record<string, unknown>>(
   newScopeFilter: string | undefined,
   matchingItems: T[],
   idColumn: string,
-  relationLoader?: RelationLoader<T>
+  relationLoader?: RelationLoader<T>,
+  // What the subscriber held before `matchingItems` was queried. A row pushed
+  // live after that is missing from the snapshot but has not left scope.
+  heldBefore?: ReadonlySet<string>
 ): Promise<{ added: number; removed: number }> => {
   const subscription = await getSubscription(subscriptionId);
   if (!subscription) return { added: 0, removed: 0 };
@@ -1343,6 +1413,7 @@ export const applyScopeChange = async <T extends Record<string, unknown>>(
   // Rows that left scope -> removed.
   for (const id of relevant) {
     if (matchingById.has(id)) continue;
+    if (heldBefore && !heldBefore.has(id)) continue;
     await removeRelevantObject(subscriptionId, id);
     const event: RemovedEvent = {
       id: uuidv4(),

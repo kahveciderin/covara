@@ -87,9 +87,20 @@ useResource(postsTable, { db, id: postsTable.id, autoRelations: true });
 
 - **`belongsTo`** is discovered from this table's own single-column FKs — `posts.authorId → users.id` becomes a relation named `author` (the FK column name with a trailing `Id`/`_id` stripped).
 - **`hasMany`** is discovered from other **registered resources** whose FKs reference this table — if `comments.postId → posts.id`, `posts` gains a relation named after the referencing table (`comments`).
+- A FK to a table that is **not** a registered resource is never includable: it has no scope or field policy to apply. Declare the relation explicitly, with `defaultSelect`, to expose it. (Trusted [scope paths](../auth/scopes.md) may still traverse it.)
 - Only single-column FKs to registered resources are discovered — no guessing. `manyToMany`, custom names, eager strategy, and `defaultSelect` must be declared explicitly.
 - **Explicit `relations` always win** over a discovered relation of the same name, so you can enable `autoRelations` and still override or add specific ones.
 - Discovered relations are **lazy** (loaded only via `?include=`) and run through the same scope-enforced loader as explicit relations (see [Scope enforcement](#scope-enforcement)).
+
+## Which columns an include returns
+
+An included row contains only columns allowed by **all** of:
+
+1. the relation's `defaultSelect`, if set;
+2. the target resource's [`fields.readable`](./fields.md), if the target is a registered resource;
+3. the client's `select:`, if given. It can only narrow the first two.
+
+The target is identified by the relation's table, so a differently named `resource` still gets that table's scope and field policy. An include `filter:` follows the target's filterable fields (for an unregistered target, its `defaultSelect`) and may not contain relation paths.
 
 ## Including relations
 

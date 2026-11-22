@@ -241,8 +241,7 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
 
       const res = await post(app, "/users", { name: "Test", email: "test@test.com", password: "pwd" });
 
-      // Capability enforcement may or may not be implemented
-      expect([201, 405]).toContain(res.status);
+      expect(res.status).toBe(405);
     });
 
     it("should handle update operation with capabilities config", async () => {
@@ -271,8 +270,7 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
 
       const res = await patch(app, `/users/${userId}`, { name: "Updated" });
 
-      // Capability enforcement may or may not be implemented
-      expect([200, 405]).toContain(res.status);
+      expect(res.status).toBe(405);
     });
 
     it("should handle delete operation with capabilities config", async () => {
@@ -301,8 +299,7 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
 
       const res = await del(app, `/users/${userId}`);
 
-      // Capability enforcement may or may not be implemented
-      expect([204, 405]).toContain(res.status);
+      expect(res.status).toBe(405);
     });
 
     it("should handle aggregate operation with capabilities config", async () => {
@@ -323,8 +320,7 @@ describe("Capabilities and Field Policy Invariant Tests", () => {
 
       const res = await get(app, "/users/aggregate?count=true");
 
-      // Capability enforcement may or may not be implemented
-      expect([200, 404, 405]).toContain(res.status);
+      expect(res.status).toBe(405);
     });
   });
 

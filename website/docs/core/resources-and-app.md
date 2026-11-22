@@ -121,6 +121,8 @@ For the common "public reads, owner-only writes" pattern you need **both** — s
 
 Enable/disable whole operations. All default to `true`. Reading, filtering, and sorting are always enabled.
 
+A disabled operation returns `405` (`code: "OPERATION_DISABLED"`) on every route that performs it, including for admins. `POST /batch/upsert` needs batch, create and update; live aggregates need aggregations and subscribe; a [file resource](../platform/storage.md)'s upload routes need create. [RPC procedures](./procedures.md) and [nested writes](./nested-writes.md) into another resource are not governed by that resource's capabilities.
+
 ```typescript
 {
   capabilities: {

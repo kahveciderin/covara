@@ -42,22 +42,25 @@ Each item runs the create [lifecycle hooks](./procedures.md) and emits an `added
 Updates many rows matched by a filter, applying the same patch to each:
 
 ```bash
-PATCH /api/posts/batch
+PATCH /api/posts/batch?filter=authorId%3D%3D%22u1%22%3Bpublished%3D%3Dfalse
 Content-Type: application/json
 
-{ "filter": "authorId==\"u1\";published==false", "patch": { "published": true } }
+{ "published": true }
 ```
+
+[`fields.writable`](./fields.md) applies to the patch. If nothing writable is left, nothing is written and the response is `{ "count": 0 }`.
 
 Each affected row runs the update hooks and emits a `changed` event. The matched set respects the [update scope](../auth/scopes.md).
 
 ## Batch delete — `DELETE /batch`
 
 ```bash
-DELETE /api/posts/batch
-Content-Type: application/json
-
-{ "filter": "status==\"spam\"" }
+DELETE /api/posts/batch?filter=status%3D%3D%22spam%22
 ```
+
+:::danger The filter goes in the query string
+`PATCH /batch` and `DELETE /batch` read the filter only from `?filter=`. A `filter` in the request body is ignored, and **without `?filter=` the operation applies to every row in the caller's scope** (up to the batch limit).
+:::
 
 Deletes (or [soft-deletes](./soft-delete.md)) the matching rows within the delete scope, running delete hooks and emitting `removed` events.
 
@@ -80,6 +83,7 @@ Content-Type: application/json
 For each item:
 
 - **Exists** → runs `onBeforeUpdate`/`onAfterUpdate`, emits `changed`.
+- **Exists outside the caller's update scope** → `404` for the whole request, and nothing is written.
 - **New** → runs `onBeforeCreate`/`onAfterCreate`, emits `added`.
 
 `fields.writable` enforcement applies to every item. Returns `{ "items": [...] }` with the upserted rows.
