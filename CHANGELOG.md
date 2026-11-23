@@ -2,6 +2,11 @@
 
 Every release of the `covara` package. **Security** marks fixes for vulnerabilities; **Breaking** marks changes that can need action when you upgrade. Versions before 0.17.0 are only in the git history.
 
+## 0.18.1
+
+**Docs**
+- The `trustProxy` type and the `createCovara`/`configureClientIp` options now document, in the editor hint, that `"cloudflare"` is safe only when the origin can't be reached except through Cloudflare.
+
 ## 0.18.0
 
 **Breaking**

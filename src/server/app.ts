@@ -44,7 +44,9 @@ export interface CovaraAuthSetup {
 
 export interface CovaraOptions {
   basePath?: string;
+  /** See {@link TrustProxy}. `"cloudflare"` is safe only if the origin can't be reached except through Cloudflare. */
   trustProxy?: TrustProxy;
+  /** Overrides the client IP everywhere; return nothing to fall back to `trustProxy`. */
   clientIp?: ClientIpOptions["clientIp"];
   cors?: boolean | Parameters<typeof cors>[0];
   auth?: CovaraAuthSetup;

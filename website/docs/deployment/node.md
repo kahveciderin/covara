@@ -73,7 +73,7 @@ createCovara({
 | `false` (default) | The socket address |
 | list of IPs, CIDR ranges, `loopback`, `linklocal`, `uniquelocal` | If the socket peer is in the list, `X-Forwarded-For` is read from the right, skipping entries in the list; the first one outside it is the client (all trusted: the left-most). Without `X-Forwarded-For`, `X-Real-IP`. An untrusted peer's headers are ignored |
 | a number `n` | The `n`-th address counting from the socket peer leftwards through `X-Forwarded-For` (`1`: the right-most entry) |
-| `"cloudflare"` | `CF-Connecting-IP`, else the socket address |
+| `"cloudflare"` | `CF-Connecting-IP` from any peer, else the socket address. **Only safe when the origin is reachable solely through Cloudflare** (Cloudflare Tunnel, a firewall limited to Cloudflare's IP ranges, or Authenticated Origin Pulls): anyone who reaches it directly can set the header and choose their IP. Otherwise list Cloudflare's IP ranges instead |
 
 Reading from the right matters: proxies append to an incoming `X-Forwarded-For`, so its left-most entries are whatever the client sent. `clientIp: (c) => string | undefined` overrides all of this in one place (return nothing to fall back). Outside `createCovara`, call `configureClientIp({ trustProxy, clientIp })`. When forwarding headers arrive and are ignored, Covara logs one `warn` saying so.
 

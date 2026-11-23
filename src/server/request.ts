@@ -7,14 +7,27 @@ interface NodeIncoming {
   incoming?: { socket?: { remoteAddress?: string } };
 }
 
-// false: no proxy, the socket address is the client. "cloudflare": trust
-// CF-Connecting-IP (only when the origin accepts nothing but Cloudflare). A
-// number: that many proxies in front, Express-style. A list: the addresses,
-// CIDR ranges or named ranges (loopback, linklocal, uniquelocal) of trusted proxies.
+/**
+ * Which peers' forwarding headers to believe for the client IP used by every
+ * per-IP limit (rate limits, login throttle, abuse budget, admin/OIDC limits,
+ * SSE caps).
+ * - `false` (default): no proxy; the socket address (on Workers, CF-Connecting-IP).
+ * - `"cloudflare"`: trust `CF-Connecting-IP` from ANY peer. Safe only when the
+ *   origin is reachable solely through Cloudflare (Cloudflare Tunnel, a firewall
+ *   limited to Cloudflare's IP ranges, or Authenticated Origin Pulls). Anyone who
+ *   can reach the origin directly can set the header and choose their IP.
+ * - a number `n`: exactly `n` proxies in front; the `n`-th address from the right
+ *   of `X-Forwarded-For`, counting the socket peer.
+ * - a list of IPs, CIDR ranges, or `loopback` / `linklocal` / `uniquelocal`:
+ *   when the socket peer is listed, `X-Forwarded-For` is read from the right
+ *   through listed hops; an unlisted peer's headers are ignored.
+ */
 export type TrustProxy = false | "cloudflare" | number | string[];
 
 export interface ClientIpOptions {
+  /** See {@link TrustProxy}. `"cloudflare"` is safe only if the origin can't be reached except through Cloudflare. */
   trustProxy?: TrustProxy;
+  /** Overrides the client IP everywhere; return nothing to fall back to `trustProxy`. */
   clientIp?: (c: Context) => string | undefined | null;
 }
 
