@@ -234,6 +234,7 @@ export type {
   AbuseProtectionInput,
   AbuseProtectionConfig,
   BudgetConfig,
+  BudgetRequestInfo,
   BudgetClassConfig,
   PowConfig,
   PowDifficultyContext,
@@ -284,7 +285,7 @@ export type {
 // Server runtime helpers
 export { createSSEStream, formatSSE, formatSSEComment } from "./server/sse";
 export type { SSEWriter, SSEStreamOptions, SSEMessage } from "./server/sse";
-export { getClientIP, readJsonBody } from "./server/request";
+export { getClientIP, readJsonBody, configureClientIp, type TrustProxy, type ClientIpOptions } from "./server/request";
 export { requireUser, isAuthenticated as isContextAuthenticated, getSession as getContextSession } from "./server/context";
 export { readEnv, isDebugEnabled, isProduction } from "./server/env";
 export { beginShutdown, isShuttingDown, onShutdown } from "./server/lifecycle";

@@ -27,6 +27,7 @@ import {
   isCaptchaEnabled,
   isPowEnabled,
   type BudgetConfig,
+  type BudgetRequestInfo,
   type CaptchaContext,
   type EndpointCaptchaConfig,
   type EndpointPowConfig,
@@ -41,16 +42,16 @@ const defaultBudgetKey = (c: Context, className: string): string => {
   return `${className}:ip:${getClientIP(c)}`;
 };
 
-const resolveBudgetTarget = (c: Context, budget: BudgetConfig) => {
+const resolveBudgetTarget = (c: Context, budget: BudgetConfig, info: BudgetRequestInfo) => {
   const className = budget.classify
-    ? budget.classify(c)
+    ? budget.classify(c, info)
     : getUser(c)
       ? "authenticated"
       : "anonymous";
   const classConfig = budget.classes[className];
   if (!classConfig) return null;
   const key = budget.keyGenerator
-    ? budget.keyGenerator(c, className)
+    ? budget.keyGenerator(c, className, info)
     : defaultBudgetKey(c, className);
   return { className, classConfig, key };
 };
@@ -122,7 +123,10 @@ export const enforceAbuse = async (
   let deduct: () => Promise<void> = async () => {};
 
   if (cost > 0 && budget && budget.enabled !== false) {
-    const target = resolveBudgetTarget(c, budget);
+    const target = resolveBudgetTarget(c, budget, {
+      operation: options.operation,
+      ...(options.resource !== undefined && { resource: options.resource }),
+    });
     if (target) {
       const store = new BudgetStore(budget.store);
       const now = Date.now();

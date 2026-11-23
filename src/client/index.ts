@@ -1,3 +1,4 @@
+import type { PowClientConfig } from "./pow";
 import { ClientConfig, ResourceClient, OfflineConfig, CovaraClient, CheckAuthResult, ProcedureDef, AnyProcedures, SessionAuthClient } from "./types";
 import { createTransport } from "./transport";
 import { createRepository } from "./repository";
@@ -25,7 +26,7 @@ import {
 export { getClient, setGlobalClient, getAuthErrorHandler } from "./globals";
 export type { CovaraClient } from "./types";
 export { solvePowChallenge } from "./pow";
-export type { PowClientConfig } from "./pow";
+export type { PowClientConfig, PowSolver, PowChallenge } from "./pow";
 export { loadCaptchaWidget } from "./captcha";
 export type { CaptchaChallenge, CaptchaSolver } from "./captcha";
 export { csrfHeaders, readCsrfToken } from "./csrf";
@@ -64,7 +65,7 @@ export interface SimplifiedClientConfig {
   /** Opt into automatic ISO date-string -> Date conversion (see TransportConfig.parseDates). */
   parseDates?: boolean | DateFieldRegistry;
   /** Transparent proof-of-work challenge solving (enabled by default). */
-  pow?: { enabled?: boolean; maxAttempts?: number };
+  pow?: PowClientConfig;
   /**
    * SSE connection multiplexing (default true). Shares one SSE stream across all
    * live subscriptions instead of one browser connection each; falls back to

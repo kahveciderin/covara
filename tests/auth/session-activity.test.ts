@@ -62,11 +62,10 @@ describe("session activity tracking", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-forwarded-for": "203.0.113.7",
         "user-agent": "covara-test-browser/1.0",
       },
       body: JSON.stringify({ email: "a@b.com", password: "x" }),
-    });
+    }, { incoming: { socket: { remoteAddress: "203.0.113.7" } } });
     expect(res.status).toBe(200);
 
     const sessions = await store.getAll();

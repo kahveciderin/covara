@@ -24,7 +24,9 @@ valve; an endpoint may additionally require PoW unconditionally.
   unannotated operations cost 0.
 - **Per identity class.** Default: `authenticated` (keyed by user id) when a user
   is present, else `anonymous` (keyed by client IP). Buckets are isolated per
-  class+key.
+  class+key. `classify` and `keyGenerator` receive `{ operation, resource? }`
+  (the charged operation label and, on resource routes, the resource name); a
+  class without a `classes` entry is unmetered.
 - **Refill never exceeds capacity.** Tokens accrue at `refillPerMinute`, clamped
   at `capacity`; a never-before-seen key starts full.
 - **Assess before charge.** The bucket is inspected (not debited) to decide
@@ -91,6 +93,10 @@ valve; an endpoint may additionally require PoW unconditionally.
 - The transport solves a `428` PoW challenge and retries automatically, bounded
   by `pow.maxAttempts` (default 3). Enabled by default; `pow.enabled === false`
   opts out.
+- **Solving doesn't block the page.** The built-in solver runs in a Web Worker
+  when the runtime has one (unless `pow.worker === false`), and otherwise on the
+  main thread in slices that yield to the event loop; a worker that can't start
+  or fails falls back to the main thread. `pow.solver` replaces it.
 - A `428` CAPTCHA challenge is retried only when a `captcha.solve` callback is
   registered (bounded by `captcha.maxAttempts`, default 2); otherwise it surfaces
   as a `TransportError` with `isCaptchaRequired() === true`. The React

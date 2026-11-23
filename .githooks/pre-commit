@@ -17,14 +17,14 @@ set -uo pipefail
 PKG="package.json"
 NAME="covara"
 
-# What npm ships: `files` in package.json (dist, assets, README.md, LICENSE), where dist is
+# What npm ships: `files` in package.json (dist, assets, README.md, CHANGELOG.md, LICENSE), where dist is
 # built from src/ with the tsconfig. A commit that only bumps the version satisfies the
 # check by definition, so this cannot deadlock.
 staged="$(git diff --cached --name-only --diff-filter=ACMR)"
 touches_library=0
 while IFS= read -r file; do
   case "$file" in
-    src/*|assets/*|README.md|LICENSE|package.json|tsconfig*.json) touches_library=1 ;;
+    src/*|assets/*|README.md|CHANGELOG.md|LICENSE|package.json|tsconfig*.json) touches_library=1 ;;
   esac
 done <<< "$staged"
 

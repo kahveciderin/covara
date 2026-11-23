@@ -404,7 +404,7 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
       const ip = getClientIP(c);
 
       if (throttle$) {
-        const status = await throttle$.check(email, ip);
+        const status = await throttle$.check(email, ip, c);
         if (status.locked) {
           throw new RateLimitError(
             status.retryAfterSeconds,
@@ -416,7 +416,7 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
       const user = await login.validateCredentials(email, password);
       if (!user) {
         if (throttle$) {
-          await throttle$.recordFailure(email, ip);
+          await throttle$.recordFailure(email, ip, c);
         }
         await gate.settle(); // failed attempt -> charge the failed-cost
         throw new UnauthorizedError("Invalid email or password");
@@ -432,7 +432,7 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
           const ok = await verifyMfaChallenge(enrollment, user.id, mfaCode);
           if (!ok) {
             if (throttle$) {
-              await throttle$.recordFailure(email, ip);
+              await throttle$.recordFailure(email, ip, c);
             }
             await gate.settle(); // failed MFA -> charge the failed-cost
             throw new UnauthorizedError("Invalid MFA code");
@@ -446,7 +446,7 @@ export const useAuth = (options: UseAuthOptions): AuthRouterResult => {
       }
 
       if (throttle$) {
-        await throttle$.reset(email, ip);
+        await throttle$.reset(email, ip, c);
       }
 
       return c.json(result);

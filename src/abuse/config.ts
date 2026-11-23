@@ -16,20 +16,27 @@ export interface BudgetClassConfig {
   refillPerMinute: number;
 }
 
+// The operation being charged ("create", "read", "rpc:<name>", "auth.login", ...)
+// and, for resource routes, the resource name.
+export interface BudgetRequestInfo {
+  operation: string;
+  resource?: string;
+}
+
 export interface BudgetConfig {
   enabled?: boolean;
   /**
    * Map a request to an identity class name. Defaults to "authenticated" for a
    * logged-in user and "anonymous" otherwise.
    */
-  classify?: (c: Context) => string;
+  classify?: (c: Context, info: BudgetRequestInfo) => string;
   /** Token bucket parameters per identity class. */
   classes: Record<string, BudgetClassConfig>;
   /**
    * Derive the bucket key for a request within its class. Defaults to the user
    * id (authenticated) or client IP (anonymous), namespaced by class.
    */
-  keyGenerator?: (c: Context, className: string) => string;
+  keyGenerator?: (c: Context, className: string, info: BudgetRequestInfo) => string;
   /** Optional explicit KV store; defaults to the global KV, else in-memory. */
   store?: KVAdapter;
 }

@@ -120,7 +120,7 @@ app.use("*", createRateLimiter({
 }));
 ```
 
-`createSlidingWindowRateLimiter` is a sliding-window variant. Resources also accept a `rateLimit: { windowMs, maxRequests }` config directly — see [Resources](../core/resources-and-app.md#ratelimit). Provide a distributed `store` (KV/Redis) for multi-instance deployments.
+`getClientIP` trusts forwarding headers only from configured proxies; behind a proxy set `trustProxy` (see [Behind a proxy](../deployment/node.md#behind-a-proxy-the-client-ip)). `createSlidingWindowRateLimiter` is a sliding-window variant. Resources also accept a `rateLimit: { windowMs, maxRequests }` config directly — see [Resources](../core/resources-and-app.md#ratelimit). Provide a distributed `store` (KV/Redis) for multi-instance deployments.
 
 ## Related
 

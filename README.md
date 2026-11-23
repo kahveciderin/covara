@@ -212,6 +212,8 @@ await startServer(app, { port: 3000 });
 
 Health endpoints (`/healthz`, `/readyz`), OpenAPI (`/__covara/openapi.json`), the admin UI (`/__covara/ui`), and RFC 7807 error handling are wired automatically. The path is optional — `.resource(usersTable, config)` mounts at the table name.
 
+Behind nginx, Caddy or a load balancer, set `createCovara({ trustProxy: ["loopback"] })` (or the proxies' addresses): per-IP limits use the socket address and ignore `X-Forwarded-For` unless the peer is a trusted proxy. See [Behind a proxy](https://kahveciderin.github.io/covara/deployment/node#behind-a-proxy-the-client-ip).
+
 ### Cloudflare Workers
 
 ```typescript

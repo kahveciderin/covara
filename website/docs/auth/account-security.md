@@ -37,6 +37,23 @@ useAuth({ adapter, login, throttle: true });
 
 Failed logins are counted **per email and per IP**; once `maxAttempts` (default 5) is exceeded within the window (default 15 min), `/login` returns `429` with `Retry-After`. A successful login resets the counters. Provide a distributed `RateLimitStore` (e.g. Redis-backed) for multi-instance deployments; the default is in-memory.
 
+Each key can have its own limit. Where many people share one address (an office or campus NAT), a per-IP limit equal to the per-email one lets a handful of typos, or one person guessing, lock everyone out:
+
+```typescript
+throttle: { perIdentifier: 5, perIp: 50 }    // separate limits
+throttle: { perIdentifier: 5, perIp: false } // never lock an address
+```
+
+`perIdentifier` and `perIp` default to `maxAttempts`; `false` turns that key off. For full control, `keys(identifier, ip, c)` returns the keys to count, each a string (limited by `maxAttempts`) or `{ key, maxAttempts }`; it replaces the built-in keys:
+
+```typescript
+throttle: {
+  keys: (email, ip, c) => [{ key: `id:${email.toLowerCase()}`, maxAttempts: 5 }, { key: `tenant:${c?.req.header("x-tenant")}`, maxAttempts: 100 }],
+}
+```
+
+The IP is `getClientIP(c)`; behind a proxy set [`trustProxy`](../deployment/node.md#behind-a-proxy-the-client-ip).
+
 ## Email verification
 
 ```typescript

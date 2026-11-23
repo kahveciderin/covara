@@ -55,6 +55,28 @@ Set `gracefulShutdown: false` to manage shutdown yourself — the returned `clos
 
 `npx covara create` writes a `Dockerfile` and `docker-compose.yml` (app + Redis, plus Postgres when `--db postgres`) and a `.dockerignore`. See the [CLI](../tooling/cli.md).
 
+## Behind a proxy: the client IP
+
+Every per-IP limit (rate limits, the login throttle, the abuse budget, the admin and OIDC limits, the SSE subscription caps) keys on `getClientIP(c)`. By default on Node that is the **socket address**: `X-Forwarded-For`, `X-Real-IP` and `CF-Connecting-IP` are ignored, because any client can send them. Behind nginx, Caddy, a load balancer or Cloudflare, every request then comes from the proxy, so tell Covara which peers to trust:
+
+```typescript
+createCovara({
+  trustProxy: ["loopback"],            // nginx/Caddy on the same host
+  // trustProxy: ["10.0.0.0/8"],       // a load balancer in your private network
+  // trustProxy: 1,                    // exactly one proxy in front, whatever its address
+  // trustProxy: "cloudflare",         // CF-Connecting-IP; only if the origin accepts nothing but Cloudflare
+});
+```
+
+| `trustProxy` | Client IP |
+| --- | --- |
+| `false` (default) | The socket address |
+| list of IPs, CIDR ranges, `loopback`, `linklocal`, `uniquelocal` | If the socket peer is in the list, `X-Forwarded-For` is read from the right, skipping entries in the list; the first one outside it is the client (all trusted: the left-most). Without `X-Forwarded-For`, `X-Real-IP`. An untrusted peer's headers are ignored |
+| a number `n` | The `n`-th address counting from the socket peer leftwards through `X-Forwarded-For` (`1`: the right-most entry) |
+| `"cloudflare"` | `CF-Connecting-IP`, else the socket address |
+
+Reading from the right matters: proxies append to an incoming `X-Forwarded-For`, so its left-most entries are whatever the client sent. `clientIp: (c) => string | undefined` overrides all of this in one place (return nothing to fall back). Outside `createCovara`, call `configureClientIp({ trustProxy, clientIp })`. When forwarding headers arrive and are ignored, Covara logs one `warn` saying so.
+
 ## Scaling
 
 Run multiple instances behind a load balancer; give every instance a shared [Redis KV](../platform/kv.md) (via `initializeKV`) so [subscriptions](../realtime/subscriptions.md), sessions, rate limits, and the [task queue](../platform/tasks.md) are shared. See [Scaling across instances](./workers.md#scaling-across-instances).

@@ -73,6 +73,7 @@
 - **Logout invalidation**: All session tokens invalidated on logout
 - **Bulk invalidation**: Adapters may implement `invalidateUserSessions(userId, exceptSessionId?)`; password reset uses it when `logoutEverywhere` is set
 - **Indexed bulk invalidation**: When the session store implements the per-user index (`getByUser`/`deleteByUser` — the Redis, Drizzle, and in-memory stores all do), bulk invalidation touches only that user's sessions; the scan-all `getAll()` path is a fallback for stores without the index
+- **Login throttle keys**: the throttle locks when any of its keys exceeds that key's limit: by default `login:id:<lowercased identifier>` (`perIdentifier`, default `maxAttempts`) and `login:ip:<client ip>` (`perIp`, default `maxAttempts`); `false` drops a key. A `keys(identifier, ip, c)` hook replaces both. Limits must be positive integers (construction throws otherwise). Success resets every key
 - **Session activity metadata**: Login/signup store the client IP and user agent in `session.data` (`ipAddress`, `userAgent`); session use stamps `session.data.lastActiveAt`, throttled to at most one persisted write per minute per session and not awaited by the request (activity tracking never blocks or fails auth). `beginShutdown()` starts no new activity writes and resolves once pending ones settle (max 5s); logout and revocation wait for a pending write so it cannot recreate the session
 - **Cookie security**: HttpOnly, Secure (in production), SameSite attributes set
 
@@ -185,7 +186,7 @@
 ### Rate Limit Bypass Protection
 - Header normalization (case-insensitive)
 - IP normalization (IPv4/IPv6)
-- X-Forwarded-For only from trusted proxies
+- **Client IP from trusted proxies only**: `getClientIP` uses the socket address on Node and `CF-Connecting-IP` on Cloudflare Workers. `X-Forwarded-For` / `X-Real-IP` are read only when the socket peer is in `trustProxy` (or by hop count), right to left, skipping trusted hops, so a client-supplied entry is never chosen while a trusted proxy appended the real one. `CF-Connecting-IP` is trusted on Node only with `trustProxy: "cloudflare"`. A `clientIp` hook overrides it everywhere
 
 ## Failure Modes
 

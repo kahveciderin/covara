@@ -61,6 +61,30 @@ const protection = abuseProtection({
 const app = createCovara({ abuseProtection: protection });
 ```
 
+`classify(c, { operation, resource })` and `keyGenerator(c, className, { operation, resource })`
+also receive the operation being charged (`"read"`, `"create"`, `"rpc:<name>"`,
+`"auth.login"`, `"auth.signup"`, …) and, on resource routes, the resource name.
+That gives one user separate buckets, e.g. heavy reads apart from writes, or
+failed logins apart from everything else:
+
+```ts
+budget: {
+  enabled: true,
+  classify: (c, { operation }) =>
+    operation.startsWith("auth.") ? "auth" : operation === "read" ? "reads" : getUser(c) ? "authenticated" : "anonymous",
+  classes: {
+    auth: { capacity: 20, refillPerMinute: 2 },
+    reads: { capacity: 1000, refillPerMinute: 200 },
+    anonymous: { capacity: 100, refillPerMinute: 20 },
+    authenticated: { capacity: 500, refillPerMinute: 100 },
+  },
+},
+```
+
+A class name with no entry in `classes` leaves that request unmetered. The default
+key (user id, else client IP) is namespaced by class, so each class is its own
+bucket; pass `keyGenerator` to split further, e.g. per resource.
+
 > Costs and PoW opt-ins live **on the individual endpoints**, not in a central
 > map — `abuseProtection` only holds the budgets and the shared PoW settings.
 
@@ -159,6 +183,25 @@ Disable or tune it via `pow`:
 getOrCreateClient({ baseUrl, pow: { enabled: false } });        // opt out
 getOrCreateClient({ baseUrl, pow: { maxAttempts: 5 } });        // default 3
 ```
+
+Solving never blocks the page. Where the runtime has Web Workers, the client
+solves in a worker created from a `blob:` URL, hashing with `crypto.subtle`. If
+a worker can't be created (no `Worker`, or a Content Security Policy without
+`worker-src blob:`) or it fails, the client solves on the main thread in slices
+that yield to the event loop between them. `pow: { worker: false }` skips the
+worker. To use your own (a bundled worker file, WASM), pass a solver; it must
+resolve to a nonce whose `SHA-256(token + ":" + nonce)` has `difficulty`
+leading zero bits:
+
+```ts
+getOrCreateClient({
+  baseUrl,
+  pow: { solver: ({ token, difficulty, algorithm }) => myWorkerSolve(token, difficulty) },
+});
+```
+
+`solvePowChallenge(token, difficulty, algorithm?, { worker? })` from `covara/client`
+is the same built-in solver, for requests that don't go through the client.
 
 ## Secret
 

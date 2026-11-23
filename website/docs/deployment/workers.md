@@ -144,6 +144,7 @@ There's no long-lived poller on Workers — use the [Cloudflare Queues adapter](
 
 - Covara never reads `process.env` directly (`readEnv`/`isProduction`/`isDebugEnabled`), so it works where `process` doesn't exist.
 - [Local filesystem storage](../platform/storage.md) is Node-only; use R2 or S3-compatible storage on Workers.
+- The client IP is `CF-Connecting-IP`, which Cloudflare's edge sets; `X-Forwarded-For` is ignored unless `trustProxy` says otherwise (see [Behind a proxy](./node.md#behind-a-proxy-the-client-ip)).
 
 ## Related
 

@@ -160,7 +160,10 @@ export class FetchTransport implements Transport {
     if (!challenge || !Number.isFinite(difficulty) || difficulty <= 0) {
       return null;
     }
-    const nonce = await solvePowChallenge(challenge, difficulty, algorithm);
+    const solver = this.config.pow?.solver;
+    const nonce = solver
+      ? await solver({ token: challenge, difficulty, algorithm })
+      : await solvePowChallenge(challenge, difficulty, algorithm, { worker: this.config.pow?.worker });
     return {
       ...req,
       headers: {

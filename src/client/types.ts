@@ -1,3 +1,4 @@
+import type { PowClientConfig } from "./pow";
 import type { ResourceQueryBuilder } from "./resource-query-builder";
 import type { Transport } from "./transport";
 import type { OfflineManager } from "./offline";
@@ -223,7 +224,7 @@ export interface TransportConfig {
    * retries automatically so callers never see the challenge. Enabled by
    * default; set `enabled: false` to opt out.
    */
-  pow?: { enabled?: boolean; maxAttempts?: number };
+  pow?: PowClientConfig;
   /**
    * CAPTCHA challenge support (BETA). When the server answers with a 428 CAPTCHA
    * challenge and a `solve` callback is registered, the transport calls it for a

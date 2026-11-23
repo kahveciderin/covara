@@ -32,6 +32,7 @@ import {
   type AbuseProtectionConfig,
   type AbuseProtectionInput,
 } from "@/abuse/config";
+import { configureClientIp, type TrustProxy, type ClientIpOptions } from "@/server/request";
 
 let sseDrainHookRegistered = false;
 
@@ -43,6 +44,8 @@ export interface CovaraAuthSetup {
 
 export interface CovaraOptions {
   basePath?: string;
+  trustProxy?: TrustProxy;
+  clientIp?: ClientIpOptions["clientIp"];
   cors?: boolean | Parameters<typeof cors>[0];
   auth?: CovaraAuthSetup;
   middleware?: MiddlewareHandler[];
@@ -91,6 +94,9 @@ export class CovaraApp extends Hono {
 
     if (options.abuseProtection) {
       setGlobalAbuseProtection(options.abuseProtection);
+    }
+    if (options.trustProxy !== undefined || options.clientIp !== undefined) {
+      configureClientIp({ trustProxy: options.trustProxy, clientIp: options.clientIp });
     }
 
     this.onError(errorHandler);

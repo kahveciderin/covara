@@ -321,14 +321,14 @@ export const createPasskeyRouter = (options: PasskeyAuthOptions, deps: PasskeyRo
     const throttleKey = `passkey:${credentialId}`;
 
     if (deps.throttle) {
-      const status = await deps.throttle.check(throttleKey, ip);
+      const status = await deps.throttle.check(throttleKey, ip, c);
       if (status.locked) {
         throw new RateLimitError(status.retryAfterSeconds, "Too many login attempts, please try again later");
       }
     }
 
     const fail = async (): Promise<never> => {
-      if (deps.throttle) await deps.throttle.recordFailure(throttleKey, ip);
+      if (deps.throttle) await deps.throttle.recordFailure(throttleKey, ip, c);
       await gate.settle();
       throw new UnauthorizedError(LOGIN_FAILED);
     };
@@ -387,7 +387,7 @@ export const createPasskeyRouter = (options: PasskeyAuthOptions, deps: PasskeyRo
     const result = await deps.completeLogin(c, passkey.userId);
     if (!result) return fail();
 
-    if (deps.throttle) await deps.throttle.reset(throttleKey, ip);
+    if (deps.throttle) await deps.throttle.reset(throttleKey, ip, c);
     return c.json(result);
   });
 

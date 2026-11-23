@@ -1,3 +1,4 @@
+import { configureClientIp } from "@/server/request";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { Hono, type Context } from "hono";
 import {
@@ -437,9 +438,13 @@ describe("Auth Middleware", () => {
     });
 
     it("should return ip for unauthenticated requests", async () => {
-      const c = await makeContext({ "x-forwarded-for": "127.0.0.1" });
-
-      expect(rateByUser(c)).toBe("127.0.0.1");
+      configureClientIp({ trustProxy: 1 });
+      try {
+        const c = await makeContext({ "x-forwarded-for": "127.0.0.1" });
+        expect(rateByUser(c)).toBe("127.0.0.1");
+      } finally {
+        configureClientIp({});
+      }
     });
   });
 });

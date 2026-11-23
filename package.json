@@ -1,6 +1,6 @@
 {
   "name": "covara",
-  "version": "0.17.7",
+  "version": "0.18.0",
   "description": "Real-time resource API framework built on Hono — runs standalone (Node) and on Cloudflare Workers, with a TypeScript client",
   "type": "module",
   "main": "./dist/index.js",
@@ -111,6 +111,7 @@
     "dist",
     "assets",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
