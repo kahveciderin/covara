@@ -7,6 +7,7 @@ import {
   type InternalSchemaBundle,
   type TableResolver,
 } from "./internal-schema";
+import { getLogger } from "@/server/logger";
 
 export type Dialect = "sqlite" | "postgresql";
 
@@ -27,6 +28,7 @@ export interface MigrationSummary {
   tables: string[];
   statements: number;
   skipped?: boolean;
+  conflicts?: string[];
 }
 
 export const detectDialect = (db: DrizzleDatabase): Dialect => {
@@ -280,12 +282,6 @@ const postgresDDLByTable: Record<InternalTableName, string[]> = {
   ],
 };
 
-const builtinDDL = (dialect: Dialect): string[] => {
-  const byTable =
-    dialect === "postgresql" ? postgresDDLByTable : sqliteDDLByTable;
-  return INTERNAL_TABLE_NAMES.flatMap((name) => byTable[name]);
-};
-
 interface DrizzleColumn {
   name: string;
   notNull?: boolean;
@@ -382,6 +378,82 @@ const overrideIndexDDL = (
 const isBuiltin = (resolver: TableResolver<string>, builtin: unknown): boolean =>
   (resolver.table as unknown) === builtin;
 
+const queryRows = async (db: DrizzleDatabase, statement: string): Promise<Record<string, unknown>[]> => {
+  const query = sql.raw(statement);
+  if (typeof (db as { all?: unknown }).all === "function") {
+    return (db as { all: (q: unknown) => Promise<Record<string, unknown>[]> }).all(query);
+  }
+  const result = await (db as { execute: (q: unknown) => Promise<unknown> }).execute(query);
+  if (Array.isArray(result)) return result as Record<string, unknown>[];
+  return ((result as { rows?: Record<string, unknown>[] })?.rows ?? []) as Record<string, unknown>[];
+};
+
+// The columns of an existing table, [] when there is none, or null when the
+// driver can't be asked (then the DDL runs as before).
+const existingColumns = async (
+  db: DrizzleDatabase,
+  tableName: string,
+  dialect: Dialect
+): Promise<string[] | null> => {
+  const literal = `'${tableName.replace(/'/g, "''")}'`;
+  try {
+    const rows =
+      dialect === "postgresql"
+        ? await queryRows(
+            db,
+            `SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ${literal}`
+          )
+        : await queryRows(db, `SELECT name FROM pragma_table_info(${literal})`);
+    return rows.map((row) => String(row.name));
+  } catch {
+    return null;
+  }
+};
+
+interface PlannedTable {
+  tableName: string;
+  table: unknown;
+  statements: string[];
+}
+
+// Internal tables are only ever created, never altered, so an existing table
+// missing one of their columns is the app's own table that shares the name.
+const runPlan = async (
+  db: DrizzleDatabase,
+  plan: PlannedTable[],
+  dialect: Dialect
+): Promise<{ tables: string[]; statements: number; conflicts: string[] }> => {
+  const tables: string[] = [];
+  const conflicts: string[] = [];
+  let statements = 0;
+  for (const entry of plan) {
+    const existing = await existingColumns(db, entry.tableName, dialect);
+    if (existing && existing.length > 0) {
+      const expected = Object.values(getTableColumns(entry.table as never) as Record<string, { name: string }>).map(
+        (column) => column.name
+      );
+      const missing = expected.filter((name) => !existing.includes(name));
+      if (missing.length > 0) {
+        conflicts.push(entry.tableName);
+        getLogger().warn(
+          `Table "${entry.tableName}" already exists with a different shape, so Covara left it alone and did not create its internal table there`,
+          {
+            missingColumns: missing,
+            fix: "If you use the Covara feature that needs it, give it another table with defineInternalSchema({ <table>: { table } }) passed to autoMigrate and createCovara({ internalSchema })",
+          }
+        );
+        continue;
+      }
+    }
+    for (const statement of entry.statements) {
+      await runDDL(db, statement);
+    }
+    statements += entry.statements.length;
+    tables.push(entry.tableName);
+  }
+  return { tables, statements, conflicts };
+};
+
 export const migrateInternal = async (
   db: DrizzleDatabase,
   options: MigrateOptions = {}
@@ -410,14 +482,19 @@ export const migrateInternal = async (
 
   // Mode (a): no custom schema — run the built-in hardcoded DDL byte-for-byte.
   if (!schema) {
-    const statements = builtinDDL(dialect);
-    for (const statement of statements) {
-      await runDDL(db, statement);
-    }
+    const builtinTables = Object.values(internalSchema(dialect));
+    const byName = dialect === "postgresql" ? postgresDDLByTable : sqliteDDLByTable;
+    const plan = INTERNAL_TABLE_NAMES.map((name) => ({
+      tableName: name,
+      table: builtinTables.find((table) => getTableName(table as never) === name),
+      statements: byName[name],
+    }));
+    const result = await runPlan(db, plan, dialect);
     return {
       dialect,
-      tables: [...INTERNAL_TABLE_NAMES],
-      statements: statements.length,
+      tables: result.tables,
+      statements: result.statements,
+      ...(result.conflicts.length > 0 && { conflicts: result.conflicts }),
     };
   }
 
@@ -483,24 +560,25 @@ export const migrateInternal = async (
     },
   ];
 
-  const statements: string[] = [];
-  const tables: string[] = [];
-  for (const entry of entries) {
-    if (isBuiltin(entry.resolver, entry.builtin)) {
-      statements.push(...byTable[entry.canonical]);
-      tables.push(entry.canonical);
-    } else {
-      statements.push(generateTableDDL(entry.resolver, entry.label, dialect));
-      statements.push(...overrideIndexDDL(entry.resolver, entry.canonical, dialect));
-      tables.push(getTableName(entry.resolver.table as never));
-    }
-  }
-
-  for (const statement of statements) {
-    await runDDL(db, statement);
-  }
-
-  return { dialect, tables, statements: statements.length };
+  const plan: PlannedTable[] = entries.map((entry) =>
+    isBuiltin(entry.resolver, entry.builtin)
+      ? { tableName: entry.canonical, table: entry.builtin, statements: byTable[entry.canonical] }
+      : {
+          tableName: getTableName(entry.resolver.table as never),
+          table: entry.resolver.table,
+          statements: [
+            generateTableDDL(entry.resolver, entry.label, dialect),
+            ...overrideIndexDDL(entry.resolver, entry.canonical, dialect),
+          ],
+        }
+  );
+  const result = await runPlan(db, plan, dialect);
+  return {
+    dialect,
+    tables: result.tables,
+    statements: result.statements,
+    ...(result.conflicts.length > 0 && { conflicts: result.conflicts }),
+  };
 };
 
 export const autoMigrate = async (

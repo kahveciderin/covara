@@ -163,6 +163,18 @@ const app = createCovara({ internalSchema: internal, auth: useAuth({ adapter }) 
 2. **`schema.managedExternally = true`** → **no-op**. Recommended whenever you customize tables: create them with your own tool (e.g. `drizzle-kit`), which handles indexes and compound primary keys correctly.
 3. **`schema` without `managedExternally`** → generates `CREATE TABLE IF NOT EXISTS` for overridden tables from the Drizzle table objects. Single-primary-key tables only — it **throws** for compound-PK tables (`auth_accounts`, `auth_verification_tokens`), directing you to mode 2. Indexes are not regenerated in this mode, except the credits ledger's two unique indexes and the subscriptions `customerId` index, which correctness depends on.
 
+**A name your app already uses.** In modes 1 and 3, before creating each table Covara reads the columns of any existing table with that name. Internal tables are only ever created, never altered, so an existing table that lacks one of the internal table's columns is your own table that happens to share the name (for example your own `billing_subscriptions`). Covara leaves it untouched, skips that table and its indexes, logs one `warn` naming the missing columns, and lists it in the summary's `conflicts`. The other internal tables are still created, and startup goes on. If you use the Covara feature that needs that table, give it another name with an override:
+
+```typescript
+const internal = defineInternalSchema({
+  billingSubscriptions: { table: sqliteTable("covara_billing_subscriptions", { /* the columns above */ }) },
+});
+await autoMigrate(db, { schema: internal });
+createCovara({ internalSchema: internal /* , … */ });
+```
+
+`table` accepts a plain Drizzle `sqliteTable(...)` / `pgTable(...)`; no cast is needed.
+
 ## App-supplied tables
 
 ### Users

@@ -17,7 +17,7 @@ import {
   index as pgIndex,
   uniqueIndex as pgUniqueIndex,
 } from "drizzle-orm/pg-core";
-import { getTableColumns, type AnyColumn } from "drizzle-orm";
+import { getTableColumns, type AnyColumn, type Table } from "drizzle-orm";
 
 export type InternalTableName =
   | "auth_sessions"
@@ -517,6 +517,7 @@ const BILLING_SUBSCRIPTION_REQUIRED: readonly BillingSubscriptionKey[] = [
 ];
 
 type AnyTable = Record<string, unknown>;
+type TableInput = Table | AnyTable;
 
 export interface TableResolver<K extends string> {
   table: AnyTable;
@@ -532,7 +533,7 @@ export interface TableResolver<K extends string> {
 export type FieldRef = string | AnyColumn;
 
 export interface InternalTableOverride<K extends string> {
-  table: AnyTable;
+  table: TableInput;
   fieldMap?: Partial<Record<K, FieldRef>>;
 }
 
@@ -641,7 +642,7 @@ export const defineInternalSchema = (
     label: string
   ): TableResolver<K> =>
     makeResolver(
-      override?.table ?? builtin,
+      (override?.table as AnyTable | undefined) ?? builtin,
       required,
       label,
       override?.fieldMap

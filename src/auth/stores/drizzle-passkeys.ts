@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, type Table } from "drizzle-orm";
 import type { DrizzleDatabase } from "@/resource/types";
 import {
   PASSKEY_REQUIRED,
@@ -20,7 +20,7 @@ export interface DrizzlePasskeyStoreOptions {
   // A `defineInternalSchema(...).passkeys` resolver (custom table / remapped
   // columns). Defaults to the built-in `auth_passkeys` table for the db dialect.
   resolver?: TableResolver<PasskeyKey>;
-  table?: Record<string, unknown>;
+  table?: Table | Record<string, unknown>;
 }
 
 const toDate = (value: unknown): Date | null => {
@@ -56,7 +56,7 @@ export class DrizzlePasskeyStore implements PasskeyStore {
     this.resolver =
       options.resolver ??
       makeIdentityResolver(
-        options.table ??
+        (options.table as Record<string, unknown> | undefined) ??
           (internalSchema(detectDialect(options.db)).authPasskeys as unknown as Record<
             string,
             unknown
