@@ -39,8 +39,9 @@ await initializeKV({ type: "redis", redis: { url: env.REDIS_URL } }); // rejects
 | `retryDelay` | backoff to 2 s | Fixed delay between reconnect attempts |
 | `commandTimeoutMs` | `5000` | A command with no answer within this time rejects, so a frozen or partitioned Redis fails fast instead of hanging. `0` turns it off |
 | `offlineQueue` | `true` | Whether commands issued while disconnected wait for the reconnect. `false` rejects them at once |
+| `failFastMs` | `2000` | After a command times out, later commands reject at once for this long instead of each waiting its own `commandTimeoutMs`; then one command goes through as a probe, and an answer ends it. Only a timeout starts it, not a refused connection. `0` turns it off |
 
-Connection errors are logged once per outage (a `warn` through the covara logger) rather than per reconnect attempt. To configure ioredis yourself, build the client and pass it to `createRedisKV(client, prefix)`, then `setGlobalKV` it.
+Connection errors are logged once per outage (a `warn` through the covara logger) rather than per reconnect attempt. The fail-fast period is logged once when it starts and once when Redis answers again. To configure ioredis yourself, build the client and pass it to `createRedisKV(client, prefix, { failFastMs })`, then `setGlobalKV` it.
 
 For any distributed (non-memory) store, `initializeKV` calls `initializeEventSubscription()` for you, so a mutation on one instance reaches subscribers on another. If you instead set the global KV directly with `setGlobalKV(...)`, call `initializeEventSubscription()` yourself.
 

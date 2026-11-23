@@ -18,6 +18,7 @@ import {
   DEFAULT_IDEMPOTENCY_RETENTION_MS,
 } from "./idempotency";
 import { TaskRegistry } from "./scheduler";
+import { getLogger } from "@/server/logger";
 import { DrizzleDatabase } from "@/resource/types";
 import {
   trackMutations,
@@ -34,6 +35,8 @@ export const DEFAULT_RESULT_TTL_MS = 24 * 60 * 60 * 1000;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
+
+const MAX_POLL_BACKOFF_MS = 5000;
 
 export interface TaskWorker {
   start(): Promise<void>;
@@ -306,7 +309,22 @@ export const createTaskWorker = (
     );
   };
 
+  let wakeBackoff: (() => void) | null = null;
+  const backoff = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        wakeBackoff = null;
+        resolve();
+      }, ms);
+      wakeBackoff = () => {
+        clearTimeout(timer);
+        wakeBackoff = null;
+        resolve();
+      };
+    });
+
   const poll = async (): Promise<void> => {
+    let failures = 0;
     while (running && !draining) {
       if (paused) {
         await sleep(Math.min(100, pollInterval));
@@ -314,9 +332,19 @@ export const createTaskWorker = (
       }
       try {
         await pollOnce();
+        if (failures > 0) {
+          getLogger().info("Task worker polling again", { workerId, failedPolls: failures });
+          failures = 0;
+        }
       } catch (error) {
-        console.error(`Task worker ${workerId} poll failed:`, error);
-        await sleep(pollInterval);
+        if (failures++ === 0) {
+          getLogger().warn("Task worker poll failed, backing off until it succeeds", {
+            workerId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        const cap = Math.max(pollInterval, MAX_POLL_BACKOFF_MS);
+        await backoff(Math.min(pollInterval * 2 ** Math.min(failures - 1, 20), cap));
       }
     }
   };
@@ -430,6 +458,7 @@ export const createTaskWorker = (
       running = false;
       draining = false;
       clearInterval(reclaimTimer);
+      wakeBackoff?.();
 
       // A snapshot: aborting lets each task's own cleanup shrink both maps.
       for (const [taskId, controller] of [...activeTasks]) {

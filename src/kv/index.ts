@@ -37,7 +37,7 @@ export { setGlobalKV, getGlobalKV, hasGlobalKV, clearGlobalKV } from "./types";
 
 export { MemoryKVStore, createMemoryKV } from "./memory";
 
-export { RedisKVStore, createRedisKV, createRedisKVFromConfig } from "./redis";
+export { RedisKVStore, createRedisKV, createRedisKVFromConfig, type RedisKVOptions } from "./redis";
 
 export {
   CovaraKVDurableObject,

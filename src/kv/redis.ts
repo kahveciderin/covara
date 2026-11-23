@@ -131,6 +131,80 @@ const logClientErrors = (client: RedisClient, role: string): void => {
   });
 };
 
+const DEFAULT_FAIL_FAST_MS = 2000;
+const CLIENT_LIFECYCLE = new Set(["connect", "disconnect", "quit", "duplicate", "on", "once", "off", "removeListener"]);
+
+const isCommandTimeout = (error: unknown): boolean =>
+  error instanceof Error && /command timed out/i.test(error.message);
+
+// After a command times out, a frozen or partitioned Redis would cost every
+// later command its full timeout too; instead they fail at once, and one probe
+// per interval finds out whether Redis answers again.
+class CommandBreaker {
+  private openUntil = 0;
+  private probing = false;
+
+  constructor(private readonly failFastMs: number) {}
+
+  async run<T>(command: () => Promise<T>): Promise<T> {
+    if (this.failFastMs <= 0) return command();
+    let probe = false;
+    if (this.openUntil > 0) {
+      if (this.probing || Date.now() < this.openUntil) {
+        throw new Error("Redis is not answering (a command timed out); failing fast until it responds");
+      }
+      this.probing = probe = true;
+    }
+    try {
+      const result = await command();
+      if (this.openUntil > 0) {
+        this.openUntil = 0;
+        getLogger().info("Redis is answering again");
+      }
+      return result;
+    } catch (error) {
+      if (isCommandTimeout(error)) {
+        if (this.openUntil === 0) {
+          getLogger().warn("Redis command timed out, failing fast until it answers", {
+            failFastMs: this.failFastMs,
+          });
+        }
+        this.openUntil = Date.now() + this.failFastMs;
+      }
+      throw error;
+    } finally {
+      if (probe) this.probing = false;
+    }
+  }
+}
+
+const guardClient = (client: RedisClient, breaker: CommandBreaker): RedisClient =>
+  new Proxy(client, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function" || typeof prop !== "string" || CLIENT_LIFECYCLE.has(prop)) {
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      if (prop === "multi") {
+        return (...args: unknown[]) => {
+          const multi = value.apply(target, args) as RedisMulti;
+          return new Proxy(multi, {
+            get(m, p, r) {
+              const v = Reflect.get(m, p, r);
+              if (p === "exec") return () => breaker.run(() => v.call(m));
+              return typeof v === "function" ? v.bind(m) : v;
+            },
+          });
+        };
+      }
+      return (...args: unknown[]) => breaker.run(() => value.apply(target, args));
+    },
+  });
+
+export interface RedisKVOptions {
+  failFastMs?: number;
+}
+
 export class RedisKVStore implements KVAdapter {
   private client: RedisClient;
   private subClient: RedisClient | null = null;
@@ -139,8 +213,8 @@ export class RedisKVStore implements KVAdapter {
   private patternCallbacks = new Map<string, Set<SubscriptionCallback>>();
   private connected = false;
 
-  constructor(client: RedisClient, prefix = "") {
-    this.client = client;
+  constructor(client: RedisClient, prefix = "", options: RedisKVOptions = {}) {
+    this.client = guardClient(client, new CommandBreaker(options.failFastMs ?? DEFAULT_FAIL_FAST_MS));
     this.prefix = prefix;
   }
 
@@ -438,11 +512,12 @@ export class RedisKVStore implements KVAdapter {
     const subClient = await this.ensureSubClient();
 
     if (!this.subscriptionCallbacks.has(channel)) {
-      this.subscriptionCallbacks.set(channel, new Set());
       await subClient.subscribe(channel);
     }
 
-    this.subscriptionCallbacks.get(channel)!.add(callback);
+    const callbacks = this.subscriptionCallbacks.get(channel) ?? new Set();
+    callbacks.add(callback);
+    this.subscriptionCallbacks.set(channel, callbacks);
   }
 
   async psubscribe(
@@ -452,11 +527,12 @@ export class RedisKVStore implements KVAdapter {
     const subClient = await this.ensureSubClient();
 
     if (!this.patternCallbacks.has(pattern)) {
-      this.patternCallbacks.set(pattern, new Set());
       await subClient.psubscribe(pattern);
     }
 
-    this.patternCallbacks.get(pattern)!.add(callback);
+    const callbacks = this.patternCallbacks.get(pattern) ?? new Set();
+    callbacks.add(callback);
+    this.patternCallbacks.set(pattern, callbacks);
   }
 
   async unsubscribe(channel: string): Promise<void> {
@@ -604,9 +680,10 @@ class RedisTransaction implements KVTransaction {
  */
 export const createRedisKV = (
   client: RedisClient,
-  prefix?: string
+  prefix?: string,
+  options?: RedisKVOptions
 ): KVAdapter => {
-  return new RedisKVStore(client, prefix);
+  return new RedisKVStore(client, prefix, options);
 };
 
 /**
@@ -651,5 +728,5 @@ export const createRedisKVFromConfig = async (
       });
 
   logClientErrors(client, "commands");
-  return new RedisKVStore(client as unknown as RedisClient, prefix);
+  return new RedisKVStore(client as unknown as RedisClient, prefix, { failFastMs: config.failFastMs });
 };

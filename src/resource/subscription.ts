@@ -15,6 +15,7 @@ import {
 } from "./types";
 import { getGlobalKV, hasGlobalKV, KVAdapter } from "../kv";
 import type { ScopedSubscription } from "../kv/types";
+import { getLogger } from "@/server/logger";
 
 // Local process state (cannot be shared across processes)
 // HTTP handlers must stay in memory on the process that owns the connection
@@ -630,7 +631,7 @@ export const registerHandler = (
   if (supportsScopedSubscriptions(getKV())) {
     openHandlerFanout(handlerId);
   } else {
-    void ensureEventSubscription();
+    startEventSubscription();
   }
 };
 
@@ -646,7 +647,7 @@ export const unregisterHandler = async (handlerId: string): Promise<void> => {
   // case: closing one SSE stream never affects another). With the shared socket,
   // release it once no local handlers remain.
   if (localHandlerFanout.has(handlerId)) {
-    void closeHandlerFanout(handlerId);
+    void closeHandlerFanout(handlerId).catch(() => undefined);
   } else if (localHandlerIds.size === 0) {
     void releaseEventSubscription();
   }
@@ -969,11 +970,64 @@ const ensureEventSubscription = async (): Promise<void> => {
   return eventSubscriptionInflight;
 };
 
+const EVENT_SUBSCRIPTION_RETRY_MIN_MS = 1000;
+const EVENT_SUBSCRIPTION_RETRY_MAX_MS = 5000;
+let eventSubscriptionRetry: ReturnType<typeof setTimeout> | null = null;
+let eventSubscriptionRetryMs = 0;
+let eventSubscriptionFailing = false;
+
+const cancelEventSubscriptionRetry = (): void => {
+  if (eventSubscriptionRetry) clearTimeout(eventSubscriptionRetry);
+  eventSubscriptionRetry = null;
+  eventSubscriptionRetryMs = 0;
+};
+
+// Broadcasts published while the fan-out was down never reached this process,
+// so its subscribers refetch once it is back.
+const invalidateLocalSubscriptions = async (reason: string): Promise<void> => {
+  for (const subIds of Array.from(localHandlerSubs.values())) {
+    for (const subId of Array.from(subIds)) {
+      await sendInvalidateEvent(subId, reason).catch(() => undefined);
+    }
+  }
+};
+
+const startEventSubscription = (): void => {
+  ensureEventSubscription().then(
+    () => {
+      cancelEventSubscriptionRetry();
+      if (!eventSubscriptionFailing) return;
+      eventSubscriptionFailing = false;
+      getLogger().info("Cross-process subscription fan-out restored");
+      void invalidateLocalSubscriptions("Live updates were interrupted - please refetch");
+    },
+    (error) => {
+      if (!eventSubscriptionFailing) {
+        eventSubscriptionFailing = true;
+        getLogger().warn("Cross-process subscription fan-out unavailable, retrying", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (eventSubscriptionRetry || localHandlerIds.size === 0) return;
+      eventSubscriptionRetryMs = Math.min(
+        Math.max(eventSubscriptionRetryMs * 2, EVENT_SUBSCRIPTION_RETRY_MIN_MS),
+        EVENT_SUBSCRIPTION_RETRY_MAX_MS
+      );
+      eventSubscriptionRetry = setTimeout(() => {
+        eventSubscriptionRetry = null;
+        if (localHandlerIds.size > 0) startEventSubscription();
+      }, eventSubscriptionRetryMs);
+      (eventSubscriptionRetry as { unref?: () => void }).unref?.();
+    }
+  );
+};
+
 // Tear down the fan-out subscription once no local handlers remain, releasing the
 // request-scoped subscribe socket instead of holding it across requests.
 const releaseEventSubscription = async (): Promise<void> => {
-  if (!eventSubscriptionActive) return;
   if (localHandlerIds.size > 0) return;
+  cancelEventSubscriptionRetry();
+  if (!eventSubscriptionActive) return;
   eventSubscriptionActive = false;
   const kv = getKV();
   if (!kv) return;
@@ -1842,6 +1896,8 @@ export const clearAllSubscriptions = async (): Promise<void> => {
   localEventTimestamps.clear();
   eventSubscriptionActive = false;
   eventSubscriptionInflight = null;
+  cancelEventSubscriptionRetry();
+  eventSubscriptionFailing = false;
   recentAggregateNotices.clear();
   for (const promise of localHandlerFanout.values()) {
     void promise.then((sub) => sub?.close()).catch(() => {});

@@ -25,6 +25,7 @@
 - **Exclusive execution**: Only one worker executes a task at a time (via claim mechanism)
 - **Claim expiration**: If worker dies, claim expires after `lockTtlMs`, and any running worker on the same KV reclaims the task (it checks at start and every 5s)
 - **A lost run spends an attempt**: a task reclaimed while `running` is retried with `attempt + 1`, or dead-lettered if none remain (so `maxAttempts: 1` is never rerun after a crash, and a task that crashes its process can't loop forever). A task lost before it started, or requeued by `worker.stop()`, spends none
+- **An unreachable KV backs the poller off**: a failed poll logs one `warn` for the run of failures (not one per poll) and waits `pollIntervalMs`, doubling to at most 5s (or `pollIntervalMs` if larger); the first successful poll logs an `info` line and resets the delay. `stop()` cuts a backoff wait short
 - **`stop()` lets the process exit**: it clears every timer the worker owns, including those of a task whose handler never settles; only the handler's own timers can keep Node alive
 - **Live tasks are not reclaimed**: the lock is renewed at least three times per TTL, whatever `heartbeatMs` is. A worker that loses its lock to another does not requeue the task
 - **No dual execution**: CAS operations prevent split-brain dual execution

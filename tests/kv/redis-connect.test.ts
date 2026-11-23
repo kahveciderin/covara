@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const { clients, FakeRedis, state } = vi.hoisted(() => {
   const clients: any[] = [];
-  const state = { unreachable: false };
+  const state = { unreachable: false, subscribeFailures: 0, subscribeCalls: 0, failure: null as string | null, commands: 0 };
   class FakeRedis {
     status = "wait";
     listeners = new Map<string, ((...args: unknown[]) => void)[]>();
@@ -38,7 +38,31 @@ const { clients, FakeRedis, state } = vi.hoisted(() => {
       this.listeners.set(event, [...(this.listeners.get(event) ?? []), fn]);
     }
     async subscribe() {
+      state.subscribeCalls++;
+      if (state.subscribeFailures > 0) {
+        state.subscribeFailures--;
+        throw new Error("Connection is closed.");
+      }
       return 1;
+    }
+    async psubscribe() {
+      return this.subscribe();
+    }
+    async get() {
+      state.commands++;
+      if (state.failure) throw new Error(state.failure);
+      return "v";
+    }
+    multi() {
+      const multi = {
+        set: () => multi,
+        exec: async () => {
+          state.commands++;
+          if (state.failure) throw new Error(state.failure);
+          return [[null, "OK"]];
+        },
+      };
+      return multi;
     }
   }
   return { clients, FakeRedis, state };
@@ -52,6 +76,122 @@ import { setLogger, getLogger, createLogger, type LogRecord } from "@/server/log
 beforeEach(() => {
   clients.length = 0;
   state.unreachable = false;
+  state.subscribeFailures = 0;
+  state.subscribeCalls = 0;
+  state.failure = null;
+  state.commands = 0;
+});
+
+describe("Redis KV fails fast after a command timeout", () => {
+  const TIMEOUT = "Command timed out";
+  let logs: LogRecord[];
+  let previous: ReturnType<typeof getLogger>;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    logs = [];
+    previous = getLogger();
+    setLogger(createLogger({ level: "debug", sink: (r) => logs.push(r) }));
+    return () => {
+      setLogger(previous);
+      vi.useRealTimers();
+    };
+  });
+
+  const store = async (options?: { failFastMs?: number }) => {
+    const kv = createRedisKV(new FakeRedis({ lazyConnect: true }) as any, "", options);
+    await kv.connect();
+    return kv;
+  };
+
+  it("later commands fail without reaching Redis until the interval passes", async () => {
+    const kv = await store();
+    state.failure = TIMEOUT;
+    await expect(kv.get("k")).rejects.toThrow(TIMEOUT);
+    for (let i = 0; i < 5; i++) await expect(kv.get("k")).rejects.toThrow(/failing fast/);
+    expect(state.commands).toBe(1);
+    expect(logs.filter((l) => l.level === "warn")).toHaveLength(1);
+  });
+
+  it("one probe after the interval; a timed-out probe opens it again", async () => {
+    const kv = await store({ failFastMs: 1000 });
+    state.failure = TIMEOUT;
+    await expect(kv.get("k")).rejects.toThrow(TIMEOUT);
+    vi.advanceTimersByTime(1001);
+    await expect(kv.get("k")).rejects.toThrow(TIMEOUT);
+    expect(state.commands).toBe(2);
+    await expect(kv.get("k")).rejects.toThrow(/failing fast/);
+    expect(state.commands).toBe(2);
+    expect(logs.filter((l) => l.level === "warn")).toHaveLength(1);
+  });
+
+  it("while a probe is in flight other commands still fail fast", async () => {
+    const kv = await store({ failFastMs: 1000 });
+    state.failure = TIMEOUT;
+    await expect(kv.get("k")).rejects.toThrow(TIMEOUT);
+    vi.advanceTimersByTime(1001);
+    state.failure = null;
+    const probe = kv.get("k");
+    await expect(kv.get("k")).rejects.toThrow(/failing fast/);
+    await expect(probe).resolves.toBe("v");
+  });
+
+  it("an answered probe closes it", async () => {
+    const kv = await store({ failFastMs: 1000 });
+    state.failure = TIMEOUT;
+    await expect(kv.get("k")).rejects.toThrow(TIMEOUT);
+    state.failure = null;
+    vi.advanceTimersByTime(1001);
+    await expect(kv.get("k")).resolves.toBe("v");
+    await expect(kv.get("k")).resolves.toBe("v");
+    expect(state.commands).toBe(3);
+    expect(logs.some((l) => l.level === "info" && /answering again/.test(l.msg))).toBe(true);
+  });
+
+  it("covers transactions", async () => {
+    const kv = await store();
+    state.failure = TIMEOUT;
+    await expect(kv.multi().set("a", "b").exec()).rejects.toThrow(TIMEOUT);
+    await expect(kv.multi().set("a", "b").exec()).rejects.toThrow(/failing fast/);
+    await expect(kv.get("k")).rejects.toThrow(/failing fast/);
+    expect(state.commands).toBe(1);
+  });
+
+  it("other errors don't open it", async () => {
+    const kv = await store();
+    state.failure = "Connection is closed.";
+    await expect(kv.get("k")).rejects.toThrow("Connection is closed.");
+    await expect(kv.get("k")).rejects.toThrow("Connection is closed.");
+    expect(state.commands).toBe(2);
+  });
+
+  it("failFastMs 0 turns it off", async () => {
+    const kv = await store({ failFastMs: 0 });
+    state.failure = TIMEOUT;
+    await expect(kv.get("k")).rejects.toThrow(TIMEOUT);
+    await expect(kv.get("k")).rejects.toThrow(TIMEOUT);
+    expect(state.commands).toBe(2);
+  });
+
+  it("is configured from RedisConfig", async () => {
+    const kv = await createKV({ type: "redis", redis: { url: "redis://example", failFastMs: 0 } });
+    state.failure = TIMEOUT;
+    await expect(kv.get("k")).rejects.toThrow(TIMEOUT);
+    await expect(kv.get("k")).rejects.toThrow(TIMEOUT);
+  });
+});
+
+describe("Redis KV pub/sub", () => {
+  it.each(["subscribe", "psubscribe"] as const)("%s sends the command again after a failed attempt", async (method) => {
+    const kv = createRedisKV(new FakeRedis({ lazyConnect: true }) as any);
+    await kv.connect();
+    state.subscribeFailures = 1;
+    await expect(kv[method]("c", () => {})).rejects.toThrow();
+    await expect(kv[method]("c", () => {})).resolves.toBeUndefined();
+    expect(state.subscribeCalls).toBe(2);
+    await kv[method]("c", () => {});
+    expect(state.subscribeCalls).toBe(2);
+  });
 });
 
 describe("Redis KV connects", () => {

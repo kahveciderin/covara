@@ -62,7 +62,7 @@ describe("a KV outage after a committed write", () => {
     await expect(t.delete(notes).where(eq(notes.id, "a"))).resolves.toBeDefined();
     expect(await stored()).toEqual([]);
     await settle();
-    expect(logs.filter((l) => l.level === "error").length).toBeGreaterThanOrEqual(3);
+    expect(logs.filter((l) => l.level === "error")).toHaveLength(1);
     expect(unhandled).toEqual([]);
   });
 

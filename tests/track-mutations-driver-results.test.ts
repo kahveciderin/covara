@@ -119,14 +119,85 @@ describe.each(Object.entries(drivers))("mutation tracking with a %s", (_name, co
     expect(await summary()).toEqual([]);
   });
 
-  it("onConflictDoNothing that inserted invalidates", async () => {
+  it("onConflictDoNothing that inserted records the stored row", async () => {
     await t.insert(items).values({ id: "c" }).onConflictDoNothing();
+    expect(await summary()).toEqual(["create:c"]);
+    expect((await entries())[0].object).toEqual({ id: "c", name: null, n: 0 });
+  });
+
+  it("onConflictDoNothing that inserted some of its rows invalidates", async () => {
+    await t.insert(items).values([{ id: "a" }, { id: "c" }]).onConflictDoNothing();
     expect(await summary()).toEqual(["create:*"]);
   });
 
-  it("onConflictDoUpdate invalidates", async () => {
+  it("onConflictDoNothing whose id comes from $defaultFn records the stored row", async () => {
+    await pg.exec("CREATE UNIQUE INDEX IF NOT EXISTS dr_gens_name ON dr_gens (name)");
+    try {
+      await t.insert(gens).values({ name: "u" }).onConflictDoNothing();
+      await t.insert(gens).values({ name: "u" }).onConflictDoNothing();
+      const [{ id }] = (await pg.query<{ id: string }>("SELECT id FROM dr_gens WHERE name = 'u'")).rows;
+      expect(await summary()).toEqual([`create:${id}`]);
+    } finally {
+      await pg.exec("DROP INDEX dr_gens_name");
+    }
+  });
+
+  it("onConflictDoUpdate that updated records an update with the previous row", async () => {
+    const push = vi.spyOn(subscriptions, "pushUpdatesToSubscriptions");
     await t.insert(items).values({ id: "a" }).onConflictDoUpdate({ target: items.id, set: { name: "Z" } });
+    expect(await summary()).toEqual(["update:a"]);
+    const [entry] = await entries();
+    expect(entry.object).toEqual({ id: "a", name: "Z", n: 1 });
+    expect(entry.previousObject).toEqual({ id: "a", name: "A", n: 1 });
+    expect(push).toHaveBeenCalled();
+  });
+
+  it("onConflictDoUpdate that inserted records a create", async () => {
+    await t.insert(items).values({ id: "c", name: "C" }).onConflictDoUpdate({ target: items.id, set: { name: "Z" } });
+    expect(await summary()).toEqual(["create:c"]);
+    expect((await entries())[0].object).toEqual({ id: "c", name: "C", n: 0 });
+  });
+
+  it("onConflictDoUpdate of many rows splits creates and updates", async () => {
+    await t
+      .insert(items)
+      .values([{ id: "a", name: "A2" }, { id: "c", name: "C" }])
+      .onConflictDoUpdate({ target: items.id, set: { name: sql`excluded.name` } });
+    expect((await summary()).sort()).toEqual(["create:c", "update:a"]);
+  });
+
+  it("onConflictDoUpdate on another unique column, key from $defaultFn", async () => {
+    await pg.exec("CREATE UNIQUE INDEX IF NOT EXISTS dr_gens_name ON dr_gens (name)");
+    try {
+      await t.insert(gens).values({ name: "v" }).onConflictDoUpdate({ target: gens.name, set: { name: "v" } });
+      await t.insert(gens).values({ name: "v" }).onConflictDoUpdate({ target: gens.name, set: { name: "v" } });
+      const [{ id }] = (await pg.query<{ id: string }>("SELECT id FROM dr_gens WHERE name = 'v'")).rows;
+      expect(await summary()).toEqual([`create:${id}`, `update:${id}`]);
+    } finally {
+      await pg.exec("DROP INDEX dr_gens_name");
+    }
+  });
+
+  it("onConflictDoUpdate whose set moves the row off its target invalidates", async () => {
+    await t.insert(items).values({ id: "a" }).onConflictDoUpdate({ target: items.id, set: { id: "moved" } });
     expect(await summary()).toEqual(["create:*"]);
+  });
+
+  it("onConflictDoUpdate whose setWhere skipped the update records nothing", async () => {
+    await t
+      .insert(items)
+      .values({ id: "a" })
+      .onConflictDoUpdate({ target: items.id, set: { name: "Z" }, setWhere: sql`false` });
+    expect(await summary()).toEqual([]);
+  });
+
+  it("onConflictDoUpdate with returning() splits creates and updates", async () => {
+    await t
+      .insert(items)
+      .values([{ id: "b", name: "B2" }, { id: "d" }])
+      .onConflictDoUpdate({ target: items.id, set: { name: sql`excluded.name` } })
+      .returning();
+    expect((await summary()).sort()).toEqual(["create:d", "update:b"]);
   });
 
   it("update records and pushes the row", async () => {

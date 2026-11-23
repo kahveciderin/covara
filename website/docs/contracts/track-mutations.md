@@ -42,7 +42,7 @@
 
 ### Transaction Handling
 - **Transaction wrapping**: Wrapped transactions track all mutations within them
-- **A committed write never fails afterwards**: once the database write (or transaction) has committed, a failure to record the changelog entry, push to subscribers or invalidate the cache (an unreachable KV, a fan-out error) is logged at `error` through the covara logger and the call resolves with the driver's result. The same holds for the REST create, update, replace, delete, batch and upsert routes, which answer with the committed result
+- **A committed write never fails afterwards**: once the database write (or transaction) has committed, a failure to record the changelog entry, push to subscribers or invalidate the cache (an unreachable KV, a fan-out error) is logged at `error` through the covara logger and the call resolves with the driver's result. One line is logged per run of failures (an outage), not per write; the first write that is published again logs an `info` line with how many were not (`failedWrites`). The same holds for the REST create, update, replace, delete, batch and upsert routes, which answer with the committed result
 - **Commit-gated side effects**: Inside a tracked `db.transaction(...)`, changelog entries, subscription pushes, and cache invalidations are buffered and only emitted *after* the transaction commits
 - **Rollback discards effects**: If a transaction rolls back (the callback throws), the buffered side effects are discarded — no changelog entry, subscription event, or cache invalidation is produced for uncommitted state
 
@@ -102,6 +102,7 @@
 
 ### State Consistency
 - `hasConflictHandler` prevents false positive mutations on `onConflictDoNothing`
+- **Upserts without `.returning()` are recorded row by row**: `onConflictDoNothing()` reads its rows back by key, as a plain insert does (a `$defaultFn` key included); if the number found differs from the driver's affected count (an explicit key that conflicted), it falls back to `invalidate`. `onConflictDoUpdate({ target })` reads the rows matching the target values before and after the write: a key found before is recorded as an update with its previous row, a new one as a create (with `.returning()` too). A target value that is SQL or missing, a `set` that moves a row off its target, or a count mismatch falls back to `invalidate`; with `capturePreviousState: false` every row is recorded as a create
 - Empty update/delete results (no rows affected) produce no changelog entries
 
 ### Tracking Control

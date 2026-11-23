@@ -1,4 +1,4 @@
-import { Table, getTableName, AnyColumn, SQL, inArray } from "drizzle-orm";
+import { Table, getTableName, getTableColumns, AnyColumn, SQL, inArray, and, or, eq } from "drizzle-orm";
 import { changelog, recordCreate, recordUpdate, recordDelete } from "./changelog";
 import { ChangelogEntry, DrizzleDatabase, CustomOperator } from "./types";
 import { getGlobalKV, hasGlobalKV } from "../kv";
@@ -234,6 +234,46 @@ function trackedPromiseMethod(prop: string | symbol, target: any, query: any) {
   return undefined;
 }
 
+function conflictTargetKeys(tableInfo: TableInfo, target: unknown): string[] | null {
+  const targets = Array.isArray(target) ? target : [target];
+  const columns = getTableColumns(tableInfo.table) as Record<string, unknown>;
+  const keys = targets.map((column) => Object.keys(columns).find((key) => columns[key] === column));
+  return keys.length > 0 && keys.every((key) => key !== undefined) ? (keys as string[]) : null;
+}
+
+// An upsert writes exactly the rows whose conflict-target values it was given,
+// whether it inserted or updated them.
+async function readBackByTarget(
+  context: TrackingContext,
+  tableInfo: TableInfo,
+  keys: string[],
+  rows: any[]
+): Promise<Record<string, unknown>[] | null> {
+  const columns = getTableColumns(tableInfo.table) as Record<string, AnyColumn>;
+  const tuples = rows.map((row) => keys.map((key) => row?.[key]));
+  if (tuples.some((tuple) => tuple.some((v) => v === undefined || v === null || typeof v?.getSQL === "function"))) {
+    return null;
+  }
+  const perChunk = Math.max(1, Math.floor(READ_BACK_CHUNK / keys.length));
+  const found = new Map<string, Record<string, unknown>>();
+  try {
+    for (let i = 0; i < tuples.length; i += perChunk) {
+      const chunk = tuples.slice(i, i + perChunk);
+      const where =
+        keys.length === 1
+          ? inArray(columns[keys[0]], chunk.map((tuple) => tuple[0]))
+          : or(...chunk.map((tuple) => and(...keys.map((key, j) => eq(columns[key], tuple[j])))));
+      const selected = await context.db.select().from(tableInfo.table).where(where);
+      for (const row of selected as Record<string, unknown>[]) {
+        found.set(String(row[tableInfo.idColumnName]), row);
+      }
+    }
+  } catch {
+    return null;
+  }
+  return found.size === 0 ? null : [...found.values()];
+}
+
 // Drizzle calls $defaultFn while building the SQL, so the generated key never
 // reaches the tracker. Calling it here instead lets the row be read back.
 function withGeneratedIds(input: any, tableInfo: TableInfo): any {
@@ -274,6 +314,7 @@ interface InsertState {
   hasReturning: boolean;
   returnsFullRows?: boolean;
   hasConflictHandler: boolean;
+  conflictUpdateTarget?: unknown;
 }
 
 function wrapInsertBase(
@@ -305,6 +346,7 @@ function wrapInsertBase(
           return wrapInsertBase(result, tableInfo, context, insertValues, {
             ...state,
             hasConflictHandler: true,
+            ...(prop === "onConflictDoUpdate" && { conflictUpdateTarget: args[0]?.target }),
           });
         };
       }
@@ -312,6 +354,17 @@ function wrapInsertBase(
       if (prop === "then") {
         return async (resolve?: (value: any) => any, reject?: (error: any) => any) => {
           try {
+            const valueRows = Array.isArray(insertValues) ? insertValues : [insertValues];
+            const upsertKeys =
+              context.trackingEnabled && state.conflictUpdateTarget !== undefined
+                ? conflictTargetKeys(tableInfo, state.conflictUpdateTarget)
+                : null;
+            let previousMap: Map<string, Record<string, unknown>> | null = null;
+            if (upsertKeys && context.config.capturePreviousState !== false) {
+              const previous = await readBackByTarget(context, tableInfo, upsertKeys, valueRows);
+              previousMap = new Map((previous ?? []).map((row) => [String(row[tableInfo.idColumnName]), row]));
+            }
+
             const result = await target;
 
             if (context.trackingEnabled) {
@@ -323,14 +376,17 @@ function wrapInsertBase(
               if (affected !== 0) {
                 if (state.returnsFullRows && returnedIds) {
                   items = result;
+                } else if (returnedIds) {
+                  items = await readBack(context, tableInfo, returnedIds);
+                } else if (state.conflictUpdateTarget !== undefined) {
+                  items = upsertKeys && (await readBackByTarget(context, tableInfo, upsertKeys, valueRows));
                 } else {
-                  // Through a conflict handler the values don't say what was written.
-                  const ids =
-                    returnedIds ??
-                    (state.hasConflictHandler
-                      ? null
-                      : rowIds(Array.isArray(insertValues) ? insertValues : [insertValues], idColumnName));
+                  const ids = rowIds(valueRows, idColumnName);
                   items = ids && (await readBack(context, tableInfo, ids));
+                }
+                // Through a conflict handler the values may name rows it left alone.
+                if (items && !state.hasReturning && state.hasConflictHandler && affected !== undefined && items.length !== affected) {
+                  items = null;
                 }
               }
 
@@ -339,9 +395,12 @@ function wrapInsertBase(
                 return resolve ? resolve(result) : result;
               }
 
+              const created = previousMap ? items.filter((item) => !previousMap.has(String(item[idColumnName]))) : items;
+              const updated = previousMap ? items.filter((item) => previousMap.has(String(item[idColumnName]))) : [];
+
               await runOrDefer(context, tableInfo.resourceName, async () => {
-                if (items.length > 0) {
-                  for (const item of items) {
+                if (created.length > 0) {
+                  for (const item of created) {
                     const id = String(item[idColumnName]);
                     const entry = await recordCreate(tableInfo.resourceName, id, item);
                     if (context.config.onMutation) {
@@ -353,8 +412,28 @@ function wrapInsertBase(
                     await pushInsertsToSubscriptions(
                       tableInfo.resourceName,
                       tableInfo.filter,
-                      items,
+                      created,
                       idColumnName
+                    );
+                  }
+                }
+
+                if (updated.length > 0 && previousMap) {
+                  for (const item of updated) {
+                    const id = String(item[idColumnName]);
+                    const entry = await recordUpdate(tableInfo.resourceName, id, item, previousMap.get(id));
+                    if (context.config.onMutation) {
+                      await context.config.onMutation(entry);
+                    }
+                  }
+
+                  if (context.config.pushToSubscriptions !== false) {
+                    await pushUpdatesToSubscriptions(
+                      tableInfo.resourceName,
+                      tableInfo.filter,
+                      updated,
+                      idColumnName,
+                      previousMap
                     );
                   }
                 }

@@ -187,6 +187,7 @@ export interface RedisConfig {
   retryDelay?: number;
   commandTimeoutMs?: number;
   offlineQueue?: boolean;
+  failFastMs?: number;
 }
 
 // Global KV store instance
