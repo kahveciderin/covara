@@ -28,6 +28,7 @@ import {
   registerQueryableFields,
 } from "./field-policy";
 import { recordCreate, recordUpdate, recordDelete, changelog } from "./changelog";
+import { publishCommitted } from "./publish-committed";
 import {
   createSubscription,
   removeSubscription,
@@ -705,18 +706,22 @@ export const useResource = <TConfig extends TableConfig>(
 
       for (const item of createdArray) {
         await executeAfterCreate(hooks, ctx, item as any);
-        recordCreate(resourceName, String(item[idColumnName]), item, getUser(c)?.id);
         await indexDocument(String(item[idColumnName]), item);
       }
 
-      await pushInsertsToSubscriptions(
-        resourceName,
-        filterer as any,
-        createdArray,
-        idColumnName,
-        undefined,
-        subscriptionRelationLoader
-      );
+      await publishCommitted(resourceName, async () => {
+        for (const item of createdArray) {
+          await recordCreate(resourceName, String(item[idColumnName]), item, getUser(c)?.id);
+        }
+        await pushInsertsToSubscriptions(
+          resourceName,
+          filterer as any,
+          createdArray,
+          idColumnName,
+          undefined,
+          subscriptionRelationLoader
+        );
+      });
 
       return c.json({ items: maskReadableList(created as Record<string, unknown>[]) });
     });
@@ -822,22 +827,31 @@ export const useResource = <TConfig extends TableConfig>(
         const previous = previousMap.get(id);
         if (previous) {
           await executeAfterUpdate(hooks, ctx, item as any);
-          recordUpdate(resourceName, id, item, previous, getUser(c)?.id);
         } else {
           await executeAfterCreate(hooks, ctx, item as any);
-          recordCreate(resourceName, id, item, getUser(c)?.id);
         }
         await indexDocument(id, item);
       }
 
-      await pushUpdatesToSubscriptions(
-        resourceName,
-        filterer as any,
-        upserted,
-        idColumnName,
-        previousMap,
-        subscriptionRelationLoader
-      );
+      await publishCommitted(resourceName, async () => {
+        for (const item of upserted) {
+          const id = String(item[idColumnName]);
+          const previous = previousMap.get(id);
+          if (previous) {
+            await recordUpdate(resourceName, id, item, previous, getUser(c)?.id);
+          } else {
+            await recordCreate(resourceName, id, item, getUser(c)?.id);
+          }
+        }
+        await pushUpdatesToSubscriptions(
+          resourceName,
+          filterer as any,
+          upserted,
+          idColumnName,
+          previousMap,
+          subscriptionRelationLoader
+        );
+      });
 
       return c.json({ items: maskReadableList(upserted) });
     });
@@ -893,19 +907,23 @@ export const useResource = <TConfig extends TableConfig>(
       // Record to changelog only after the transaction has committed, so a
       // rolled-back update never leaves a phantom entry.
       for (const item of result.items) {
-        const id = String(item[idColumnName]);
-        await recordUpdate(resourceName, id, item, result.previousMap.get(id), getUser(c)?.id);
-        await indexDocument(id, item);
+        await indexDocument(String(item[idColumnName]), item);
       }
 
-      await pushUpdatesToSubscriptions(
-        resourceName,
-        filterer as any,
-        result.items,
-        idColumnName,
-        result.previousMap,
-        subscriptionRelationLoader
-      );
+      await publishCommitted(resourceName, async () => {
+        for (const item of result.items) {
+          const id = String(item[idColumnName]);
+          await recordUpdate(resourceName, id, item, result.previousMap.get(id), getUser(c)?.id);
+        }
+        await pushUpdatesToSubscriptions(
+          resourceName,
+          filterer as any,
+          result.items,
+          idColumnName,
+          result.previousMap,
+          subscriptionRelationLoader
+        );
+      });
 
       return c.json({ count: result.count });
     });
@@ -950,19 +968,20 @@ export const useResource = <TConfig extends TableConfig>(
 
       // Record to changelog only after the transaction has committed, so a
       // rolled-back delete never leaves a phantom entry.
-      for (const item of result.items) {
-        await recordDelete(resourceName, String(item[idColumnName]), item, getUser(c)?.id);
-      }
-
       for (const id of result.deletedIds) {
         await deleteFromIndex(id);
       }
 
-      await pushDeletesToSubscriptions(
-        resourceName,
-        result.deletedIds,
-        result.items as Record<string, unknown>[]
-      );
+      await publishCommitted(resourceName, async () => {
+        for (const item of result.items) {
+          await recordDelete(resourceName, String(item[idColumnName]), item, getUser(c)?.id);
+        }
+        await pushDeletesToSubscriptions(
+          resourceName,
+          result.deletedIds,
+          result.items as Record<string, unknown>[]
+        );
+      });
 
       return c.json({ count: result.count });
     });
@@ -1836,7 +1855,6 @@ export const useResource = <TConfig extends TableConfig>(
 
     await executeAfterCreate(hooks, ctx, created);
 
-    recordCreate(resourceName, String(createdObj[idColumnName]), createdObj, getUser(c)?.id);
     await indexDocument(String(createdObj[idColumnName]), createdObj);
 
     const optimisticId = c.req.header("x-covara-optimistic-id");
@@ -1844,14 +1862,17 @@ export const useResource = <TConfig extends TableConfig>(
       ? new Map([[String(createdObj[idColumnName]), optimisticId]])
       : undefined;
 
-    await pushInsertsToSubscriptions(
-      resourceName,
-      filterer as any,
-      [createdObj],
-      idColumnName,
-      optimisticIds,
-      subscriptionRelationLoader
-    );
+    await publishCommitted(resourceName, async () => {
+      await recordCreate(resourceName, String(createdObj[idColumnName]), createdObj, getUser(c)?.id);
+      await pushInsertsToSubscriptions(
+        resourceName,
+        filterer as any,
+        [createdObj],
+        idColumnName,
+        optimisticIds,
+        subscriptionRelationLoader
+      );
+    });
 
     const maskedCreated = maskReadable(created as Record<string, unknown>);
     const response = optimisticId
@@ -2032,19 +2053,21 @@ export const useResource = <TConfig extends TableConfig>(
 
     await executeAfterUpdate(hooks, ctx, updated);
 
-    recordUpdate(resourceName, id, updated, existing, getUser(c)?.id);
     await indexDocument(id, updated);
 
     const previousMap = new Map<string, Record<string, unknown>>();
     previousMap.set(id, existing);
-    await pushUpdatesToSubscriptions(
-      resourceName,
-      filterer as any,
-      [updated],
-      idColumnName,
-      previousMap,
-      subscriptionRelationLoader
-    );
+    await publishCommitted(resourceName, async () => {
+      await recordUpdate(resourceName, id, updated, existing, getUser(c)?.id);
+      await pushUpdatesToSubscriptions(
+        resourceName,
+        filterer as any,
+        [updated],
+        idColumnName,
+        previousMap,
+        subscriptionRelationLoader
+      );
+    });
 
     if (etagConfig) {
       setETagHeader(c, updated, etagConfig);
@@ -2091,19 +2114,21 @@ export const useResource = <TConfig extends TableConfig>(
 
     await executeAfterUpdate(hooks, ctx, updated);
 
-    recordUpdate(resourceName, id, updated, existing, getUser(c)?.id);
     await indexDocument(id, updated);
 
     const previousMap = new Map<string, Record<string, unknown>>();
     previousMap.set(id, existing);
-    await pushUpdatesToSubscriptions(
-      resourceName,
-      filterer as any,
-      [updated],
-      idColumnName,
-      previousMap,
-      subscriptionRelationLoader
-    );
+    await publishCommitted(resourceName, async () => {
+      await recordUpdate(resourceName, id, updated, existing, getUser(c)?.id);
+      await pushUpdatesToSubscriptions(
+        resourceName,
+        filterer as any,
+        [updated],
+        idColumnName,
+        previousMap,
+        subscriptionRelationLoader
+      );
+    });
 
     if (etagConfig) {
       setETagHeader(c, updated, etagConfig);
@@ -2163,12 +2188,12 @@ export const useResource = <TConfig extends TableConfig>(
 
     await executeAfterDelete(hooks, ctx, existing);
 
-    recordDelete(resourceName, id, existing, getUser(c)?.id);
     await deleteFromIndex(id);
 
-    await pushDeletesToSubscriptions(resourceName, [id], [
-      existing as Record<string, unknown>,
-    ]);
+    await publishCommitted(resourceName, async () => {
+      await recordDelete(resourceName, id, existing, getUser(c)?.id);
+      await pushDeletesToSubscriptions(resourceName, [id], [existing as Record<string, unknown>]);
+    });
 
     return c.body(null, 204);
   });

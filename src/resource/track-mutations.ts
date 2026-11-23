@@ -11,6 +11,7 @@ import {
 } from "./subscription";
 import { createResourceFilter, Filter } from "./filter";
 import { columnPropertyKey } from "./column-ref";
+import { publishCommitted } from "./publish-committed";
 
 export interface TableRegistration {
   table: Table<any>;
@@ -64,12 +65,14 @@ interface TrackingContext {
 
 async function runOrDefer(
   context: TrackingContext,
+  resource: string,
   thunk: () => Promise<void>
 ): Promise<void> {
+  const publish = () => publishCommitted(resource, thunk);
   if (context.pendingEvents) {
-    context.pendingEvents.push(thunk);
+    context.pendingEvents.push(publish);
   } else {
-    await thunk();
+    await publish();
   }
 }
 
@@ -209,7 +212,7 @@ async function trackUnidentifiedWrite(
   tableInfo: TableInfo,
   type: "create" | "update" | "delete"
 ): Promise<void> {
-  await runOrDefer(context, async () => {
+  await runOrDefer(context, tableInfo.resourceName, async () => {
     if (context.config.cache?.enabled) {
       await invalidateTableCache(tableInfo.resourceName);
     }
@@ -231,6 +234,19 @@ function trackedPromiseMethod(prop: string | symbol, target: any, query: any) {
   return undefined;
 }
 
+// Drizzle calls $defaultFn while building the SQL, so the generated key never
+// reaches the tracker. Calling it here instead lets the row be read back.
+function withGeneratedIds(input: any, tableInfo: TableInfo): any {
+  const defaultFn = (tableInfo.idColumn as { defaultFn?: () => unknown }).defaultFn;
+  if (typeof defaultFn !== "function" || !input || typeof input !== "object" || typeof input.getSQL === "function") {
+    return input;
+  }
+  const key = tableInfo.idColumnName;
+  const fill = (row: any) =>
+    row && typeof row === "object" && row[key] === undefined ? { ...row, [key]: defaultFn() } : row;
+  return Array.isArray(input) ? input.map(fill) : fill(input);
+}
+
 function wrapInsertBuilder(
   builder: any,
   tableInfo: TableInfo,
@@ -239,7 +255,8 @@ function wrapInsertBuilder(
   return new Proxy(builder, {
     get(target, prop) {
       if (prop === "values") {
-        return (data: any) => {
+        return (input: any) => {
+          const data = withGeneratedIds(input, tableInfo);
           const base = target.values(data);
           return wrapInsertBase(base, tableInfo, context, data);
         };
@@ -322,7 +339,7 @@ function wrapInsertBase(
                 return resolve ? resolve(result) : result;
               }
 
-              await runOrDefer(context, async () => {
+              await runOrDefer(context, tableInfo.resourceName, async () => {
                 if (items.length > 0) {
                   for (const item of items) {
                     const id = String(item[idColumnName]);
@@ -469,7 +486,7 @@ function wrapUpdateBase(
                 return resolve ? resolve(result) : result;
               }
 
-              await runOrDefer(context, async () => {
+              await runOrDefer(context, tableInfo.resourceName, async () => {
                 for (const item of items) {
                   const id = String(item[tableInfo.idColumnName]);
                   const previousItem = previousMap.get(id);
@@ -570,7 +587,7 @@ function wrapDeleteBuilder(
                 }
               }
 
-              await runOrDefer(context, async () => {
+              await runOrDefer(context, tableInfo.resourceName, async () => {
                 const deletedIds: string[] = [];
 
                 for (const item of itemsToDelete) {
@@ -756,7 +773,7 @@ function recordDetectedMutation(
   const tableInfo = context.registryByName.get(mutationInfo.tableName);
   if (!tableInfo) return;
 
-  return runOrDefer(context, async () => {
+  return runOrDefer(context, tableInfo.resourceName, async () => {
     if (context.config.cache?.enabled) {
       await invalidateTableCache(tableInfo.resourceName);
     }

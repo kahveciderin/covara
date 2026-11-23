@@ -44,7 +44,7 @@
 ### Progress, Heartbeat, Result TTL
 - **Progress reporting**: Handlers receive `ctx.reportProgress(percent, message?)` which persists progress (clamped 0–100) so a monitor can read it via `storage.getProgress`
 - **Heartbeat**: Running tasks update `lastHeartbeatAt` independently of lock extension, so a stalled task is detectable even while its lock is still valid
-- **Result TTL**: `resultTtlMs` (default 24h) sets `resultExpiresAt` on completed/failed records; expired records are removed lazily on the next read rather than accumulating forever
+- **Result TTL**: `resultTtlMs` (default 24h) sets `resultExpiresAt` on completed/failed records. The record carries a KV TTL ending then, so it disappears without being read and without a running worker; its status and name index entries are swept on later completions
 
 ### Cloudflare Queues Backend
 - **Push delivery**: `createCloudflareQueueProducer(binding)` enqueues tasks onto a Workers Queue and `createQueueConsumer({ kv, registry })` executes them from a `MessageBatch`, acking on success/dead-letter and retrying (with backoff `delaySeconds`) on retryable failure — no long-lived poller required
@@ -61,7 +61,7 @@
 - ❌ **Exactly-once**: Delivery is at-least-once. `idempotencyKey` gives effectively-once execution within the retention window when a shared KV is configured, but without an idempotency key (or with a memory KV that isn't shared) a task may run more than once
 - ❌ **Concurrency cap without shared KV**: `maxConcurrency` enforcement relies on shared slot keys; with the per-process memory KV it only bounds a single instance
 - ❌ **Execution duration limits**: Tasks can run indefinitely (unless timeout configured)
-- ❌ **Permanent result persistence**: Completed task records (including results) are retained only until `resultExpiresAt` (`resultTtlMs`, default 24h), then removed on the next read; they are not kept forever
+- ❌ **Permanent result persistence**: Completed task records (including results) are retained only until `resultExpiresAt` (`resultTtlMs`, default 24h), then expire from the KV; they are not kept forever
 
 ### Distributed (What We Don't Promise)
 - ❌ **Fair distribution**: Work distribution across workers is best-effort, not guaranteed fair

@@ -118,7 +118,7 @@ process.on("SIGTERM", async () => {
 
 ### Result TTL
 
-A completed/failed task carries `resultExpiresAt = completedAt + resultTtlMs` (default 24h) and is deleted lazily on next read. Dead tasks live in the DLQ until purged.
+A completed/failed task carries `resultExpiresAt = completedAt + resultTtlMs` (default 24h) and expires from the KV at that time, read or not. Dead tasks live in the DLQ until purged.
 
 ## Scheduling
 
@@ -286,6 +286,8 @@ const stop = startRecurringScheduler(kv, async (name, input) => {
   return task ? scheduler.enqueue(task, input) : "";
 }, 1000);
 ```
+
+A tick that fails (the KV is unreachable, `enqueue` throws) is logged and retried on the next interval; it never surfaces as an unhandled rejection. Ticks don't overlap: while one is still waiting on a slow KV, later intervals are skipped.
 
 ## Best practices
 

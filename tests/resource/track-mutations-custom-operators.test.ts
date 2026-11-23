@@ -6,6 +6,7 @@ import { createClient as createLibsqlClient } from "@libsql/client";
 import type { SSEWriter } from "@/server/sse";
 import type { CustomOperator } from "@/resource/types";
 import { trackMutations } from "@/resource/track-mutations";
+import { setLogger, getLogger, createLogger, type LogRecord } from "@/server/logger";
 import {
   registerHandler,
   unregisterHandler,
@@ -127,18 +128,23 @@ describe("trackMutations fan-out honors the resource's custom operators", () => 
     await unregisterHandler("h2");
   });
 
-  it("reproduces the bug: without threaded custom operators the tracked write throws", async () => {
-    // trackMutations registered WITHOUT customOperators (the pre-fix behavior).
+  it("without threaded custom operators the committed write resolves and the fan-out error is logged", async () => {
     const tracked = trackMutations(db, {
       cop_things: { table: things, id: things.id },
     });
+    const logs: LogRecord[] = [];
+    const previous = getLogger();
+    setLogger(createLogger({ level: "debug", sink: (r) => logs.push(r) }));
 
-    await openSub("h3", 'tags=has="red"');
-
-    await expect(
-      tracked.insert(things).values({ id: "t3", name: "Ball", tags: '["red","blue"]' }).returning()
-    ).rejects.toThrow(/operator/i);
-
-    await unregisterHandler("h3");
+    try {
+      await openSub("h3", 'tags=has="red"');
+      await expect(
+        tracked.insert(things).values({ id: "t3", name: "Ball", tags: '["red","blue"]' }).returning()
+      ).resolves.toHaveLength(1);
+      expect(logs.some((l) => l.level === "error" && /operator/i.test(String(l.error)))).toBe(true);
+    } finally {
+      setLogger(previous);
+      await unregisterHandler("h3");
+    }
   });
 });

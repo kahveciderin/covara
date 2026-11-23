@@ -25,6 +25,7 @@ import { createScopeResolver } from "@/auth/scope";
 import { assertCapabilities } from "@/resource/capabilities";
 import { executeBeforeCreate, executeAfterCreate } from "@/resource/procedures";
 import { recordCreate } from "@/resource/changelog";
+import { publishCommitted } from "@/resource/publish-committed";
 import { pushInsertsToSubscriptions } from "@/resource/subscription";
 import { isAdminBypassRequest } from "@/server/admin-bypass";
 import { getUser } from "@/server/context";
@@ -357,15 +358,10 @@ export const useFileResource = <TConfig extends TableConfig>(
     >[];
 
     await executeAfterCreate(hooks, ctx, created as never);
-    recordCreate(resourceName, String(created[idColumnName]), created, user?.id);
-    await pushInsertsToSubscriptions(
-      resourceName,
-      filterer as never,
-      [created],
-      idColumnName,
-      undefined,
-      undefined
-    );
+    await publishCommitted(resourceName, async () => {
+      await recordCreate(resourceName, String(created[idColumnName]), created, user?.id);
+      await pushInsertsToSubscriptions(resourceName, filterer as never, [created], idColumnName, undefined, undefined);
+    });
     return created;
   };
 

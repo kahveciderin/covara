@@ -14,6 +14,8 @@ const items = pgTable("dr_items", {
   n: integer("n").notNull().default(0),
 });
 const autos = pgTable("dr_autos", { id: serial("id").primaryKey(), name: text("name") });
+let generated = 0;
+const gens = pgTable("dr_gens", { id: text("id").primaryKey().$defaultFn(() => `g${++generated}`), name: text("name") });
 
 let pg: PGlite;
 
@@ -22,6 +24,7 @@ beforeAll(async () => {
   await pg.exec(`
     CREATE TABLE dr_items (item_id TEXT PRIMARY KEY, name TEXT, n INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE dr_autos (id SERIAL PRIMARY KEY, name TEXT);
+    CREATE TABLE dr_gens (id TEXT PRIMARY KEY, name TEXT);
   `);
 }, 60_000);
 afterAll(() => pg.close());
@@ -41,18 +44,20 @@ describe.each(Object.entries(drivers))("mutation tracking with a %s", (_name, co
   let t: any;
 
   beforeEach(async () => {
-    await pg.exec("TRUNCATE dr_items; TRUNCATE dr_autos; INSERT INTO dr_items VALUES ('a','A',1),('b','B',2);");
+    await pg.exec("TRUNCATE dr_items; TRUNCATE dr_autos; TRUNCATE dr_gens; INSERT INTO dr_items VALUES ('a','A',1),('b','B',2);");
     await changelog.clear();
     vi.restoreAllMocks();
     t = trackMutations(connect() as any, {
       dr_items: { table: items, id: items.id },
       dr_autos: { table: autos, id: autos.id },
+      dr_gens: { table: gens, id: gens.id },
     });
   });
 
   const entries = async () => [
     ...(await changelog.getEntriesSince("dr_items", 0)),
     ...(await changelog.getEntriesSince("dr_autos", 0)),
+    ...(await changelog.getEntriesSince("dr_gens", 0)),
   ];
   const summary = async () => (await entries()).map((e) => `${e.type}:${e.objectId}`);
 
@@ -68,6 +73,18 @@ describe.each(Object.entries(drivers))("mutation tracking with a %s", (_name, co
     await t.insert(items).values(Array.from({ length: 200 }, (_, i) => ({ id: `n${i}` })));
     expect(await summary()).toHaveLength(200);
   }, 20_000);
+
+  it("insert whose id comes from $defaultFn records the stored row", async () => {
+    const values = [{ name: "x" }, { name: "y" }];
+    await t.insert(gens).values(values);
+    const stored = (await pg.query<{ id: string }>("SELECT id FROM dr_gens ORDER BY name")).rows.map((r) => r.id);
+    expect(await summary()).toEqual(stored.map((id) => `create:${id}`));
+    expect((await entries()).map((e) => e.object)).toEqual([
+      { id: stored[0], name: "x" },
+      { id: stored[1], name: "y" },
+    ]);
+    expect(values).toEqual([{ name: "x" }, { name: "y" }]);
+  });
 
   it("insert with a database-generated id invalidates", async () => {
     const invalidate = vi.spyOn(subscriptions, "invalidateResourceSubscriptions");

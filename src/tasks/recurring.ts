@@ -1,5 +1,6 @@
 import { CronExpressionParser } from "cron-parser";
 import { KVAdapter } from "@/kv/types";
+import { getLogger } from "@/server/logger";
 import {
   CatchupPolicy,
   RecurringConfig,
@@ -256,6 +257,19 @@ export const startRecurringScheduler = (
   intervalMs: number = 1000
 ): (() => void) => {
   const manager = createRecurringManager(kv);
-  const interval = setInterval(() => manager.tick(enqueue), intervalMs);
+  let ticking = false;
+  const interval = setInterval(async () => {
+    if (ticking) return;
+    ticking = true;
+    try {
+      await manager.tick(enqueue);
+    } catch (error) {
+      getLogger().error("Recurring task scheduler tick failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      ticking = false;
+    }
+  }, intervalMs);
   return () => clearInterval(interval);
 };

@@ -47,6 +47,7 @@ const { clients, FakeRedis, state } = vi.hoisted(() => {
 vi.mock("ioredis", () => ({ default: FakeRedis }));
 
 import { createKV, createRedisKV } from "@/kv";
+import { setLogger, getLogger, createLogger, type LogRecord } from "@/server/logger";
 
 beforeEach(() => {
   clients.length = 0;
@@ -65,7 +66,6 @@ describe("Redis KV connects", () => {
     expect(url).toBe("redis://example");
     expect(options.maxRetriesPerRequest).toBe(2);
     expect(options.retryStrategy(1)).toBe(70);
-    expect(options.retryStrategy(3)).toBeNull();
   });
 
   it("does not override what the url carries", async () => {
@@ -105,5 +105,57 @@ describe("Redis KV connects", () => {
     state.unreachable = true;
     await expect(createKV({ type: "redis", redis: { url: "redis://down" } })).rejects.toThrow("Connection is closed.");
     expect(clients[0].status).toBe("end");
+  });
+});
+
+describe("Redis KV from config survives an outage", () => {
+  it("keeps reconnecting after maxRetries, which only bounds retries per command", async () => {
+    await createKV({ type: "redis", redis: { url: "redis://example", maxRetries: 2 } });
+    const { options } = clients[0];
+    expect(options.maxRetriesPerRequest).toBe(2);
+    for (const attempt of [1, 3, 50, 10_000]) expect(options.retryStrategy(attempt)).toBeGreaterThan(0);
+    expect(options.retryStrategy(10_000)).toBeLessThanOrEqual(2000);
+  });
+
+  it("times commands out after 5 s by default", async () => {
+    await createKV({ type: "redis", redis: { url: "redis://example" } });
+    expect(clients[0].options.commandTimeout).toBe(5000);
+  });
+
+  it("takes a command timeout, and 0 turns it off", async () => {
+    await createKV({ type: "redis", redis: { url: "redis://example", commandTimeoutMs: 1500 } });
+    expect(clients[0].options.commandTimeout).toBe(1500);
+    await createKV({ type: "redis", redis: { host: "example", commandTimeoutMs: 0 } });
+    expect(clients[1].options).not.toHaveProperty("commandTimeout");
+  });
+
+  it("passes the offline queue switch", async () => {
+    await createKV({ type: "redis", redis: { url: "redis://example", offlineQueue: false } });
+    expect(clients[0].options.enableOfflineQueue).toBe(false);
+    await createKV({ type: "redis", redis: { url: "redis://example" } });
+    expect(clients[1].options).not.toHaveProperty("enableOfflineQueue");
+  });
+
+  it("logs client errors once per outage, on the subscriber too", async () => {
+    const logs: LogRecord[] = [];
+    const previous = getLogger();
+    setLogger(createLogger({ level: "debug", sink: (r) => logs.push(r) }));
+    try {
+      const kv = await createKV({ type: "redis", redis: { url: "redis://example" } });
+      await kv.subscribe("c", () => {});
+      const [main, sub] = clients;
+      const emit = (client: any, event: string, ...args: unknown[]) =>
+        (client.listeners.get(event) ?? []).forEach((fn: any) => fn(...args));
+      emit(main, "error", new Error("ECONNREFUSED"));
+      emit(main, "error", new Error("ECONNREFUSED"));
+      expect(logs.filter((l) => l.level === "warn")).toHaveLength(1);
+      emit(main, "ready");
+      emit(main, "error", new Error("ETIMEDOUT"));
+      expect(logs.filter((l) => l.level === "warn")).toHaveLength(2);
+      emit(sub, "error", new Error("ECONNREFUSED"));
+      expect(logs.filter((l) => l.level === "warn")).toHaveLength(3);
+    } finally {
+      setLogger(previous);
+    }
   });
 });

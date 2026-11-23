@@ -185,6 +185,8 @@ export interface RedisConfig {
   tls?: boolean;
   maxRetries?: number;
   retryDelay?: number;
+  commandTimeoutMs?: number;
+  offlineQueue?: boolean;
 }
 
 // Global KV store instance

@@ -28,8 +28,19 @@ import { initializeKV } from "covara/kv";
 await initializeKV({ type: "memory", prefix: "my-app" });
 
 // Production (Node)
-await initializeKV({ type: "redis", redis: { url: env.REDIS_URL } }); // rejects if Redis is unreachable; maxRetries / retryDelay / tls apply to urls too
+await initializeKV({ type: "redis", redis: { url: env.REDIS_URL } }); // rejects if Redis is unreachable; the options below apply to urls too
 ```
+
+| `redis` option | Default | Meaning |
+| --- | --- | --- |
+| `url` / `host`, `port`, `password`, `db` | `localhost:6379`, db 0 | Where to connect |
+| `tls` | `false` | Use TLS |
+| `maxRetries` | `3` | How many times one command is retried across reconnects before it rejects. It does not stop reconnecting: the client reconnects for as long as the process runs |
+| `retryDelay` | backoff to 2 s | Fixed delay between reconnect attempts |
+| `commandTimeoutMs` | `5000` | A command with no answer within this time rejects, so a frozen or partitioned Redis fails fast instead of hanging. `0` turns it off |
+| `offlineQueue` | `true` | Whether commands issued while disconnected wait for the reconnect. `false` rejects them at once |
+
+Connection errors are logged once per outage (a `warn` through the covara logger) rather than per reconnect attempt. To configure ioredis yourself, build the client and pass it to `createRedisKV(client, prefix)`, then `setGlobalKV` it.
 
 For any distributed (non-memory) store, `initializeKV` calls `initializeEventSubscription()` for you, so a mutation on one instance reaches subscribers on another. If you instead set the global KV directly with `setGlobalKV(...)`, call `initializeEventSubscription()` yourself.
 

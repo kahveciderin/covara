@@ -164,6 +164,7 @@ const localEventTimestamps = new Map<string, number>();
 // handler is known to this process. Tracking handler → subscription IDs here
 // lets disconnect cleanup run in O(own subscriptions) without scanning KV.
 const localHandlerSubs = new Map<string, Set<string>>();
+const localHandlerLeaseTimers = new Map<string, ReturnType<typeof setInterval>>();
 const localSubHandlers = new Map<string, string>();
 
 const trackHandlerSubscription = (handlerId: string, subscriptionId: string): void => {
@@ -197,6 +198,16 @@ const SUBSCRIPTIONS_RESOURCE_INDEX = "covara:subs:resources";
 
 const subscriptionHashKey = (resource: string): string =>
   `${SUBSCRIPTIONS_BY_RESOURCE_PREFIX}${resource}`;
+
+// Each record is leased (one hash per resource: subscription id -> lease end, ms)
+// by the process holding its stream, which renews it while the stream is open.
+// A record whose lease ran out belongs to a process that died: loads drop it.
+const SUBSCRIPTION_LEASE_PREFIX = "covara:subs:lease:";
+const SUBSCRIPTION_LEASE_MS = 120_000;
+const SUBSCRIPTION_LEASE_RENEW_MS = 30_000;
+
+const subscriptionLeaseKey = (resource: string): string =>
+  `${SUBSCRIPTION_LEASE_PREFIX}${resource}`;
 
 // The resource is embedded in the subscription ID (`<uuid>:<resource>`) so
 // ID-only operations (get/remove/updateSeq) can address the right shard
@@ -504,6 +515,11 @@ export const createSubscription = async (
   const kv = getKV();
   if (kv) {
     await kv.hset(
+      subscriptionLeaseKey(options.resource),
+      subscriptionId,
+      String(Date.now() + SUBSCRIPTION_LEASE_MS)
+    );
+    await kv.hset(
       subscriptionHashKey(options.resource),
       subscriptionId,
       serializeSubscription(subscription)
@@ -537,6 +553,7 @@ export const removeSubscription = async (subscriptionId: string): Promise<void> 
     const resource = resourceFromSubscriptionId(subscriptionId);
     if (resource) {
       await kv.hdel(subscriptionHashKey(resource), subscriptionId);
+      await kv.hdel(subscriptionLeaseKey(resource), subscriptionId);
     } else {
       // Unknown ID format: clear it from every shard (cold fallback).
       const resources = await kv.smembers(SUBSCRIPTIONS_RESOURCE_INDEX);
@@ -603,6 +620,7 @@ export const registerHandler = (
   if (renderer) {
     localHandlerRenderers.set(handlerId, renderer);
   }
+  startLeaseRenewal(handlerId, writer);
   // Establish cross-process fan-out lazily, in this SSE request's live context
   // (Workers-safe). When the KV supports scoped subscriptions, this handler gets
   // its OWN dedicated socket bound to its request — so closing another stream
@@ -621,6 +639,7 @@ export const unregisterHandler = async (handlerId: string): Promise<void> => {
   localHandlerIds.delete(handlerId);
   localHandlerPolicies.delete(handlerId);
   localHandlerRenderers.delete(handlerId);
+  stopLeaseRenewal(handlerId);
 
   // Tear down this handler's fan-out. With per-handler scoped sockets, close only
   // this handler's socket (others keep their own live sockets — the bulletproof
@@ -673,10 +692,23 @@ const getSubscriptionsForResourceMap = async (
   const kv = getKV();
   if (kv) {
     const result = new Map<string, Subscription>();
-    const subs = await kv.hgetall(subscriptionHashKey(resource));
+    const [subs, leases] = await Promise.all([
+      kv.hgetall(subscriptionHashKey(resource)),
+      kv.hgetall(subscriptionLeaseKey(resource)),
+    ]);
+    const now = Date.now();
+    const expired: string[] = [];
+    const unleased: string[] = [];
     for (const [subId, data] of Object.entries(subs)) {
+      const lease = leases[subId];
+      if (lease === undefined) unleased.push(subId);
+      else if (Number(lease) < now) {
+        expired.push(subId);
+        continue;
+      }
       result.set(subId, deserializeSubscription(data));
     }
+    await pruneSubscriptionRecords(kv, resource, expired, unleased, now);
     return result;
   }
 
@@ -690,6 +722,81 @@ const getSubscriptionsForResourceMap = async (
   return result;
 };
 
+// Records written before leases existed get one lease period: a live process of
+// the new version renews it, a dead or old one doesn't.
+const pruneSubscriptionRecords = async (
+  kv: KVAdapter,
+  resource: string,
+  expired: string[],
+  unleased: string[],
+  now: number
+): Promise<void> => {
+  if (expired.length === 0 && unleased.length === 0) return;
+  try {
+    const multi = kv.multi();
+    for (const subId of unleased) {
+      multi.hset(subscriptionLeaseKey(resource), subId, String(now + SUBSCRIPTION_LEASE_MS));
+    }
+    if (expired.length > 0) {
+      multi.hdel(subscriptionHashKey(resource), ...expired);
+      multi.hdel(subscriptionLeaseKey(resource), ...expired);
+      multi.del(
+        ...expired.flatMap((subId) => [`${SUBSCRIPTION_OBJECTS_PREFIX}${subId}`, `${SUBSCRIPTION_SEQ_PREFIX}${subId}`])
+      );
+    }
+    await multi.exec();
+    for (const subId of expired) compiledFiltersCache.delete(subId);
+  } catch {
+    // A later load retries.
+  }
+};
+
+const renewHandlerLeases = async (handlerId: string, writer: SSEWriter): Promise<void> => {
+  const kv = getKV();
+  const tracked = localHandlerSubs.get(handlerId);
+  if (!kv || !tracked || tracked.size === 0) return;
+  const subIds = Array.from(tracked).filter((subId) => resourceFromSubscriptionId(subId));
+  const until = String(Date.now() + SUBSCRIPTION_LEASE_MS);
+  const multi = kv.multi();
+  for (const subId of subIds) {
+    multi.hset(subscriptionLeaseKey(resourceFromSubscriptionId(subId)!), subId, until);
+  }
+  const results = await multi.exec();
+  // A new lease field means the record was pruned while the stream was alive
+  // (renewals failed for a whole lease, e.g. a KV outage): other processes no
+  // longer deliver to it, so the client must reconnect and subscribe again.
+  const pruned = subIds.filter((_, i) => results[i] === 1);
+  if (pruned.length === 0) return;
+  for (const subId of pruned) {
+    await kv.hdel(subscriptionLeaseKey(resourceFromSubscriptionId(subId)!), subId);
+  }
+  if (pruned.some((subId) => localHandlerSubs.get(handlerId)?.has(subId)) && !writer.closed) {
+    writer.close();
+  }
+};
+
+const startLeaseRenewal = (handlerId: string, writer: SSEWriter): void => {
+  if (!getKV() || localHandlerLeaseTimers.has(handlerId)) return;
+  const timer = setInterval(() => {
+    if (writer.closed) {
+      stopLeaseRenewal(handlerId);
+      return;
+    }
+    renewHandlerLeases(handlerId, writer).catch(() => {
+      // The lease outlasts several missed renewals; the next tick retries.
+    });
+  }, SUBSCRIPTION_LEASE_RENEW_MS);
+  (timer as { unref?: () => void }).unref?.();
+  localHandlerLeaseTimers.set(handlerId, timer);
+};
+
+const stopLeaseRenewal = (handlerId: string): void => {
+  const timer = localHandlerLeaseTimers.get(handlerId);
+  if (timer === undefined) return;
+  clearInterval(timer);
+  localHandlerLeaseTimers.delete(handlerId);
+};
+
 // Enumerate every shard. Cold paths only (stats, admin listing, fallback
 // cleanup) — never called per mutation.
 const getAllSubscriptions = async (): Promise<Map<string, Subscription>> => {
@@ -698,9 +805,8 @@ const getAllSubscriptions = async (): Promise<Map<string, Subscription>> => {
     const result = new Map<string, Subscription>();
     const resources = await kv.smembers(SUBSCRIPTIONS_RESOURCE_INDEX);
     for (const resource of resources) {
-      const subs = await kv.hgetall(subscriptionHashKey(resource));
-      for (const [subId, data] of Object.entries(subs)) {
-        result.set(subId, deserializeSubscription(data));
+      for (const [subId, sub] of await getSubscriptionsForResourceMap(resource)) {
+        result.set(subId, sub);
       }
     }
     return result;
@@ -1727,6 +1833,7 @@ export const clearAllSubscriptions = async (): Promise<void> => {
   localHandlerIds.clear();
   localHandlerPolicies.clear();
   localHandlerSubs.clear();
+  for (const handlerId of Array.from(localHandlerLeaseTimers.keys())) stopLeaseRenewal(handlerId);
   localSubHandlers.clear();
   localSubscriptions.clear();
   localRelevantObjects.clear();
@@ -1751,7 +1858,7 @@ export const clearAllSubscriptions = async (): Promise<void> => {
 
   for (const resource of resources) {
     const hashKey = subscriptionHashKey(resource);
-    keysToDelete.push(hashKey);
+    keysToDelete.push(hashKey, subscriptionLeaseKey(resource));
     const subs = await kv.hgetall(hashKey);
     for (const subId of Object.keys(subs)) {
       keysToDelete.push(

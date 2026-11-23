@@ -164,6 +164,8 @@ The subscription manager reconnects with exponential backoff + jitter, heartbeat
 users.subscribe({ resumeFrom: lastSeq });
 ```
 
+On the server, each subscription stored in the KV is leased by the process holding its stream. If that process dies without cleaning up, its subscriptions are dropped within about two minutes instead of being loaded on every write forever. See the [subscriptions contract](../contracts/subscriptions.md).
+
 ## Backpressure
 
 Each connection has a bounded outbound queue. When a slow consumer fills it, the resource's policy applies instead of unbounded buffering:

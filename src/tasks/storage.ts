@@ -5,6 +5,9 @@ const TASK_DATA_PREFIX = "covara:tasks:data:";
 const STATUS_INDEX_PREFIX = "covara:tasks:status:";
 const NAME_INDEX_PREFIX = "covara:tasks:name:";
 const IDEMPOTENCY_PREFIX = "covara:tasks:idempotency:";
+const EXPIRING_KEY = "covara:tasks:expiring";
+const EXPIRY_SWEEP_BATCH = 100;
+const TERMINAL_WITH_RESULT: TaskStatus[] = ["completed", "failed"];
 
 const serializeTask = (task: Task): Record<string, string> => {
   const result: Record<string, string> = {
@@ -108,6 +111,28 @@ export interface TaskStorage {
   setHeartbeat(taskId: string, at: number): Promise<void>;
 }
 
+// The record itself carries a KV TTL; this drops its index entries once expired.
+const sweepExpired = async (kv: KVAdapter): Promise<void> => {
+  const now = Date.now();
+  const due = await kv.zrangebyscore(EXPIRING_KEY, "-inf", now, {
+    limit: { offset: 0, count: EXPIRY_SWEEP_BATCH },
+  });
+  for (const member of due) {
+    const [taskId, name] = JSON.parse(member) as [string, string];
+    const dataKey = `${TASK_DATA_PREFIX}${taskId}`;
+    const multi = kv.multi();
+    multi.zrem(EXPIRING_KEY, member);
+    const [status, expiresAt] = await Promise.all([kv.hget(dataKey, "status"), kv.hget(dataKey, "resultExpiresAt")]);
+    const live = status !== null && !(TERMINAL_WITH_RESULT.includes(status as TaskStatus) && Number(expiresAt) <= now);
+    if (!live) {
+      multi.del(dataKey);
+      for (const terminal of TERMINAL_WITH_RESULT) multi.srem(`${STATUS_INDEX_PREFIX}${terminal}`, taskId);
+      if (name) multi.srem(`${NAME_INDEX_PREFIX}${name}`, taskId);
+    }
+    await multi.exec();
+  }
+};
+
 export const createTaskStorage = (kv: KVAdapter): TaskStorage => ({
   async store(task: Task): Promise<void> {
     await kv.hmset(`${TASK_DATA_PREFIX}${task.id}`, serializeTask(task));
@@ -178,7 +203,17 @@ export const createTaskStorage = (kv: KVAdapter): TaskStorage => ({
     multi.srem(`${STATUS_INDEX_PREFIX}${oldStatus}`, taskId);
     multi.sadd(`${STATUS_INDEX_PREFIX}${newStatus}`, taskId);
 
+    const expiresAt = updates.resultExpiresAt;
+    const expires = typeof expiresAt === "number" && TERMINAL_WITH_RESULT.includes(newStatus);
+    if (expires) {
+      const name = await kv.hget(`${TASK_DATA_PREFIX}${taskId}`, "name");
+      multi.expire(`${TASK_DATA_PREFIX}${taskId}`, Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000)));
+      multi.zadd(EXPIRING_KEY, expiresAt, JSON.stringify([taskId, name ?? ""]));
+    }
+
     await multi.exec();
+
+    if (expires) await sweepExpired(kv).catch(() => undefined);
   },
 
   async delete(taskId: string): Promise<void> {

@@ -16,6 +16,7 @@ import {
   ScanResult,
   RedisConfig,
 } from "./types";
+import { getLogger } from "@/server/logger";
 
 // Type definitions for ioredis-compatible client
 interface RedisClient {
@@ -110,6 +111,24 @@ const closeClient = async (client: RedisClient): Promise<void> => {
   // QUIT would queue behind the reconnect loop of a client that isn't ready.
   if (client.status && client.status !== "ready" && client.disconnect) client.disconnect();
   else await client.quit();
+};
+
+const DEFAULT_COMMAND_TIMEOUT_MS = 5000;
+
+// Without a listener ioredis prints every reconnect failure; one line per outage is enough.
+const logClientErrors = (client: RedisClient, role: string): void => {
+  let reported = false;
+  client.on("ready", () => {
+    reported = false;
+  });
+  client.on("error", (error: unknown) => {
+    if (reported) return;
+    reported = true;
+    getLogger().warn("Redis connection error, reconnecting", {
+      role,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 };
 
 export class RedisKVStore implements KVAdapter {
@@ -382,6 +401,7 @@ export class RedisKVStore implements KVAdapter {
   private async ensureSubClient(): Promise<RedisClient> {
     if (!this.subClient) {
       this.subClient = this.client.duplicate();
+      logClientErrors(this.subClient, "subscriber");
       this.subClient.on("message", (...args: unknown[]) => {
         const [channel, message] = args as [string, string];
         const callbacks = this.subscriptionCallbacks.get(channel);
@@ -608,16 +628,15 @@ export const createRedisKVFromConfig = async (
     );
   }
 
+  const commandTimeout = config.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
   const options = {
     // `connect()` is called by createKV, and rejects if Redis is unreachable.
     lazyConnect: true,
     maxRetriesPerRequest: config.maxRetries ?? 3,
-    retryStrategy: (times: number) => {
-      if (config.maxRetries && times > config.maxRetries) {
-        return null;
-      }
-      return config.retryDelay ?? Math.min(times * 50, 2000);
-    },
+    // A long-running server keeps reconnecting; maxRetries bounds each command, not the connection.
+    retryStrategy: (times: number) => config.retryDelay ?? Math.min(times * 50, 2000),
+    ...(commandTimeout > 0 && { commandTimeout }),
+    ...(config.offlineQueue !== undefined && { enableOfflineQueue: config.offlineQueue }),
     ...(config.tls && { tls: {} }),
   };
 
@@ -631,5 +650,6 @@ export const createRedisKVFromConfig = async (
         db: config.db ?? 0,
       });
 
+  logClientErrors(client, "commands");
   return new RedisKVStore(client as unknown as RedisClient, prefix);
 };
