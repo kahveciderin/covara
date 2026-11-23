@@ -170,7 +170,17 @@ PoW verification needs a stable HMAC secret. Resolution order:
 
 A random per-process secret **breaks verification across processes/restarts**,
 so any multi-process or serverless deployment must set `COVARA_POW_SECRET`
-explicitly.
+explicitly. Every replica must use the **same** secret, and it must stay the
+same across a rolling deploy: a challenge issued by one instance is verified by
+whichever instance receives the retry, old or new. When rotating it, expect
+challenges in flight to fail once (the client solves a fresh one).
+
+The same applies to the state behind it: the budget buckets and the PoW replay
+cache live in the global KV, falling back to per-process memory without one.
+With several replicas and no shared KV, each replica keeps its own budget (a
+client gets N times the budget across N replicas) and a solved challenge can be
+replayed once per replica. Configure a shared KV (Redis, or the Durable Object
+store on Workers) for any multi-instance deployment.
 
 ## CAPTCHA (beta)
 
