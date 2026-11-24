@@ -2,6 +2,21 @@
 
 Every release of the `covara` package. **Security** marks fixes for vulnerabilities; **Breaking** marks changes that can need action when you upgrade. Versions before 0.17.0 are only in the git history.
 
+## 0.20.0
+
+**Added**
+- `createCovara({ sse: { maxSubscriptionsPerIP, maxSubscriptionsPerUser } })` sets the live-subscription caps for every resource that doesn't set its own.
+- Narrowed pushes: `setPushAudience(resource, fn)`, `audience` on a `trackMutations` registration, or `{ subscribers }` on `pushInsertsToSubscriptions` / `pushUpdatesToSubscriptions` / `pushDeletesToSubscriptions` (now all exported). Only the returned subscriptions are read (one `HGET` each) instead of the whole resource.
+- `invalidateSubscriptions(resource, { subscriptionIds?, reason? })`: a refetch signal, optionally to some subscriptions only, that writes no changelog entry.
+
+**Behavior changes**
+- A signed-in subscriber counts only against `maxSubscriptionsPerUser`, no longer against `maxSubscriptionsPerIP`: many users behind one address (a campus NAT) are no longer capped together. Anonymous subscribers count against their IP only; before, they all also shared one "anonymous" user slot pool, so a resource took at most 10 anonymous live subscriptions per process.
+
+**Performance**
+- A subscription record stores the user only when it has an `include`, which is the only thing that reads it (records were ~2.7 KB larger with a typical session user).
+- Cross-process events carry their target stream, so each receiving stream no longer reads the subscription record to find out whether an event is its own. On Workers (one socket per stream), every event cost one record read per open stream.
+- `recordExternalMutation` and other resource-wide invalidates read each record once instead of twice.
+
 ## 0.19.0
 
 **Added**

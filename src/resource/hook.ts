@@ -130,6 +130,7 @@ import {
   type MuxSubscribeParams,
 } from "./mux-registry";
 import { getLogger } from "@/server/logger";
+import { getAppSSELimits } from "@/resource/sse-limits";
 import { setETagHeader, validateIfMatch, handleConditionalGet, generateETag } from "./etag";
 import { PreconditionFailedError } from "./error";
 
@@ -1008,8 +1009,6 @@ export const useResource = <TConfig extends TableConfig>(
   };
 
   const sseConfig = {
-    maxSubscriptionsPerUser: config.sse?.maxSubscriptionsPerUser ?? 10,
-    maxSubscriptionsPerIP: config.sse?.maxSubscriptionsPerIP ?? 50,
     heartbeatMs: config.sse?.heartbeatMs ?? 20000,
     maxQueueBytes: config.sse?.maxQueueBytes ?? 65536,
     onBackpressure: config.sse?.onBackpressure ?? "invalidate",
@@ -1024,44 +1023,42 @@ export const useResource = <TConfig extends TableConfig>(
   // Reserve one per-user/per-IP subscription slot. Returns a release() to give it
   // back, or a limit error. Shared by the standalone /subscribe route and the
   // multiplex dispatcher so both count against the same per-resource limits.
+  // A signed-in subscriber counts against its user's cap only: many users can
+  // share one address (a campus NAT). Anonymous ones count against their IP's.
   const reserveSubscriptionSlot = (
-    userId: string,
+    user: { id: string } | undefined | null,
     clientIP: string
   ):
     | { ok: true; release: () => void }
     | { ok: false; status: 429; detail: string } => {
-    const userCount = userSubscriptionCounts.get(userId) ?? 0;
-    if (userCount >= sseConfig.maxSubscriptionsPerUser) {
-      return {
-        ok: false,
-        status: 429,
-        detail: `Maximum ${sseConfig.maxSubscriptionsPerUser} subscriptions per user`,
-      };
+    const appLimits = getAppSSELimits();
+    const [counts, key, cap, unit] = user
+      ? [
+          userSubscriptionCounts,
+          user.id,
+          config.sse?.maxSubscriptionsPerUser ?? appLimits.maxSubscriptionsPerUser ?? 10,
+          "user",
+        ]
+      : [
+          ipSubscriptionCounts,
+          clientIP,
+          config.sse?.maxSubscriptionsPerIP ?? appLimits.maxSubscriptionsPerIP ?? 50,
+          "IP",
+        ];
+    const count = counts.get(key) ?? 0;
+    if (count >= cap) {
+      return { ok: false, status: 429, detail: `Maximum ${cap} subscriptions per ${unit}` };
     }
-    const ipCount = ipSubscriptionCounts.get(clientIP) ?? 0;
-    if (ipCount >= sseConfig.maxSubscriptionsPerIP) {
-      return {
-        ok: false,
-        status: 429,
-        detail: `Maximum ${sseConfig.maxSubscriptionsPerIP} subscriptions per IP`,
-      };
-    }
-    userSubscriptionCounts.set(userId, userCount + 1);
-    ipSubscriptionCounts.set(clientIP, ipCount + 1);
+    counts.set(key, count + 1);
     let released = false;
     return {
       ok: true,
       release: () => {
         if (released) return;
         released = true;
-        userSubscriptionCounts.set(
-          userId,
-          Math.max(0, (userSubscriptionCounts.get(userId) ?? 1) - 1)
-        );
-        ipSubscriptionCounts.set(
-          clientIP,
-          Math.max(0, (ipSubscriptionCounts.get(clientIP) ?? 1) - 1)
-        );
+        const next = (counts.get(key) ?? 1) - 1;
+        if (next > 0) counts.set(key, next);
+        else counts.delete(key);
       },
     };
   };
@@ -1293,9 +1290,8 @@ export const useResource = <TConfig extends TableConfig>(
     // 400 problem+json rather than a stream carrying an error event.
     const scope = await validateResourceSubscribe(c, filterQuery);
 
-    const userId = user?.id ?? "anonymous";
     const clientIP = getClientIP(c);
-    const slot = reserveSubscriptionSlot(userId, clientIP);
+    const slot = reserveSubscriptionSlot(user, clientIP);
     if (!slot.ok) {
       return c.json(
         {
@@ -1548,9 +1544,8 @@ export const useResource = <TConfig extends TableConfig>(
     // Prepare before any stream side-effects (throws relation-path/scope → 400).
     const prepared = await prepareAggregate(c, muxParams);
 
-    const userId = user?.id ?? "anonymous";
     const clientIP = getClientIP(c);
-    const slot = reserveSubscriptionSlot(userId, clientIP);
+    const slot = reserveSubscriptionSlot(user, clientIP);
     if (!slot.ok) {
       return c.json(
         {
@@ -1595,7 +1590,6 @@ export const useResource = <TConfig extends TableConfig>(
   // standalone routes — only the sink (framing) and stream ownership differ.
   registerSubscribeDispatcher(resourceName, async ({ c, kind, params }) => {
     const user = getUser(c);
-    const userId = user?.id ?? "anonymous";
     const clientIP = getClientIP(c);
 
     const required: (keyof ResourceCapabilities)[] =
@@ -1634,7 +1628,7 @@ export const useResource = <TConfig extends TableConfig>(
       };
     }
 
-    const slot = reserveSubscriptionSlot(userId, clientIP);
+    const slot = reserveSubscriptionSlot(user, clientIP);
     if (!slot.ok) return { ok: false, status: slot.status, detail: slot.detail };
 
     return {

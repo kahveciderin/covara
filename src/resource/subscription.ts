@@ -280,6 +280,9 @@ interface BroadcastEvent {
   type: "added" | "changed" | "removed" | "invalidate";
   subscriptionId: string;
   event: SubscriptionEvent;
+  // The target stream, so a receiver needn't read the record to route it.
+  // Absent in messages from older versions.
+  handlerId?: string;
 }
 
 const serializeSubscription = (sub: Subscription): string => {
@@ -510,7 +513,8 @@ export const createSubscription = async (
     scopeFilter: options.scopeFilter,
     authExpiresAt: options.authExpiresAt,
     include: options.include,
-    user: options.user ?? null,
+    // Only the relation loader reads the user, so it's kept only for includes.
+    user: options.include ? (options.user ?? null) : null,
   };
 
   const kv = getKV();
@@ -687,16 +691,28 @@ const getNextSeq = async (subscriptionId: string): Promise<number> => {
 // Load one resource's subscriptions. This is the hot-path accessor used by the
 // mutation push functions — cost scales with that resource's subscriber count,
 // not the total subscription count.
+// With `only`, just those subscriptions are read (one HGET each), so a push to
+// a known audience never loads the whole resource.
 const getSubscriptionsForResourceMap = async (
-  resource: string
+  resource: string,
+  only?: readonly string[]
 ): Promise<Map<string, Subscription>> => {
+  const targeted = only
+    ? [...new Set(only)].filter((subId) => resourceFromSubscriptionId(subId) === resource)
+    : undefined;
   const kv = getKV();
   if (kv) {
     const result = new Map<string, Subscription>();
-    const [subs, leases] = await Promise.all([
-      kv.hgetall(subscriptionHashKey(resource)),
-      kv.hgetall(subscriptionLeaseKey(resource)),
-    ]);
+    if (targeted?.length === 0) return result;
+    const [subs, leases] = targeted
+      ? await Promise.all([
+          readFields(kv, subscriptionHashKey(resource), targeted),
+          readFields(kv, subscriptionLeaseKey(resource), targeted),
+        ])
+      : await Promise.all([
+          kv.hgetall(subscriptionHashKey(resource)),
+          kv.hgetall(subscriptionLeaseKey(resource)),
+        ]);
     const now = Date.now();
     const expired: string[] = [];
     const unleased: string[] = [];
@@ -716,10 +732,25 @@ const getSubscriptionsForResourceMap = async (
   const result = new Map<string, Subscription>();
   const ids = localSubsByResource.get(resource);
   if (!ids) return result;
-  for (const id of ids) {
+  for (const id of targeted ?? ids) {
+    if (!ids.has(id)) continue;
     const sub = localSubscriptions.get(id);
     if (sub) result.set(id, sub);
   }
+  return result;
+};
+
+const readFields = async (
+  kv: KVAdapter,
+  key: string,
+  fields: readonly string[]
+): Promise<Record<string, string>> => {
+  const values = await Promise.all(fields.map((field) => kv.hget(key, field)));
+  const result: Record<string, string> = {};
+  fields.forEach((field, i) => {
+    const value = values[i];
+    if (value !== null) result[field] = value;
+  });
   return result;
 };
 
@@ -902,18 +933,21 @@ const broadcastEvent = async (event: BroadcastEvent): Promise<void> => {
 // broadcast reaches the handler through its socket, inside its own request.
 const deliverEvent = async (handlerId: string, broadcast: BroadcastEvent): Promise<void> => {
   if (!localHandlerFanout.has(handlerId) && sendEvent(handlerId, broadcast.event)) return;
-  await broadcastEvent(broadcast);
+  await broadcastEvent({ ...broadcast, handlerId });
+};
+
+const broadcastTarget = async (broadcast: BroadcastEvent): Promise<string | undefined> => {
+  if (broadcast.handlerId) return broadcast.handlerId;
+  return (await getSubscription(broadcast.subscriptionId))?.handlerId;
 };
 
 const handleBroadcastMessage = async (message: string): Promise<void> => {
   try {
     const broadcast: BroadcastEvent = JSON.parse(message);
-    const subscription = await getSubscription(broadcast.subscriptionId);
-    if (!subscription) return;
-
-    // Only process if this handler is local
-    if (localHandlerIds.has(subscription.handlerId)) {
-      sendEvent(subscription.handlerId, broadcast.event);
+    if (broadcast.handlerId && !localHandlerIds.has(broadcast.handlerId)) return;
+    const handlerId = await broadcastTarget(broadcast);
+    if (handlerId && localHandlerIds.has(handlerId)) {
+      sendEvent(handlerId, broadcast.event);
     }
   } catch {
     // Ignore malformed messages
@@ -1049,8 +1083,8 @@ const deliverBroadcastToHandler = async (
   try {
     const broadcast: BroadcastEvent = JSON.parse(message);
     if (!localHandlerIds.has(handlerId)) return;
-    const subscription = await getSubscription(broadcast.subscriptionId);
-    if (subscription && subscription.handlerId === handlerId) {
+    if (broadcast.handlerId && broadcast.handlerId !== handlerId) return;
+    if ((await broadcastTarget(broadcast)) === handlerId) {
       sendEvent(handlerId, broadcast.event);
     }
   } catch {
@@ -1140,7 +1174,7 @@ export const sendExistingItems = async <T extends Record<string, unknown>>(
     if (localHandlerIds.has(subscription.handlerId)) {
       sendEvent(subscription.handlerId, event);
     } else {
-      await broadcastEvent({ type: "added", subscriptionId, event });
+      await broadcastEvent({ type: "added", subscriptionId, event, handlerId: subscription.handlerId });
     }
   }
 };
@@ -1161,15 +1195,68 @@ export type RelationLoader<T> = (
 const relationCacheKey = (include: string, sub: Subscription): string =>
   `${include} ${sub.authId ?? ""}`;
 
+export interface PushChange {
+  type: "create" | "update" | "delete";
+  resource: string;
+  ids: string[];
+  rows: Record<string, unknown>[];
+  /** Updates only: the rows before the write, when known. */
+  previous?: Record<string, unknown>[];
+}
+
+/**
+ * Returns the subscription ids a write can concern, or undefined for all of
+ * them. It must include every subscription that may hold a row before the write
+ * as well as after it, or those subscribers miss the `removed`/`changed` event.
+ */
+export type PushAudience = (
+  change: PushChange
+) => readonly string[] | undefined | null | Promise<readonly string[] | undefined | null>;
+
+export interface PushOptions {
+  /** Only these subscriptions are loaded and matched; overrides the resource's audience. */
+  subscribers?: readonly string[];
+}
+
+const pushAudiences = new Map<string, PushAudience>();
+
+export const setPushAudience = (resource: string, audience: PushAudience | undefined): void => {
+  if (audience) pushAudiences.set(resource, audience);
+  else pushAudiences.delete(resource);
+};
+
+const resolveAudience = async (
+  change: PushChange,
+  options: PushOptions | undefined
+): Promise<readonly string[] | undefined> => {
+  if (options?.subscribers) return options.subscribers;
+  const audience = pushAudiences.get(change.resource);
+  if (!audience) return undefined;
+  try {
+    return (await audience(change)) ?? undefined;
+  } catch (error) {
+    getLogger().warn("Push audience failed; pushing to every subscriber", {
+      resource: change.resource,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+};
+
 export const pushInsertsToSubscriptions = async <T extends Record<string, unknown>>(
   resource: string,
   filterFactory: Filter,
   items: T[],
   idColumn: string,
   optimisticIds?: Map<string, string>,
-  relationLoader?: RelationLoader<T>
+  relationLoader?: RelationLoader<T>,
+  options?: PushOptions
 ): Promise<void> => {
-  const allSubs = await getSubscriptionsForResourceMap(resource);
+  const audience = await resolveAudience(
+    { type: "create", resource, ids: items.map((item) => String(item[idColumn])), rows: items },
+    options
+  );
+  const allSubs = await getSubscriptionsForResourceMap(resource, audience);
 
   // Cache for items with relations loaded (keyed by include + subscriber).
   const itemsWithRelationsCache = new Map<string, Map<string, T>>();
@@ -1205,7 +1292,7 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
       subscription.authExpiresAt &&
       subscription.authExpiresAt < new Date()
     ) {
-      await sendInvalidateEvent(subId, "Authentication expired");
+      await deliverInvalidate(subId, subscription, "Authentication expired");
       continue;
     }
 
@@ -1216,7 +1303,7 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
     const joined = compiled.requiresJoin() ? await matchJoin(subscription) : false;
     if (joined === undefined) continue;
     if (joined === null) {
-      await sendInvalidateEvent(subId, "Could not evaluate relation scope - please refetch");
+      await deliverInvalidate(subId, subscription, "Could not evaluate relation scope - please refetch");
       continue;
     }
 
@@ -1257,9 +1344,20 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
   items: T[],
   idColumn: string,
   previousItems?: Map<string, T>,
-  relationLoader?: RelationLoader<T>
+  relationLoader?: RelationLoader<T>,
+  options?: PushOptions
 ): Promise<void> => {
-  const allSubs = await getSubscriptionsForResourceMap(resource);
+  const audience = await resolveAudience(
+    {
+      type: "update",
+      resource,
+      ids: items.map((item) => String(item[idColumn])),
+      rows: items,
+      previous: previousItems ? [...previousItems.values()] : undefined,
+    },
+    options
+  );
+  const allSubs = await getSubscriptionsForResourceMap(resource, audience);
 
   // Cache for items with relations loaded (keyed by include + subscriber).
   const itemsWithRelationsCache = new Map<string, Map<string, T>>();
@@ -1295,7 +1393,7 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
       subscription.authExpiresAt &&
       subscription.authExpiresAt < new Date()
     ) {
-      await sendInvalidateEvent(subId, "Authentication expired");
+      await deliverInvalidate(subId, subscription, "Authentication expired");
       continue;
     }
 
@@ -1305,7 +1403,7 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
     const joined = compiled.requiresJoin() ? await matchJoin(subscription) : false;
     if (joined === undefined) continue;
     if (joined === null) {
-      await sendInvalidateEvent(subId, "Could not evaluate relation scope - please refetch");
+      await deliverInvalidate(subId, subscription, "Could not evaluate relation scope - please refetch");
       continue;
     }
 
@@ -1376,9 +1474,14 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
 export const pushDeletesToSubscriptions = async (
   resource: string,
   deletedIds: string[],
-  deletedObjects?: Record<string, unknown>[]
+  deletedObjects?: Record<string, unknown>[],
+  options?: PushOptions
 ): Promise<void> => {
-  const allSubs = await getSubscriptionsForResourceMap(resource);
+  const audience = await resolveAudience(
+    { type: "delete", resource, ids: deletedIds, rows: deletedObjects ?? [], previous: undefined },
+    options
+  );
+  const allSubs = await getSubscriptionsForResourceMap(resource, audience);
 
   for (const [subId, subscription] of allSubs) {
     if (subscription.resource !== resource) continue;
@@ -1414,7 +1517,14 @@ export const sendInvalidateEvent = async (
 ): Promise<void> => {
   const subscription = await getSubscription(subscriptionId);
   if (!subscription) return;
+  await deliverInvalidate(subscriptionId, subscription, reason);
+};
 
+const deliverInvalidate = async (
+  subscriptionId: string,
+  subscription: Subscription,
+  reason?: string
+): Promise<void> => {
   const event: InvalidateEvent = {
     id: uuidv4(),
     subscriptionId,
@@ -1433,13 +1543,28 @@ export const sendInvalidateEvent = async (
 export const invalidateResourceSubscriptions = async (
   resource: string,
   reason?: string
-): Promise<void> => {
-  const allSubs = await getSubscriptionsForResourceMap(resource);
-  for (const subId of allSubs.keys()) {
-    await sendInvalidateEvent(subId, reason);
-  }
+): Promise<void> => invalidateSubscriptions(resource, { reason });
 
-  await notifyAggregateWatchers(resource);
+export interface InvalidateSubscriptionsOptions {
+  /** Only these subscriptions; by default every subscription on the resource (and its live aggregates). */
+  subscriptionIds?: readonly string[];
+  reason?: string;
+}
+
+/**
+ * Tells subscribers to refetch. Unlike `recordExternalMutation`, it writes no
+ * changelog entry and leaves the query cache alone: use it when the data
+ * didn't change for everyone, or the cache is already handled.
+ */
+export const invalidateSubscriptions = async (
+  resource: string,
+  options: InvalidateSubscriptionsOptions = {}
+): Promise<void> => {
+  const subs = await getSubscriptionsForResourceMap(resource, options.subscriptionIds);
+  for (const [subId, subscription] of subs) {
+    await deliverInvalidate(subId, subscription, options.reason);
+  }
+  if (!options.subscriptionIds) await notifyAggregateWatchers(resource);
 };
 
 export const processChangelogEntries = async (
@@ -1673,7 +1798,7 @@ export const sendCatchupEvents = async <T extends Record<string, unknown>>(
     event: SubscriptionEvent
   ): Promise<void> => {
     if (!sendEvent(subscription.handlerId, event)) {
-      await broadcastEvent({ type, subscriptionId, event });
+      await broadcastEvent({ type, subscriptionId, event, handlerId: subscription.handlerId });
     }
   };
 

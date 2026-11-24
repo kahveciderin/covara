@@ -63,10 +63,17 @@ export {
 // Subscriptions
 export {
   createSubscription as createServerSubscription,
+  pushInsertsToSubscriptions,
   pushUpdatesToSubscriptions,
   pushDeletesToSubscriptions,
+  invalidateSubscriptions,
+  setPushAudience,
   clearAllSubscriptions,
   type RelationLoader,
+  type PushAudience,
+  type PushChange,
+  type PushOptions,
+  type InvalidateSubscriptionsOptions,
 } from "./resource/subscription";
 
 // Procedures
@@ -286,6 +293,7 @@ export type {
 export { createSSEStream, formatSSE, formatSSEComment } from "./server/sse";
 export type { SSEWriter, SSEStreamOptions, SSEMessage } from "./server/sse";
 export { getClientIP, readJsonBody, configureClientIp, type TrustProxy, type ClientIpOptions } from "./server/request";
+export { type AppSSELimits } from "./resource/sse-limits";
 export { requireUser, isAuthenticated as isContextAuthenticated, getSession as getContextSession } from "./server/context";
 export { readEnv, isDebugEnabled, isProduction } from "./server/env";
 export { beginShutdown, isShuttingDown, onShutdown } from "./server/lifecycle";

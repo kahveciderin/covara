@@ -27,6 +27,7 @@ import { onShutdown } from "@/server/lifecycle";
 import { closeAllHandlers } from "@/resource/subscription";
 import { installLiveSupport, type LiveSupport, type PageComponent } from "@/htmx/server";
 import type { InternalSchemaBundle } from "@/db/internal-schema";
+import { setAppSSELimits, type AppSSELimits } from "@/resource/sse-limits";
 import {
   setGlobalAbuseProtection,
   type AbuseProtectionConfig,
@@ -75,6 +76,12 @@ export interface CovaraOptions {
   // transparently and falls back to per-subscription streams when unavailable).
   // Set false to disable the endpoint, or pass tuning options.
   multiplex?: boolean | MultiplexConfig;
+  /**
+   * App-wide live-subscription caps, used by every resource that doesn't set
+   * its own `sse` value. Signed-in subscribers count against
+   * `maxSubscriptionsPerUser` only; anonymous ones against `maxSubscriptionsPerIP`.
+   */
+  sse?: AppSSELimits;
 }
 
 export class CovaraApp extends Hono {
@@ -94,6 +101,7 @@ export class CovaraApp extends Hono {
     this.resourceBasePath = normalizeBasePath(options.basePath ?? "/api");
     this.internalSchema = options.internalSchema;
 
+    setAppSSELimits(options.sse);
     if (options.abuseProtection) {
       setGlobalAbuseProtection(options.abuseProtection);
     }

@@ -186,6 +186,14 @@ useResource(todos, {
 });
 ```
 
+`maxSubscriptionsPerUser` (default 10) and `maxSubscriptionsPerIP` (default 50) cap live subscriptions per resource; past them, `/subscribe` answers `429`. A **signed-in** subscriber counts against its user's cap only, so many users behind one address (a campus NAT, an office) aren't limited together; **anonymous** subscribers count against their IP's cap. To set both caps for every resource at once:
+
+```typescript
+createCovara({ sse: { maxSubscriptionsPerIP: 200, maxSubscriptionsPerUser: 20 } });
+```
+
+A resource's own `sse` value wins over the app-wide one. The IP comes from `getClientIP`, so set [`trustProxy`](../deployment/node.md#behind-a-proxy-the-client-ip) behind a proxy.
+
 - `invalidate` — send one `invalidate` so the client refetches from a consistent state.
 - `disconnect` — close; the client reconnects and resumes from its last sequence.
 - `drop` — skip the event for this connection (it may miss updates until the next sync).

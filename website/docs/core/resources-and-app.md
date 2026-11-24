@@ -35,6 +35,7 @@ const app = createCovara({
 | `basePath` | `string` | `"/api"` | Prefix every resource is mounted under. |
 | `cors` | `boolean \| CorsOptions` | `false` | Enable CORS, or pass a [hono/cors](https://hono.dev/docs/middleware/builtin/cors) config. |
 | `trustProxy` | `false \| "cloudflare" \| number \| string[]` | `false` | Which proxies' forwarding headers to believe for the client IP used by every per-IP limit. See [Behind a proxy](../deployment/node.md#behind-a-proxy-the-client-ip). |
+| `sse` | `{ maxSubscriptionsPerIP?, maxSubscriptionsPerUser? }` | `{}` | App-wide live-subscription caps for resources that don't set their own (defaults 50 per IP for anonymous subscribers, 10 per signed-in user). See [Subscriptions](../realtime/subscriptions.md). |
 | `clientIp` | `(c) => string \| undefined` | — | Override the client IP everywhere; return nothing to fall back. |
 | `auth` | `{ router, middleware }` | — | Result of [`useAuth`](../auth/overview.md); mounts auth routes and populates `c.get("user")`. |
 | `middleware` | `MiddlewareHandler[]` | `[]` | Extra middleware applied before resources. |

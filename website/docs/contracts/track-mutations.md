@@ -32,6 +32,16 @@
 - **Coarse by default**: `objectId` defaults to `"*"`; no `object`/`previousObject` is carried, so the event is always `invalidate`
 - **Portable alternative to CDC**: this is the supported mechanism for keeping Covara subscriptions/caches consistent when mutations bypass the tracked db
 
+### Refetch Signal (`invalidateSubscriptions`)
+- `invalidateSubscriptions(resource, { subscriptionIds?, reason? })` sends `invalidate` only; it appends no changelog entry and doesn't touch the query cache
+- With `subscriptionIds`, only those records are read (ids of other resources and missing ones are ignored) and live aggregates aren't notified; without, every subscription on the resource is invalidated and its aggregates recompute
+
+### Push Audience
+- `TableRegistration.audience` (or `setPushAudience(resource, fn)`) is called once per push with `{ type, resource, ids, rows, previous? }` and returns subscription ids, or `undefined`/`null` for all
+- Only the returned subscriptions are read and matched; their filters and scopes still apply. A `subscribers` option on a push function wins over the audience
+- Correctness is the app's: a subscription that held a row before the write and is left out gets no `removed`/`changed` event
+- An audience that throws is logged as a warning and the push goes to every subscriber
+
 ### Subscription Integration
 - **Automatic push**: Mutations automatically push events to active subscriptions (when `pushToSubscriptions` is true)
 - **Event type mapping**:

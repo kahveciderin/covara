@@ -2,6 +2,13 @@
 
 ## Guarantees
 
+### Subscription caps
+- **Per resource, per process**: live subscriptions are counted per resource in each process
+- **Signed-in**: a request with a user counts against `maxSubscriptionsPerUser` (default 10) for that user id only, never against the IP cap
+- **Anonymous**: a request without a user counts against `maxSubscriptionsPerIP` (default 50) for `getClientIP(c)`
+- **Precedence**: the resource's `sse` value, then `createCovara({ sse })`, then the default
+- **Over the cap**: `429`, before anything is streamed; the slot is given back when the stream or multiplexed channel closes
+
 ### Event Delivery
 - **Commit consistency**: Changelog entries and subscription events are emitted only *after* the database transaction commits. A mutation whose transaction rolls back (e.g. a throwing `onAfterUpdate`/`onAfterDelete` hook, or a failed commit) never produces a changelog entry or subscription event — there are no phantom events for uncommitted state. (On engines without interactive transactions — Cloudflare D1 — single-statement writes auto-commit before after-hooks run, so a throwing after-hook cannot roll the write back; see the [mutation-tracking contract](./track-mutations.md#engines-without-interactive-transactions-cloudflare-d1).)
 - **Actor attribution**: Changelog entries carry the authenticated user's ID (`userId`) when the mutation came through a resource route or mutation pipeline with a user in context; anonymous/raw-SQL/external mutations leave it unset.
@@ -108,6 +115,11 @@
   - `disconnect`: the connection is closed; the client reconnects and resumes from its last sequence
   - `drop`: the event is skipped for that connection (it may miss updates until the next sync)
 - The server never buffers unboundedly for a stalled client
+
+### Subscription Records
+- A record stores the subscriber's user only when the subscription has an `include` (the relation loader scopes included rows by it); otherwise `user` is `null`. Scope and filter are stored as compiled strings, so pushes never need the user
+- A push with an audience (`setPushAudience`, `audience` on a `trackMutations` registration, or `{ subscribers }` on a push function) reads only those records; expired leases among them are pruned as in a full load
+- Cross-process broadcasts carry the target `handlerId`, so a receiving process or scoped socket routes an event without reading the record (messages without it, from older versions, are still routed by reading it)
 
 ### Multi-Instance Delivery
 - With a distributed KV store initialized via `initializeKV`, mutations on one instance are fanned out to subscribers on other instances (at-least-once)

@@ -117,6 +117,39 @@ await recordExternalMutation("todos", "delete"); // objectId defaults to "*"
 
 This is the portable alternative to database-specific change data capture. For cross-instance fan-out, initialize a distributed [KV](../platform/kv.md).
 
+### A refetch signal without a changelog entry
+
+When the rows didn't change but some subscribers should refetch (a permission or a computed field changed), use `invalidateSubscriptions`. It sends `invalidate` and writes no changelog entry and leaves the query cache alone:
+
+```typescript
+import { invalidateSubscriptions } from "covara";
+
+await invalidateSubscriptions("grades", { subscriptionIds: [id1, id2], reason: "grades-published" });
+await invalidateSubscriptions("grades"); // every subscription on the resource, and its live aggregates
+```
+
+With `subscriptionIds`, only those records are read; ids of another resource, or of subscriptions that no longer exist, are ignored.
+
+## Narrowing pushes to the subscribers they concern
+
+By default every write loads and matches every subscription on its resource. With many subscribers and few recipients per write, tell Covara which subscriptions a write can concern; only those records are read (one `HGET` each):
+
+```typescript
+import { setPushAudience } from "covara";
+
+setPushAudience("questions", async ({ type, ids, rows, previous }) => {
+  return lookUpSubscriptionIds(ids); // or undefined: every subscriber
+});
+
+// The same, on the tracked db's registration:
+trackMutations(db, { questions: { table: questions, id: questions.id, audience } });
+
+// Or per call:
+await pushUpdatesToSubscriptions("questions", filter, rows, "id", previous, undefined, { subscribers: ids });
+```
+
+The audience applies to every push on the resource: REST routes, the tracked db, and the exported push functions. **It must include every subscription that may hold a row before the write as well as after it**: a subscriber left out misses its `removed` or `changed` event. Subscription ids come from `createServerSubscription` and the stream's `connected` event. The audience narrows who is matched; each subscription's filter and scope still decide what it receives. An audience that throws is logged and the push goes to every subscriber.
+
 ## Query caching
 
 Cache `SELECT` queries with automatic invalidation on mutation:

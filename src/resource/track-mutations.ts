@@ -6,6 +6,8 @@ import { createHash } from "node:crypto";
 import {
   pushInsertsToSubscriptions,
   pushUpdatesToSubscriptions,
+  setPushAudience,
+  type PushAudience,
   pushDeletesToSubscriptions,
   invalidateResourceSubscriptions,
 } from "./subscription";
@@ -22,6 +24,11 @@ export interface TableRegistration {
   // subscription whose filter uses a custom operator (e.g. `=has=`) throws a
   // FilterParseError on every tracked write, failing the create/update.
   customOperators?: Record<string, CustomOperator>;
+  /**
+   * Narrows each push to the subscriptions it concerns (ids), so only those
+   * records are loaded. Return undefined for all of them. See `setPushAudience`.
+   */
+  audience?: PushAudience;
 }
 
 export interface CacheConfig {
@@ -1054,6 +1061,7 @@ export function trackMutations<TDb extends DrizzleDatabase>(
     registry.set(registration.table, tableInfo);
     registryByName.set(tableName, tableInfo);
     registryByName.set(resourceName, tableInfo);
+    if (registration.audience) setPushAudience(resourceName, registration.audience);
   }
 
   const context: TrackingContext = {
