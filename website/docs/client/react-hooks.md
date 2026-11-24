@@ -115,6 +115,15 @@ const remove = useMutation(async ({ id }: { id: string }, ctx) => {
 }, { resource: "/api/todos" });
 ```
 
+`timeoutMs` and `signal` in the options apply to every `create`/`update`/`replace`/`delete`/`rpc` the mutation makes through `ctx.resource` (a call that passes its own wins). Use them for an action that can take longer than the client-wide `timeout`:
+
+```tsx
+const generate = useMutation(
+  (vars: { id: string }, ctx) => ctx.resource.rpc("generate", vars),
+  { resource: "/api/exams", timeoutMs: 180_000 }
+);
+```
+
 ## `useSearch`
 
 Debounced [full-text search](../core/search.md):

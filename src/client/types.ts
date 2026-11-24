@@ -160,16 +160,26 @@ export interface AggregateSubscription {
   reconnect(): void;
 }
 
-export interface CreateOptions {
+/**
+ * Per-call request options. `timeoutMs` replaces the client-wide `timeout` for
+ * this call (0 disables it); `signal` cancels it. On an optimistic write the
+ * call returns before the request is sent, so only `timeoutMs` applies there.
+ */
+export interface RequestOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface CreateOptions extends RequestOptions {
   optimistic?: boolean;
   optimisticId?: string;
 }
 
-export interface UpdateOptions {
+export interface UpdateOptions extends RequestOptions {
   optimistic?: boolean;
 }
 
-export interface DeleteOptions {
+export interface DeleteOptions extends RequestOptions {
   optimistic?: boolean;
 }
 
@@ -441,12 +451,13 @@ export interface ResourceClient<
     options?: AggregateOptions,
     callbacks?: AggregateSubscriptionCallbacks
   ): AggregateSubscription;
-  rpc<N extends keyof P>(name: N, input: P[N]["input"]): Promise<P[N]["output"]>;
+  rpc<N extends keyof P>(name: N, input: P[N]["input"], options?: RequestOptions): Promise<P[N]["output"]>;
   // Loose escape hatch: only active when no procedures map is declared
   // (`keyof P` is `never`), so a declared map rejects unknown names/inputs.
   rpc<TInput = unknown, TOutput = unknown>(
     name: [keyof P] extends [never] ? string : never,
-    input: TInput
+    input: TInput,
+    options?: RequestOptions
   ): Promise<TOutput>;
   query(): ResourceQueryBuilder<T>;
 }

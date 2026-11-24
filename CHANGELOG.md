@@ -2,6 +2,12 @@
 
 Every release of the `covara` package. **Security** marks fixes for vulnerabilities; **Breaking** marks changes that can need action when you upgrade. Versions before 0.17.0 are only in the git history.
 
+## 0.21.0
+
+**Added**
+- `resource.rpc(name, input, { timeoutMs, signal })`, and the same options on `create`, `update`, `replace` and `delete`: `timeoutMs` replaces the client-wide `timeout` for that call, `signal` cancels it. A slow procedure no longer fails in the UI at the client timeout while the server finishes.
+- `useMutation(..., { timeoutMs, signal })` (and `createMutation`) applies them to every write and `rpc` the mutation makes through `ctx.resource`.
+
 ## 0.20.0
 
 **Added**

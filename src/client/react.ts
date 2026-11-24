@@ -526,6 +526,12 @@ export function useMutation(
         get invalidates() {
           return (latestRef.current.options?.invalidates as InvalidateTarget[] | undefined) ?? [];
         },
+        get timeoutMs() {
+          return latestRef.current.options?.timeoutMs as number | undefined;
+        },
+        get signal() {
+          return latestRef.current.options?.signal as AbortSignal | undefined;
+        },
       } as Parameters<typeof createMutation>[0]["options"],
     });
   }, [resourcePath]);

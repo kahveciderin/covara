@@ -51,7 +51,7 @@ export const client = getOrCreateClient({
 
 Built for unreliable networks:
 
-- **Timeouts & cancellation** — a default `timeout` aborts each request via an internal `AbortController`; the low-level transport also accepts a per-request `signal` and `timeoutMs`, combined so either cancels.
+- **Timeouts & cancellation** — a default `timeout` aborts each request via an internal `AbortController`; a per-call `{ timeoutMs, signal }` on `rpc` and the write methods (and in `useMutation` options) overrides it; either cancels. See [Per-call timeout and cancellation](./queries.md#per-call-timeout-and-cancellation).
 - **Automatic 401 refresh-and-retry** — with [`auth`](./auth.md) (OIDC) or `jwt` configured, a `401` triggers one token refresh and a transparent retry; if refresh fails, the original `401` surfaces.
 - **SSE reconnect with jitter** — [subscriptions](../realtime/subscriptions.md) reconnect with exponential backoff + randomized jitter (no stampede on server restart) and resume from the last sequence.
 

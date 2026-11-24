@@ -65,6 +65,15 @@ describe("typed procedures (rpc)", () => {
     }>();
   });
 
+  it("accepts per-call request options", () => {
+    expectTypeOf(
+      typedRepo.rpc("publish", { id: "1" }, { timeoutMs: 180_000, signal: new AbortController().signal })
+    ).resolves.toEqualTypeOf<{ success: boolean }>();
+    void repo.rpc("anything", {}, { timeoutMs: 0 });
+    // @ts-expect-error - timeoutMs is a number
+    void typedRepo.rpc("publish", { id: "1" }, { timeoutMs: "3m" });
+  });
+
   it("rejects unknown procedure names", () => {
     // @ts-expect-error - 'frobnicate' is not a declared procedure
     void typedRepo.rpc("frobnicate", { id: "1" });

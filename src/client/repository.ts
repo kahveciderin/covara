@@ -17,6 +17,7 @@ import {
   Subscription,
   ProcedureDef,
   AnyProcedures,
+  RequestOptions,
 } from "./types";
 import { Transport } from "./transport";
 import { createSubscription } from "./subscription-manager";
@@ -27,6 +28,11 @@ import {
 } from "./aggregate-subscription";
 import { OfflineManager } from "./offline";
 import { ResourceQueryBuilder } from "./resource-query-builder";
+
+const requestOptions = ({ timeoutMs, signal }: RequestOptions): RequestOptions => ({
+  ...(timeoutMs !== undefined && { timeoutMs }),
+  ...(signal !== undefined && { signal }),
+});
 
 export interface RepositoryConfig {
   transport: Transport;
@@ -164,7 +170,7 @@ export class Repository<
       const optimisticResult = { ...data, id: optimisticId } as T;
 
       // Fire off background sync
-      this.backgroundCreate(data, optimisticId);
+      this.backgroundCreate(data, optimisticId, options.timeoutMs);
 
       return optimisticResult;
     }
@@ -174,11 +180,12 @@ export class Repository<
       method: "POST",
       path: this.resourcePath,
       body: data,
+      ...requestOptions(options),
     });
     return response.data;
   }
 
-  private backgroundCreate(data: Partial<Omit<T, "id">>, optimisticId: string): void {
+  private backgroundCreate(data: Partial<Omit<T, "id">>, optimisticId: string, timeoutMs?: number): void {
     this.transport.request<T & { _optimisticId?: string }>({
       method: "POST",
       path: this.resourcePath,
@@ -187,6 +194,7 @@ export class Repository<
         "X-Covara-Optimistic-Id": optimisticId,
         "X-Idempotency-Key": optimisticId,
       },
+      ...requestOptions({ timeoutMs }),
     }).then(response => {
       // Success: remap ID if different
       const serverId = response.data.id;
@@ -207,7 +215,7 @@ export class Repository<
       const optimisticResult = { ...data, id } as T;
 
       // Fire off background sync
-      this.backgroundUpdate(id, data);
+      this.backgroundUpdate(id, data, options.timeoutMs);
 
       return optimisticResult;
     }
@@ -217,11 +225,12 @@ export class Repository<
       method: "PATCH",
       path: `${this.resourcePath}/${id}`,
       body: data,
+      ...requestOptions(options),
     });
     return response.data;
   }
 
-  private backgroundUpdate(id: string, data: Partial<T>): void {
+  private backgroundUpdate(id: string, data: Partial<T>, timeoutMs?: number): void {
     // Resolve optimistic ID to server ID if needed
     const resolvedId = this.offline!.resolveId(id);
 
@@ -229,6 +238,7 @@ export class Repository<
       method: "PATCH",
       path: `${this.resourcePath}/${resolvedId}`,
       body: data,
+      ...requestOptions({ timeoutMs }),
     }).catch(() => {
       // Failure: queue for retry (use original id, will be resolved during sync)
       this.offline!.queueMutation("update", this.resourcePath, data, id);
@@ -243,7 +253,7 @@ export class Repository<
       const optimisticResult = { ...data, id } as T;
 
       // Fire off background sync
-      this.backgroundReplace(id, data);
+      this.backgroundReplace(id, data, options.timeoutMs);
 
       return optimisticResult;
     }
@@ -253,11 +263,12 @@ export class Repository<
       method: "PUT",
       path: `${this.resourcePath}/${id}`,
       body: data,
+      ...requestOptions(options),
     });
     return response.data;
   }
 
-  private backgroundReplace(id: string, data: Omit<T, "id">): void {
+  private backgroundReplace(id: string, data: Omit<T, "id">, timeoutMs?: number): void {
     // Resolve optimistic ID to server ID if needed
     const resolvedId = this.offline!.resolveId(id);
 
@@ -265,6 +276,7 @@ export class Repository<
       method: "PUT",
       path: `${this.resourcePath}/${resolvedId}`,
       body: data,
+      ...requestOptions({ timeoutMs }),
     }).catch(() => {
       // Failure: queue for retry
       this.offline!.queueMutation("update", this.resourcePath, data, id);
@@ -277,7 +289,7 @@ export class Repository<
 
     if (useOptimistic) {
       // Fire off background sync
-      this.backgroundDelete(id);
+      this.backgroundDelete(id, options.timeoutMs);
       return;
     }
 
@@ -285,16 +297,18 @@ export class Repository<
     await this.transport.request<void>({
       method: "DELETE",
       path: `${this.resourcePath}/${id}`,
+      ...requestOptions(options),
     });
   }
 
-  private backgroundDelete(id: string): void {
+  private backgroundDelete(id: string, timeoutMs?: number): void {
     // Resolve optimistic ID to server ID if needed
     const resolvedId = this.offline!.resolveId(id);
 
     this.transport.request<void>({
       method: "DELETE",
       path: `${this.resourcePath}/${resolvedId}`,
+      ...requestOptions({ timeoutMs }),
     }).catch(() => {
       // Failure: queue for retry
       this.offline!.queueMutation("delete", this.resourcePath, undefined, id);
@@ -357,16 +371,18 @@ export class Repository<
     });
   }
 
-  rpc<N extends keyof P>(name: N, input: P[N]["input"]): Promise<P[N]["output"]>;
+  rpc<N extends keyof P>(name: N, input: P[N]["input"], options?: RequestOptions): Promise<P[N]["output"]>;
   rpc<TInput = unknown, TOutput = unknown>(
     name: [keyof P] extends [never] ? string : never,
-    input: TInput
+    input: TInput,
+    options?: RequestOptions
   ): Promise<TOutput>;
-  async rpc(name: PropertyKey, input: unknown): Promise<unknown> {
+  async rpc(name: PropertyKey, input: unknown, options: RequestOptions = {}): Promise<unknown> {
     const response = await this.transport.request<{ data: unknown }>({
       method: "POST",
       path: `${this.resourcePath}/rpc/${String(name)}`,
       body: input,
+      ...requestOptions(options),
     });
 
     return response.data.data;

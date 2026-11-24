@@ -46,6 +46,19 @@ await todos.batchDelete("completed==true");
 const result = await todos.rpc<{ ids: string[] }, { archived: number }>("archive", { ids: ["1", "2"] });
 ```
 
+### Per-call timeout and cancellation
+
+`rpc`, `create`, `update`, `replace` and `delete` take `{ timeoutMs, signal }` as their last argument. `timeoutMs` replaces the client-wide `timeout` for that call (`0` turns it off), so a slow procedure can wait longer than your reads; `signal` cancels it.
+
+```typescript
+const pdf = await exams.rpc("generate", { id }, { timeoutMs: 180_000 });
+
+const controller = new AbortController();
+await todos.update("1", { title: "x" }, { signal: controller.signal });
+```
+
+An optimistic write returns before its request is sent, so only `timeoutMs` applies to it.
+
 See [Batch operations](../core/batch.md) and [Procedures](../core/procedures.md).
 
 ## Aggregations

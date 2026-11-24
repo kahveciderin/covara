@@ -1,4 +1,4 @@
-import type { ResourceClient, ProcedureDef, AnyProcedures } from "./types";
+import type { ResourceClient, ProcedureDef, AnyProcedures, RequestOptions } from "./types";
 import type { InvalidateTarget } from "./query-cache";
 
 export type MutationStatus = "idle" | "loading" | "success" | "error";
@@ -19,6 +19,12 @@ export interface MutationOptions<TVars, TData> {
   onSettled?: (data: TData | undefined, error: Error | null, vars: TVars) => void;
   /** Query paths/predicates to invalidate after a successful mutation. */
   invalidates?: InvalidateTarget[];
+  /**
+   * Applied to every create/update/replace/delete/rpc the mutation makes through
+   * `ctx.resource`, unless that call passes its own.
+   */
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface MutationState<TData> {
@@ -42,6 +48,27 @@ export interface CreateMutationConfig<TVars, TData, T extends { id: string }> {
   options?: MutationOptions<TVars, TData>;
 }
 
+const withRequestDefaults = <T extends { id: string }>(
+  resource: ResourceClient<T>,
+  defaults: RequestOptions
+): ResourceClient<T> => {
+  if (defaults.timeoutMs === undefined && defaults.signal === undefined) return resource;
+  const merge = <O extends RequestOptions>(options?: O): O => ({
+    ...(defaults.timeoutMs !== undefined && { timeoutMs: defaults.timeoutMs }),
+    ...(defaults.signal !== undefined && { signal: defaults.signal }),
+    ...options,
+  }) as O;
+  const wrapped = Object.create(resource) as ResourceClient<T>;
+  wrapped.create = (data, options) => resource.create(data, merge(options));
+  wrapped.update = (id, data, options) => resource.update(id, data, merge(options));
+  wrapped.replace = (id, data, options) => resource.replace(id, data, merge(options));
+  wrapped.delete = (id, options) => resource.delete(id, merge(options));
+  wrapped.rpc = ((name: string, input: unknown, options?: RequestOptions) =>
+    (resource.rpc as (n: string, i: unknown, o?: RequestOptions) => Promise<unknown>)(name, input, merge(options))
+  ) as ResourceClient<T>["rpc"];
+  return wrapped;
+};
+
 /**
  * Framework-agnostic mutation controller. Tracks status/error/data, runs the
  * mutation function with an invalidation-aware context, and fires
@@ -58,14 +85,16 @@ export const createMutation = <TVars, TData, T extends { id: string }>(
     for (const listener of listeners) listener();
   };
 
-  const ctx: MutationFnContext<T> = {
-    resource: config.resource,
-    invalidate: config.invalidate,
-  };
-
   const mutateAsync = async (vars: TVars): Promise<TData> => {
     set({ status: "loading", error: null, data: undefined });
     try {
+      const ctx: MutationFnContext<T> = {
+        resource: withRequestDefaults(config.resource, {
+          timeoutMs: config.options?.timeoutMs,
+          signal: config.options?.signal,
+        }),
+        invalidate: config.invalidate,
+      };
       const data = await config.fn(vars, ctx);
       set({ status: "success", error: null, data });
       for (const target of config.options?.invalidates ?? []) {
