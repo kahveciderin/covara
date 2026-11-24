@@ -80,6 +80,7 @@
 - Task scheduling fails (reported to caller)
 - Running tasks may fail to update status
 - On recovery, orphaned claims are reclaimed
+- The worker's reclaim loop logs one warning per outage through the logger, skips runs with a backoff (doubling from the reclaim interval up to 60s), and logs "Task worker reclaiming lost tasks again" once a run succeeds; so reclaim can resume up to 60s after the KV is back
 
 ### Poison Pill (Always-Failing Task)
 - Retries up to `maxRetries`

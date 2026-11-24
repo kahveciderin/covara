@@ -494,7 +494,7 @@ export type {
 } from "./resource/types";
 
 // Environment Variables
-export { createEnv, envVariable, usePublicEnv, EnvValidationError, type EnvIssue } from "./env";
+export { createEnv, envVariable, usePublicEnv, EnvValidationError, type EnvIssue, type CreateEnvOptions, type EnvCheckContext } from "./env";
 export type { PublicEnvConfig, PublicEnvSchema, EnvSchemaField } from "./env";
 
 // Search

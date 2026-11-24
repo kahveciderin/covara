@@ -79,4 +79,23 @@ describe("an idle task worker while the KV is unreachable", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("the reclaim loop logs an outage once, backs off, and says when it works again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const worker = createTaskWorker(kv, registry(), { pollIntervalMs: 1000, lockTtlMs: 3000 });
+    await worker.start();
+    await vi.advanceTimersByTimeAsync(10);
+    down = true;
+    const callsBefore = failedCalls;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(consoleError.mock.calls.filter((c) => /reclaim/.test(String(c[0])))).toHaveLength(0);
+    expect(logs.filter((l) => l.level === "warn" && /reclaim/i.test(l.msg))).toHaveLength(1);
+    const reclaimCalls = failedCalls - callsBefore;
+    expect(reclaimCalls).toBeLessThan(60);
+
+    down = false;
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(logs.some((l) => l.level === "info" && /reclaim/i.test(l.msg))).toBe(true);
+    await worker.stop();
+  });
 });

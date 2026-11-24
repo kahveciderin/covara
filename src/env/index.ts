@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { Hono } from "hono";
 import { createHash } from "node:crypto";
-import { readEnv } from "@/server/env";
+import { isProduction, readEnv } from "@/server/env";
 
 type ProcessedEnvVarConfig<Public extends boolean> = {
   public?: Public;
@@ -82,7 +82,7 @@ export class EnvValidationError extends Error {
     super(
       issues.length === 1
         ? `${head}: ${issues[0].message}`
-        : `${head}:\n${issues.map((i) => `  ${i.key}: ${i.message}`).join("\n")}`
+        : `${head}:\n${issues.map((i) => `  ${i.key ? `${i.key}: ` : ""}${i.message}`).join("\n")}`
     );
     this.name = "EnvValidationError";
   }
@@ -132,14 +132,16 @@ const safeParseEnv = (
 const recursivelyParseSchema = <T>(
   s: T,
   path: string[],
-  issues: EnvIssue[]
+  issues: EnvIssue[],
+  emptyAsUnset: boolean
 ): { value: InferEnv<T>; publicPaths: string[][] } => {
   let toProcess: any = s;
   const publicPaths: string[][] = [];
 
   if (isZodType(toProcess)) {
     const key = path.join("_");
-    const parsed = safeParseEnv(toProcess, readEnv(key));
+    const raw = readEnv(key);
+    const parsed = safeParseEnv(toProcess, emptyAsUnset && raw === "" ? undefined : raw);
     if (!parsed.ok) {
       issues.push({ key, message: parsed.message });
       return { value: undefined as InferEnv<T>, publicPaths: [] };
@@ -160,7 +162,7 @@ const recursivelyParseSchema = <T>(
 
   const result: Record<string, unknown> = {};
   for (const key in toProcess) {
-    const data = recursivelyParseSchema(toProcess[key], [...path, key], issues);
+    const data = recursivelyParseSchema(toProcess[key], [...path, key], issues, emptyAsUnset);
     result[key] = data.value;
     publicPaths.push(...data.publicPaths);
   }
@@ -219,13 +221,47 @@ const constructPublicEnv = <T>(
   return publicEnv;
 };
 
+export interface EnvCheckContext {
+  production: boolean;
+}
+
+export interface CreateEnvOptions<S extends EnvSchema> {
+  /** Read an empty value (`FOO=`) as unset, so `.default()` and `.optional()` apply. Defaults to false. */
+  emptyAsUnset?: boolean;
+  /**
+   * Cross-field and per-environment rules, run once the schema has passed.
+   * Return the problems (a message, or `{ key, message }`); they are thrown
+   * together in one `EnvValidationError`. Don't put values in the messages.
+   */
+  check?: (
+    env: InferEnv<S>,
+    context: EnvCheckContext
+  ) => ReadonlyArray<string | EnvIssue> | void | undefined;
+}
+
+const runCheck = <S extends EnvSchema>(
+  check: NonNullable<CreateEnvOptions<S>["check"]>,
+  env: InferEnv<S>
+): EnvIssue[] => {
+  try {
+    return (check(env, { production: isProduction() }) ?? []).map((problem) =>
+      typeof problem === "string" ? { key: "", message: problem } : problem
+    );
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "Error";
+    return [{ key: "", message: `the check threw (${name})` }];
+  }
+};
+
 export const createEnv = <S extends EnvSchema>(
-  schema: S & { getPublicEnvironmentVariables?: never }
+  schema: S & { getPublicEnvironmentVariables?: never },
+  options: CreateEnvOptions<S> = {}
 ): InferEnv<S> & {
   getPublicEnvironmentVariables: () => PublicEnv<S>;
 } => {
   const issues: EnvIssue[] = [];
-  const parsedSchema = recursivelyParseSchema(schema, [], issues);
+  const parsedSchema = recursivelyParseSchema(schema, [], issues, options.emptyAsUnset ?? false);
+  if (!issues.length && options.check) issues.push(...runCheck(options.check, parsedSchema.value));
   if (issues.length) throw new EnvValidationError(issues);
   const envVars = parsedSchema.value;
   const publicEnv = constructPublicEnv(envVars, parsedSchema.publicPaths);

@@ -72,6 +72,43 @@ Environment variable validation error for DATABASE_URL, PORT:
 
 Messages name the key and the rule, never the value, so a secret can't end up in your logs. A value quoted by a Zod message or a refinement is replaced by `[redacted]`, and a transform that throws is reported by its error name only.
 
+## Empty values
+
+A line like `AI_MODEL=` in a `.env` or compose file sets the variable to `""`, which Zod treats as a value: `.default()` doesn't apply and `.optional()` gives `""`. To treat empty as unset:
+
+```typescript
+createEnv(schema, { emptyAsUnset: true });
+```
+
+Then `.default()` applies, `.optional()` gives `undefined`, and a required variable fails with `required (not set)`. Only exactly `""` counts; whitespace is kept. It applies to the schema's keys, not to values you pass to `envVariable`.
+
+## Cross-field and production checks
+
+`check` runs once the schema has passed, with the parsed env and `{ production }` (`NODE_ENV === "production"`). Return the problems; they are thrown together, in the same `EnvValidationError`:
+
+```typescript
+export const env = createEnv(
+  {
+    AI_API_KEY: z.string().optional(),
+    AI_MODEL_MAIN: z.string().optional(),
+    SESSION_SECRET: z.string().default("dev-only-secret"),
+    REDIS_URL: z.string().optional(),
+  },
+  {
+    emptyAsUnset: true,
+    check: (env, { production }) => [
+      ...(env.AI_API_KEY && !env.AI_MODEL_MAIN
+        ? [{ key: "AI_MODEL_MAIN", message: "required when AI_API_KEY is set" }]
+        : []),
+      ...(production && env.SESSION_SECRET.length < 32 ? ["SESSION_SECRET must be at least 32 characters in production"] : []),
+      ...(production && !env.REDIS_URL ? [{ key: "REDIS_URL", message: "required in production" }] : []),
+    ],
+  }
+);
+```
+
+A problem is a message, or `{ key, message }` to list it under a key. Return nothing (or `[]`) when all is well. Don't put values in the messages: they end up in logs. If `check` throws, the error is reported by its name only, for the same reason.
+
 ## Public vs private
 
 A variable is **public** (exposable to the client) in two ways:

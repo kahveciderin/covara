@@ -37,6 +37,7 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 const MAX_POLL_BACKOFF_MS = 5000;
+const MAX_RECLAIM_BACKOFF_MS = 60_000;
 
 export interface TaskWorker {
   start(): Promise<void>;
@@ -90,6 +91,7 @@ export const createTaskWorker = (
   // or they keep the process alive.
   const taskTimers = new Map<string, () => void>();
   let reclaimTimer: ReturnType<typeof setInterval> | undefined;
+  const reclaimInterval = Math.min(RECLAIM_INTERVAL_MS, lockTtl * 1000);
   let reclaiming = false;
 
   const requeue = async (task: Task): Promise<string> => {
@@ -389,9 +391,13 @@ export const createTaskWorker = (
     }
   };
 
+  let reclaimFailures = 0;
+  let reclaimResumeAt = 0;
+
   const reclaimLostTasks = async (): Promise<void> => {
-    if (reclaiming) return;
+    if (reclaiming || Date.now() < reclaimResumeAt) return;
     reclaiming = true;
+    let failure: unknown;
     try {
       const candidates = new Set([
         ...(await kv.zrange(INFLIGHT_KEY, 0, -1)),
@@ -403,14 +409,29 @@ export const createTaskWorker = (
         try {
           await reclaimTask(taskId);
         } catch (error) {
-          console.error(`Task ${taskId} reclaim failed:`, error);
+          failure ??= error;
         }
       }
     } catch (error) {
-      console.error(`Task worker ${workerId} reclaim failed:`, error);
+      failure = error;
     } finally {
       reclaiming = false;
     }
+    if (failure === undefined) {
+      if (reclaimFailures > 0) {
+        getLogger().info("Task worker reclaiming lost tasks again", { workerId, failedRuns: reclaimFailures });
+      }
+      reclaimFailures = 0;
+      reclaimResumeAt = 0;
+      return;
+    }
+    if (reclaimFailures++ === 0) {
+      getLogger().warn("Task worker reclaim failed, backing off until it succeeds", {
+        workerId,
+        error: failure instanceof Error ? failure.message : String(failure),
+      });
+    }
+    reclaimResumeAt = Date.now() + Math.min(reclaimInterval * 2 ** Math.min(reclaimFailures - 1, 20), MAX_RECLAIM_BACKOFF_MS);
   };
 
   return {
@@ -431,10 +452,7 @@ export const createTaskWorker = (
 
       void reclaimLostTasks();
       clearInterval(reclaimTimer);
-      reclaimTimer = setInterval(
-        () => void reclaimLostTasks(),
-        Math.min(RECLAIM_INTERVAL_MS, lockTtl * 1000)
-      );
+      reclaimTimer = setInterval(() => void reclaimLostTasks(), reclaimInterval);
       (reclaimTimer as { unref?: () => void }).unref?.();
     },
 

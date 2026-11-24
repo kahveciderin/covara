@@ -6,6 +6,8 @@
 - **Validation at startup**: All environment variables are validated when `createEnv` is called
 - **Fail-fast behavior**: Invalid or missing required variables throw immediately with clear error messages
 - **Every problem at once**: `createEnv` validates every variable before throwing, and throws one `EnvValidationError` whose `issues` list each `{ key, message }`
+- **Empty values**: with `emptyAsUnset: true`, a schema key whose value is exactly `""` is parsed as `undefined` (so defaults and `.optional()` apply); without it, `""` is passed to the schema as is
+- **Checks**: `check(env, { production })` runs only when every schema key passed; its problems (strings, or `{ key, message }`) are thrown in the same `EnvValidationError`; a check that throws is reported by its error name only
 - **Values are never echoed**: error messages name the key and the rule, never the value; a value quoted in a Zod or custom message is replaced by `[redacted]` (values shorter than 4 characters are left as is), and a transform that throws is reported by its error name only
 - **Zod integration**: Full Zod schema support including transforms, defaults, enums, and coercion
 - **Key path joining**: Nested schema keys are joined with underscores (e.g., `SERVER.PORT` reads `SERVER_PORT`)
@@ -70,4 +72,5 @@
 
 - `tests/env/env.test.ts` - Server-side parsing, public/private separation, ETag
 - `tests/env/env-errors.test.ts` - Collected issues, no values in messages
+- `tests/env/env-options.test.ts` - `emptyAsUnset`, `check`
 - `tests/env/client-env.test.ts` - Client fetching, schema endpoint, type generation

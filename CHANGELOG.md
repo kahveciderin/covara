@@ -2,6 +2,15 @@
 
 Every release of the `covara` package. **Security** marks fixes for vulnerabilities; **Breaking** marks changes that can need action when you upgrade. Versions before 0.17.0 are only in the git history.
 
+## 0.19.0
+
+**Added**
+- `createEnv(schema, { emptyAsUnset: true })` reads an empty value (`FOO=`) as unset, so `.default()` and `.optional()` apply. Off by default.
+- `createEnv(schema, { check: (env, { production }) => problems })` for cross-field and production-only rules; its problems are thrown with the schema's, in one `EnvValidationError`.
+
+**Fixed**
+- While the KV was unreachable, the task worker's reclaim loop logged a stack trace on every run (every 5 s per worker). It now logs one warning per outage through the logger, backs off up to 60 s, and logs once when it works again.
+
 ## 0.18.2
 
 **Security**
