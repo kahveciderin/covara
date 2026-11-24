@@ -5,6 +5,8 @@
 ### Parsing
 - **Validation at startup**: All environment variables are validated when `createEnv` is called
 - **Fail-fast behavior**: Invalid or missing required variables throw immediately with clear error messages
+- **Every problem at once**: `createEnv` validates every variable before throwing, and throws one `EnvValidationError` whose `issues` list each `{ key, message }`
+- **Values are never echoed**: error messages name the key and the rule, never the value; a value quoted in a Zod or custom message is replaced by `[redacted]` (values shorter than 4 characters are left as is), and a transform that throws is reported by its error name only
 - **Zod integration**: Full Zod schema support including transforms, defaults, enums, and coercion
 - **Key path joining**: Nested schema keys are joined with underscores (e.g., `SERVER.PORT` reads `SERVER_PORT`)
 
@@ -46,12 +48,15 @@
 ## Failure Modes
 
 ### Missing Required Variable
-- Application fails to start with error: `Environment variable validation error for KEY: Required`
+- Application fails to start with error: `Environment variable validation error for KEY: required (not set)`
 - Clear error message identifies the missing variable
 
 ### Invalid Variable Value
-- Application fails to start with Zod validation error
-- Error message indicates the validation failure and expected type
+- Application fails to start with an `EnvValidationError`
+- Error message indicates the validation failure and expected type, without the value
+
+### Several Bad Variables
+- One `EnvValidationError` lists them all: `Environment variable validation error for A, B:` followed by one `KEY: message` line each
 
 ### Schema Endpoint Disabled
 - `GET /schema` returns 404
@@ -64,4 +69,5 @@
 ## Test Coverage
 
 - `tests/env/env.test.ts` - Server-side parsing, public/private separation, ETag
+- `tests/env/env-errors.test.ts` - Collected issues, no values in messages
 - `tests/env/client-env.test.ts` - Client fetching, schema endpoint, type generation

@@ -2,6 +2,14 @@
 
 Every release of the `covara` package. **Security** marks fixes for vulnerabilities; **Breaking** marks changes that can need action when you upgrade. Versions before 0.17.0 are only in the git history.
 
+## 0.18.2
+
+**Security**
+- `createEnv` and `envVariable` errors could contain the variable's value: a Zod 3 enum or literal message, a refinement message that quotes the input, or a transform that throws (e.g. `JSON.parse`). Messages now name the key and the rule only; the value is replaced by `[redacted]`.
+
+**Fixed**
+- `createEnv` reported only the first bad variable. It now checks all of them and throws one `EnvValidationError` listing each `KEY: message` (`error.issues`). A missing variable reads `required (not set)`.
+
 ## 0.18.1
 
 **Docs**

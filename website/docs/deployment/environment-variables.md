@@ -60,6 +60,18 @@ createEnv({
 });
 ```
 
+## Validation errors
+
+`createEnv` checks every variable before it throws, so a broken deploy shows all its mistakes at once. It throws an `EnvValidationError` whose `issues` is a list of `{ key, message }`:
+
+```text
+Environment variable validation error for DATABASE_URL, PORT:
+  DATABASE_URL: required (not set)
+  PORT: Invalid input: expected number, received NaN
+```
+
+Messages name the key and the rule, never the value, so a secret can't end up in your logs. A value quoted by a Zod message or a refinement is replaced by `[redacted]`, and a transform that throws is reported by its error name only.
+
 ## Public vs private
 
 A variable is **public** (exposable to the client) in two ways:
