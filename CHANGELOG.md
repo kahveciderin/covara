@@ -2,6 +2,11 @@
 
 Every release of the `covara` package. **Security** marks fixes for vulnerabilities; **Breaking** marks changes that can need action when you upgrade. Versions before 0.17.0 are only in the git history.
 
+## 0.21.1
+
+**Fixed**
+- `covara push` (and `covara dev`) compared the database against your schema including Covara's internal tables (`auth_passkeys`, `billing_credit_*`, …) when the schema didn't export them. Adding a table made drizzle-kit ask whether it renamed one of them, which stopped a non-interactive deploy without a result. With no new table, an empty internal table was dropped (and recreated by `autoMigrate` at the next start). Internal tables the schema doesn't export are now left out of the diff, including ones renamed through an exported `defineInternalSchema` bundle.
+
 ## 0.21.0
 
 **Added**

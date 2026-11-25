@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { hideSqliteTables, postgresTablesFilter, unmanagedInternalTables } from "./push-filter.js";
 
 interface Job {
   op: "push" | "data" | "studio" | "import";
@@ -56,9 +57,11 @@ const runPush = async (job: Job): Promise<void> => {
   const imports = await loadSchema(job.schemaPath);
   const db = await buildDb(job);
   const api = await import("drizzle-kit/api");
-  const push =
-    job.dialect === "sqlite" ? (api as any).pushSQLiteSchema : (api as any).pushSchema;
-  const result = await push(imports, db);
+  const hidden = unmanagedInternalTables(imports);
+  const result =
+    job.dialect === "sqlite"
+      ? await (api as any).pushSQLiteSchema(imports, hideSqliteTables(db as object, hidden))
+      : await (api as any).pushSchema(imports, db, undefined, postgresTablesFilter(hidden));
   const applied = !result.hasDataLoss || job.force === true;
   if (applied) await result.apply();
   emit({

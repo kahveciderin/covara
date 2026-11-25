@@ -96,6 +96,8 @@ npx covara studio               # open Drizzle Studio for the active profile
 
 `push` computes the diff with [`drizzle-kit`](https://orm.drizzle.team/kit-docs/overview) and classifies it: additive diffs apply immediately; destructive diffs (with possible data loss) require confirmation or `--force`.
 
+Covara's own tables (`auth_*`, `billing_*`, created by `autoMigrate`/`migrateInternal`) are left out of the diff unless your schema exports them, so `push` never drops them or asks whether a new table renames one. A table you export (e.g. `authSessions`) is managed like any of yours. If you renamed one with `defineInternalSchema`, export that bundle from the schema file and its tables are left out too. If `drizzle-kit` still needs to ask whether you renamed one of *your* tables or columns, run `push` in a terminal: in CI there's no way to answer.
+
 ### Connection profiles — `covara db`
 
 Named profiles let you switch between local, staging, and remote databases (libsql/Turso URL + token, or a Postgres URL). Profiles live in `.covara/config.json`; the active one (or `DATABASE_URL`/`DB_FILE_NAME`) is used by every schema/data command, and an explicit `--profile <name>` or `--url <url>` overrides it.

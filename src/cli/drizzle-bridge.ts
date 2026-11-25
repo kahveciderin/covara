@@ -42,7 +42,7 @@ const runWorker = (cwd: string, job: Record<string, unknown>): Promise<any> => {
     child.on("error", reject);
     child.on("close", (code) => {
       if (!fs.existsSync(resultFile)) {
-        reject(new Error(`schema worker produced no result (exit ${code})`));
+        reject(new Error(`schema worker exited without a result (exit ${code}); drizzle-kit may have asked an interactive question (whether a table or column was renamed), which needs a terminal`));
         return;
       }
       try {
